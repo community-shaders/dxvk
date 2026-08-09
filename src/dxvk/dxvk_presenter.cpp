@@ -1279,6 +1279,18 @@ namespace dxvk {
           VkColorSpaceKHR           desired) {
     VkColorSpaceKHR fallback = pSupported[0].colorSpace;
 
+#if defined(DXVK_WSI_WIN32)
+    // Native Nvidia HDR10 swapchains can stop updating in the Windows compositor.
+    // Keep the D3D back buffer in HDR10 and use the existing present blit to scRGB.
+    if (desired == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+        m_device->properties().core.properties.vendorID == uint16_t(DxvkGpuVendor::Nvidia)) {
+      for (uint32_t i = 0; i < numSupported; i++) {
+        if (pSupported[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+          return pSupported[i].colorSpace;
+      }
+    }
+#endif
+
     for (uint32_t i = 0; i < numSupported; i++) {
       if (pSupported[i].colorSpace == desired)
         return desired;
