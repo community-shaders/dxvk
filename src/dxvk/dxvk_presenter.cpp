@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 #include "dxvk_device.h"
 #include "dxvk_presenter.h"
@@ -9,6 +11,70 @@
 #include "../wsi/wsi_window.h"
 
 namespace dxvk {
+
+  struct PresenterSurfaceStateSnapshot {
+    uint64_t serial = 0;
+    uint32_t format = VK_FORMAT_UNDEFINED;
+    uint32_t requestedColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    uint32_t effectiveColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    uint32_t flags = 0;
+  };
+
+  constexpr uint32_t PresenterSurfaceFlagGammaEncodeHdr10ToScRgb = 1u << 0;
+
+  static std::mutex g_dxvkPresenterSurfaceStateMutex;
+  static PresenterSurfaceStateSnapshot g_dxvkPresenterSurfaceState;
+
+  static uint64_t getPresenterSurfaceState(
+          uint32_t* format,
+          uint32_t* requestedColorSpace,
+          uint32_t* effectiveColorSpace,
+          uint32_t* flags) {
+    std::lock_guard lock(g_dxvkPresenterSurfaceStateMutex);
+
+    if (!g_dxvkPresenterSurfaceState.serial)
+      return 0;
+
+    if (format)
+      *format = g_dxvkPresenterSurfaceState.format;
+    if (requestedColorSpace)
+      *requestedColorSpace = g_dxvkPresenterSurfaceState.requestedColorSpace;
+    if (effectiveColorSpace)
+      *effectiveColorSpace = g_dxvkPresenterSurfaceState.effectiveColorSpace;
+    if (flags)
+      *flags = g_dxvkPresenterSurfaceState.flags;
+
+    return g_dxvkPresenterSurfaceState.serial;
+  }
+
+  extern "C" uint64_t dxvkGetPresenterSurfaceState(
+          uint32_t* format,
+          uint32_t* requestedColorSpace,
+          uint32_t* effectiveColorSpace) {
+    return getPresenterSurfaceState(format, requestedColorSpace, effectiveColorSpace, nullptr);
+  }
+
+  extern "C" uint64_t dxvkGetPresenterSurfaceState2(
+          uint32_t* format,
+          uint32_t* requestedColorSpace,
+          uint32_t* effectiveColorSpace,
+          uint32_t* flags) {
+    return getPresenterSurfaceState(format, requestedColorSpace, effectiveColorSpace, flags);
+  }
+
+  static void publishPresenterSurfaceState(
+          VkFormat format,
+          VkColorSpaceKHR requestedColorSpace,
+          VkColorSpaceKHR effectiveColorSpace,
+          uint32_t flags) {
+    std::lock_guard lock(g_dxvkPresenterSurfaceStateMutex);
+
+    g_dxvkPresenterSurfaceState.serial += 1;
+    g_dxvkPresenterSurfaceState.format = uint32_t(format);
+    g_dxvkPresenterSurfaceState.requestedColorSpace = uint32_t(requestedColorSpace);
+    g_dxvkPresenterSurfaceState.effectiveColorSpace = uint32_t(effectiveColorSpace);
+    g_dxvkPresenterSurfaceState.flags = flags;
+  }
 
   // External FFX frame-generation ownership predicate, set by the CS WSI hook. Returns true for the
   // external FFX frame-interpolation swapchain; when owned, the Presenter becomes a thin submit +
@@ -29,13 +95,21 @@ namespace dxvk {
     g_dxvkForceSwapchainRecreate.store(true, std::memory_order_release);
   }
 
-  // Callback invoked inside recreateSwapChain() while no swapchain exists (after destroy, before create).
-  // The Streamline DLSS-G guide requires slSetFeatureLoaded in exactly this window so the next
-  // vkCreateSwapchainKHR installs or omits DLSS-G's present proxy. Runs under m_surfaceMutex.
-  std::atomic<void (*)()> g_dxvkSwapchainTornDownCallback = { nullptr };
+  // Callback invoked inside recreateSwapChain() while DXVK owns no swapchain (after destroy, before create).
+  // Returning false keeps the presenter empty so an external wrapper that failed teardown cannot overlap
+  // a replacement. The callback is invoked again on the next recreation attempt. Runs under m_surfaceMutex.
+  std::atomic<bool (*)()> g_dxvkSwapchainTornDownCallback = { nullptr };
 
-  extern "C" void dxvkSetSwapchainTornDownCallback(void (*cb)()) {
+  extern "C" void dxvkSetSwapchainTornDownCallback(bool (*cb)()) {
     g_dxvkSwapchainTornDownCallback.store(cb, std::memory_order_release);
+  }
+
+  bool notifySwapchainTornDown() {
+    if (auto cb = g_dxvkSwapchainTornDownCallback.load(std::memory_order_acquire); cb && !cb()) {
+      Logger::err("Presenter: External swapchain teardown incomplete; deferring recreation.");
+      return false;
+    }
+    return true;
   }
 
   // External frame-rate cap, in fps, driven by CS to pace presents when nothing else does (FSR frame
@@ -46,29 +120,6 @@ namespace dxvk {
   extern "C" void dxvkSetTargetFrameRate(double fps) {
     g_dxvkExternalFrameRate.store(fps < 0.0 ? 0.0 : fps, std::memory_order_release);
   }
-
-  // Present-marker bridge for Streamline frame generation. The app's D3D11 Present call only
-  // QUEUES a present; the real vkQueuePresentKHR (where the SL interposer's present proxy runs
-  // interpolation) happens later on this submit thread. SL correlates that present with the
-  // app's most recent PresentStart PCL marker, so markers fired at the D3D11 call are stale by
-  // the time the present executes whenever the app runs ahead — SL then pairs the presented
-  // frame with the NEXT frame's camera constants. The bridge lets the app fire its present
-  // markers HERE, around the actual present, with the app frame id of the frame being presented:
-  // cb(appFrameId, phase) with phase 0 = before present, 1 = after.
-  std::atomic<void (*)(uint64_t, uint32_t)> g_dxvkPresentMarkerCallback = { nullptr };
-
-  extern "C" void dxvkSetPresentMarkerCallback(void (*cb)(uint64_t, uint32_t)) {
-    g_dxvkPresentMarkerCallback.store(cb, std::memory_order_release);
-  }
-
-  // FIFO of app frame ids for queued presents: the app pushes exactly one per D3D11 Present call
-  // (from its Present hook, render thread); presentImage pops one per actual present (submit
-  // thread). Presents are FIFO through the submission queue, so ordering holds; if the ring is
-  // empty (a present with no matching push, e.g. an internal recreate) the marker is skipped for
-  // that present rather than fired with a wrong id.
-  std::atomic<uint64_t> g_dxvkPresentAppFrameIds[16];
-  std::atomic<uint32_t> g_dxvkPresentAppFrameHead = { 0u };
-  std::atomic<uint32_t> g_dxvkPresentAppFrameTail = { 0u };
 
   // Skip the D3D11 swapchain's frame-latency throttle (SyncFrameLatency). Set by the app while
   // Streamline DLSS-G runs in eBlockPresentingClientQueue: SL paces the app by blocking inside
@@ -82,14 +133,125 @@ namespace dxvk {
     g_dxvkSkipFrameLatencySync.store(skip != 0u, std::memory_order_release);
   }
 
-  // One-shot extra wait semaphore for the NEXT present (see presentImage). The producer pushes
-  // a semaphore its own submission signals; the presenter consumes it exactly once. Pushing
-  // while one is already pending replaces it (the presents are throttled by the same producer,
-  // so in practice at most one is in flight).
-  std::atomic<VkSemaphore> g_dxvkPresentExtraWaitSemaphore = { VK_NULL_HANDLE };
+  enum class PresentWaitState : uint32_t {
+    None = 0,
+    Pending = 1,
+    Queued = 2,
+    Uncertain = 3,
+    Released = 4,
+  };
 
-  extern "C" void dxvkPushPresentWaitSemaphore(VkSemaphore sem) {
-    g_dxvkPresentExtraWaitSemaphore.store(sem, std::memory_order_release);
+  struct PresentWaitSnapshot {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    uint64_t swapchainSerial = 0;
+    uint64_t generation = 0;
+    uint32_t imageIndex = 0;
+    PresentWaitState state = PresentWaitState::None;
+    bool attached = false;
+  };
+
+  static constexpr uint32_t MaxPresentWaitSnapshots = 64;
+  static std::mutex g_dxvkPresentWaitMutex;
+  static std::array<PresentWaitSnapshot, MaxPresentWaitSnapshots> g_dxvkPresentWaits;
+  static uint64_t g_dxvkNextPresentWaitGeneration = 0;
+  static uint64_t g_dxvkNextPresentWaitSwapchainSerial = 0;
+
+  // At most one record is pending attachment; queued records remain keyed until reacquire proof.
+  extern "C" uint64_t dxvkPushPresentWaitSemaphore(VkSemaphore sem) {
+    if (sem == VK_NULL_HANDLE)
+      return 0;
+
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    PresentWaitSnapshot* freeSnapshot = nullptr;
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.state == PresentWaitState::Pending)
+        return 0;
+      if (!freeSnapshot && snapshot.state == PresentWaitState::None)
+        freeSnapshot = &snapshot;
+    }
+    if (!freeSnapshot)
+      return 0;
+
+    uint64_t generation = ++g_dxvkNextPresentWaitGeneration;
+    if (!generation)
+      generation = ++g_dxvkNextPresentWaitGeneration;
+    *freeSnapshot = { sem, VK_NULL_HANDLE, 0, generation, 0, PresentWaitState::Pending, false };
+    return generation;
+  }
+
+  // Cancellation is valid only while the exact registered handle is still pending.
+  extern "C" uint32_t dxvkCancelPresentWaitSemaphore(VkSemaphore sem) {
+    if (sem == VK_NULL_HANDLE)
+      return 0;
+
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.state == PresentWaitState::Pending && !snapshot.attached &&
+          snapshot.semaphore == sem) {
+        snapshot = { };
+        return 1;
+      }
+    }
+    return 0;
+  }
+
+  extern "C" uint32_t dxvkGetPresentWaitSemaphoreState(uint64_t generation) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    if (generation) {
+      for (const auto& snapshot : g_dxvkPresentWaits) {
+        if (snapshot.generation == generation)
+          return uint32_t(snapshot.state);
+      }
+    }
+    return uint32_t(PresentWaitState::None);
+  }
+
+  // Only a reacquire-proven generation may be removed from the ownership table.
+  extern "C" uint32_t dxvkClearPresentWaitSemaphore(uint64_t generation) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    if (generation) {
+      for (auto& snapshot : g_dxvkPresentWaits) {
+        if (snapshot.generation == generation && snapshot.state == PresentWaitState::Released) {
+          snapshot = { };
+          return 1;
+        }
+      }
+    }
+    return 0;
+  }
+
+  // The caller must prove the Vulkan device idle before releasing queued waits.
+  extern "C" uint32_t dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle() {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    uint32_t released = 0;
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.state == PresentWaitState::Queued) {
+        snapshot.state = PresentWaitState::Released;
+        released += 1;
+      }
+    }
+    return released;
+  }
+
+  void releasePresentWaitsForImage(
+      VkSwapchainKHR swapchain, uint64_t swapchainSerial, uint32_t imageIndex) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.state == PresentWaitState::Queued && snapshot.swapchain == swapchain &&
+          snapshot.swapchainSerial == swapchainSerial && snapshot.imageIndex == imageIndex)
+        snapshot.state = PresentWaitState::Released;
+    }
+  }
+
+  void releasePresentWaitsForSwapchain(
+      VkSwapchainKHR swapchain, uint64_t swapchainSerial) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.state == PresentWaitState::Queued && snapshot.swapchain == swapchain &&
+          snapshot.swapchainSerial == swapchainSerial)
+        snapshot.state = PresentWaitState::Released;
+    }
   }
 
   // Present-path override. Chaining VkSurfaceFullScreenExclusiveInfoEXT with DISALLOWED makes
@@ -103,13 +265,6 @@ namespace dxvk {
 
   extern "C" void dxvkSetFsePNextChain(int32_t mode) {
     g_dxvkFsePNextChainOverride.store(mode, std::memory_order_release);
-  }
-
-  extern "C" void dxvkPushPresentAppFrameId(uint64_t id) {
-    uint32_t t = g_dxvkPresentAppFrameTail.load(std::memory_order_relaxed);
-    // Drop the oldest on overflow (bounded presents-in-flight make this unreachable in practice).
-    g_dxvkPresentAppFrameIds[t % 16u].store(id, std::memory_order_relaxed);
-    g_dxvkPresentAppFrameTail.store(t + 1u, std::memory_order_release);
   }
 
   const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> Presenter::s_colorSpaceFallbacks = {{
@@ -212,7 +367,8 @@ namespace dxvk {
     // Ensure that the swap chain gets recreated if it is dirty
     bool hasSwapchain = m_swapchain != VK_NULL_HANDLE;
 
-    updateSwapChain();
+    if (!updateSwapChain())
+      return VK_NOT_READY;
 
     // Don't acquire if we already did so after present
     if (m_acquireStatus == VK_NOT_READY && m_swapchain) {
@@ -308,6 +464,8 @@ namespace dxvk {
   VkResult Presenter::presentImage(uint64_t frameId, const Rc<DxvkLatencyTracker>& tracker) {
     PresenterSync& currSync = m_semaphores.at(m_frameIndex);
 
+    releasePresentWaitsForImage(m_swapchain, m_presentWaitSwapchainSerial, m_imageIndex);
+
     VkPresentIdKHR presentId = { VK_STRUCTURE_TYPE_PRESENT_ID_KHR };
     presentId.swapchainCount = 1;
     presentId.pPresentIds   = &frameId;
@@ -331,8 +489,22 @@ namespace dxvk {
     std::array<VkSemaphore, 2> waitSemaphores = { currSync.present, VK_NULL_HANDLE };
     uint32_t waitSemaphoreCount = 1;
 
-    if (VkSemaphore extra = g_dxvkPresentExtraWaitSemaphore.exchange(VK_NULL_HANDLE, std::memory_order_acq_rel))
-      waitSemaphores[waitSemaphoreCount++] = extra;
+    uint64_t extraWaitGeneration = 0;
+    {
+      std::lock_guard lock(g_dxvkPresentWaitMutex);
+      for (auto& snapshot : g_dxvkPresentWaits) {
+        if (snapshot.state == PresentWaitState::Pending && !snapshot.attached &&
+            snapshot.semaphore != VK_NULL_HANDLE) {
+          waitSemaphores[waitSemaphoreCount++] = snapshot.semaphore;
+          extraWaitGeneration = snapshot.generation;
+          snapshot.swapchain = m_swapchain;
+          snapshot.swapchainSerial = m_presentWaitSwapchainSerial;
+          snapshot.imageIndex = m_imageIndex;
+          snapshot.attached = true;
+          break;
+        }
+      }
+    }
 
     VkPresentInfoKHR info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     info.waitSemaphoreCount = waitSemaphoreCount;
@@ -368,20 +540,6 @@ namespace dxvk {
       fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
     }
 
-    // Pop the app frame id queued at the D3D11 Present call and bracket the REAL present with the
-    // app's present markers (see the bridge comment at the top of this file).
-    uint64_t appFrameId = 0;
-    {
-      uint32_t h = g_dxvkPresentAppFrameHead.load(std::memory_order_relaxed);
-      if (h != g_dxvkPresentAppFrameTail.load(std::memory_order_acquire)) {
-        appFrameId = g_dxvkPresentAppFrameIds[h % 16u].load(std::memory_order_relaxed);
-        g_dxvkPresentAppFrameHead.store(h + 1u, std::memory_order_relaxed);
-      }
-    }
-    auto* markerCb = g_dxvkPresentMarkerCallback.load(std::memory_order_acquire);
-    if (markerCb && appFrameId)
-      markerCb(appFrameId, 0u);
-
     // Present on the DEDICATED present queue (second graphics-family queue when the hardware
     // exposes one; aliases graphics otherwise). Only this call ever touches that queue, so it
     // needs no lock — and Streamline DLSS-G's blocking present (eBlockPresentingClientQueue)
@@ -389,8 +547,30 @@ namespace dxvk {
     VkResult status = m_vkd->vkQueuePresentKHR(
       m_device->queues().present.queueHandle, &info);
 
-    if (markerCb && appFrameId)
-      markerCb(appFrameId, 1u);
+    if (extraWaitGeneration) {
+      PresentWaitState waitState = PresentWaitState::Uncertain;
+      switch (status) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+        case VK_ERROR_OUT_OF_DATE_KHR:
+        case VK_ERROR_SURFACE_LOST_KHR:
+        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+        case VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT:
+          waitState = PresentWaitState::Queued;
+          break;
+        default:
+          break;
+      }
+
+      std::lock_guard lock(g_dxvkPresentWaitMutex);
+      for (auto& snapshot : g_dxvkPresentWaits) {
+        if (snapshot.generation == extraWaitGeneration &&
+            snapshot.state == PresentWaitState::Pending && snapshot.attached) {
+          snapshot.state = waitState;
+          break;
+        }
+      }
+    }
 
     // Maintain valid state if presentation succeeded, even if we want to
     // recreate the swapchain. Spec says that 'queue' operations, i.e. the
@@ -752,11 +932,10 @@ namespace dxvk {
     if (m_swapchain)
       destroySwapchain();
 
-    // Swapchain is now torn down — the window in which DLSS-G may be (un)loaded. The host's callback
-    // calls slSetFeatureLoaded so the createSwapChain below installs/omits the DLSS-G present proxy.
-    // No-op for ordinary recreates (resize, FSR-FG wrap).
-    if (auto cb = g_dxvkSwapchainTornDownCallback.load(std::memory_order_acquire))
-      cb();
+    // Confirm external wrappers are gone before publishing another swapchain. This still runs when
+    // m_swapchain is already null, allowing a retryable teardown failure to complete on a later attempt.
+    if (!notifySwapchainTornDown())
+      return VK_NOT_READY;
 
     if (m_surface) {
       vr = createSwapChain();
@@ -776,7 +955,7 @@ namespace dxvk {
   }
 
 
-  void Presenter::updateSwapChain() {
+  bool Presenter::updateSwapChain() {
     // Honour a one-shot external recreate request (CS frame-gen method switch — see
     // g_dxvkForceSwapchainRecreate above). Treated as a dirty surface so the swapchain is fully torn
     // down and rebuilt, evicting any sticky external present proxy (sl.dlss_g) on the way.
@@ -786,12 +965,16 @@ namespace dxvk {
     if (m_dirtySurface || m_dirtySwapchain) {
       destroySwapchain();
       m_dirtySwapchain = false;
+      if (!notifySwapchainTornDown())
+        return false;
     }
 
     if (m_dirtySurface) {
       destroySurface();
       m_dirtySurface = false;
     }
+
+    return true;
   }
 
 
@@ -1142,6 +1325,23 @@ namespace dxvk {
     if (m_signal && m_hasPresentWait && !m_frameGenOwned.load() && !m_frameThread.joinable())
       m_frameThread = dxvk::thread([this] { runFrameThread(); });
 
+    {
+      std::lock_guard lock(g_dxvkPresentWaitMutex);
+      m_presentWaitSwapchainSerial = ++g_dxvkNextPresentWaitSwapchainSerial;
+      if (!m_presentWaitSwapchainSerial)
+        m_presentWaitSwapchainSerial = ++g_dxvkNextPresentWaitSwapchainSerial;
+    }
+
+    const bool gammaEncodeHdr10ToScRgb =
+      m_preferredFormat.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+      surfaceFormat.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT &&
+      m_device->properties().core.properties.vendorID == uint16_t(DxvkGpuVendor::Nvidia);
+    publishPresenterSurfaceState(
+      surfaceFormat.format,
+      m_preferredFormat.colorSpace,
+      surfaceFormat.colorSpace,
+      gammaEncodeHdr10ToScRgb ? PresenterSurfaceFlagGammaEncodeHdr10ToScRgb : 0u);
+
     return VK_SUCCESS;
   }
 
@@ -1289,6 +1489,7 @@ namespace dxvk {
           return pSupported[i].colorSpace;
       }
     }
+
 #endif
 
     for (uint32_t i = 0; i < numSupported; i++) {
@@ -1508,11 +1709,12 @@ namespace dxvk {
 
 
   void Presenter::destroySwapchain() {
-    // Without present fence support, waiting for the queue or device to go idle
-    // is the only way to properly synchronize swapchain teardown. Care must be
-    // taken not to call this method while the submission queue is locked.
-    if (!m_hasSwapchainMaintenance1)
-      m_device->waitForIdle();
+    // Without usable present fences, waiting for the queue or device to go idle
+    // is the only way to properly synchronize swapchain teardown. Frame-generation
+    // owned presents do not chain DXVK's maintenance1 fence.
+    const bool usePresentFences = m_hasSwapchainMaintenance1 &&
+      !m_hasGamescopeFenceSignalBug && !m_frameGenOwned.load();
+    bool presentCompletionProven = usePresentFences || m_device->waitForIdle() == VK_SUCCESS;
 
     // Wait for the presentWait worker to finish using
     // the swapchain before destroying it.
@@ -1522,8 +1724,13 @@ namespace dxvk {
       return m_frameQueue.empty();
     });
 
-    for (auto& sem : m_semaphores)
-      waitForSwapchainFence(sem);
+    if (usePresentFences) {
+      for (auto& sem : m_semaphores)
+        presentCompletionProven &= waitForSwapchainFence(sem);
+    }
+
+    if (presentCompletionProven)
+      releasePresentWaitsForSwapchain(m_swapchain, m_presentWaitSwapchainSerial);
 
     for (const auto& sem : m_semaphores) {
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.acquire, nullptr);
@@ -1540,6 +1747,7 @@ namespace dxvk {
     m_dynamicModes.clear();
 
     m_swapchain = VK_NULL_HANDLE;
+    m_presentWaitSwapchainSerial = 0;
     m_acquireStatus = VK_NOT_READY;
 
     m_presentPending = false;
@@ -1568,21 +1776,24 @@ namespace dxvk {
   }
 
 
-  void Presenter::waitForSwapchainFence(
+  bool Presenter::waitForSwapchainFence(
           PresenterSync&            sync) {
     if (!sync.fenceSignaled)
-      return;
+      return true;
 
     VkResult vr = m_vkd->vkWaitForFences(m_vkd->device(),
       1, &sync.fence, VK_TRUE, ~0ull);
 
-    if (vr)
+    if (vr) {
       Logger::err(str::format("Presenter: Failed to wait for WSI fence: ", vr));
+      return false;
+    }
 
     if ((vr = m_vkd->vkResetFences(m_vkd->device(), 1, &sync.fence)))
       Logger::err(str::format("Presenter: Failed to reset WSI fence: ", vr));
 
     sync.fenceSignaled = VK_FALSE;
+    return true;
   }
 
 

@@ -295,6 +295,7 @@ namespace dxvk {
 
     VkSurfaceKHR                m_surface     = VK_NULL_HANDLE;
     VkSwapchainKHR              m_swapchain   = VK_NULL_HANDLE;
+    uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
 
@@ -365,7 +366,7 @@ namespace dxvk {
 
     static const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> s_colorSpaceFallbacks;
 
-    void updateSwapChain();
+    bool updateSwapChain();
 
     VkResult recreateSwapChain();
 
@@ -419,7 +420,7 @@ namespace dxvk {
 
     void destroyLatencySemaphore();
 
-    void waitForSwapchainFence(
+    bool waitForSwapchainFence(
             PresenterSync&            sync);
 
     void runFrameThread();

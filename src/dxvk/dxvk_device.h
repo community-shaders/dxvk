@@ -742,8 +742,9 @@ namespace dxvk {
      * previously submitted command buffers. This may be
      * used to ensure that resources that were previously
      * used by the GPU can be safely destroyed.
+     * \returns Vulkan device-idle result
      */
-    void waitForIdle();
+    VkResult waitForIdle();
     
   private:
     

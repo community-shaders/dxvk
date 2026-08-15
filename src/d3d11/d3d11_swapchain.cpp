@@ -499,8 +499,11 @@ namespace dxvk {
     // the real vkQueuePresentKHR. CPU-side drain only — no GPU fence is waited. This pins every
     // SL-interposer present callback to a moment where the app is quiescent at the presented
     // frame, the reference Streamline sample's implicit property.
-    if (presentStatus)
-      m_device->waitForSubmission(presentStatus);
+    if (presentStatus) {
+      VkResult presentResult = m_device->waitForSubmission(presentStatus);
+      if (presentResult < 0)
+        return E_FAIL;
+    }
 
     if (m_latency) {
       m_latency->notifyCpuPresentEnd(m_frameId);
