@@ -100,18 +100,28 @@ namespace dxvk {
     }
     
     if (m_desc.BindFlags & D3D11_BIND_RENDER_TARGET) {
-      imageInfo.usage  |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-      imageInfo.stages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+      // Community Shaders exports Skyrim render targets to Vulkan/Streamline. Skyrim discovers
+      // input-attachment use only later, but adding it at GetVulkanImageInfo time relocates an
+      // already-rendered image and exposes the replacement in UNDEFINED layout. Create render
+      // targets with the eventual usage from the outset so exported handles remain stable.
+      imageInfo.usage  |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                       |  VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+      imageInfo.stages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                       |  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
       imageInfo.access |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-                       |  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                       |  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       |  VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     }
     
     if (m_desc.BindFlags & D3D11_BIND_DEPTH_STENCIL) {
-      imageInfo.usage  |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+      imageInfo.usage  |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                       |  VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
       imageInfo.stages |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                       |  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+                       |  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                       |  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
       imageInfo.access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                       |  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                       |  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                       |  VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     }
     
     if (m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
