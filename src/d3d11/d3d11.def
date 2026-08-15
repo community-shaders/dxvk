@@ -17,4 +17,3 @@ EXPORTS
     dxvkClearPresentWaitSemaphore @112
     dxvkCancelPresentWaitSemaphore @113
     dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle @114
-    dxvkGetPresenterSurfaceState2 @115
