@@ -497,7 +497,10 @@ namespace dxvk {
 
       // Heap regresses performance on the initial NV driver releases.
       if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        enableDescriptorHeap = m_properties.driverVersion >= Version(595u, 84u, 0u);
+        // NGX 310.7 writes a combined D24S8 descriptor through the experimental heap path,
+        // violating VUID-VkImageDescriptorInfoEXT-pView-11430 and recording no DLSS output.
+        // Keep Streamline interop on the established descriptor-set implementation.
+        enableDescriptorHeap = false;
 
       applyTristate(enableDescriptorHeap, instance.options().enableDescriptorHeap);
 
@@ -517,7 +520,7 @@ namespace dxvk {
 
       // Pascal reportedly sees massive perf drops with descriptor buffer
       if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        enableDescriptorBuffer = m_hasMeshShader;
+        enableDescriptorBuffer = false;
 
       // On RDNA2 and older, descriptor buffer implicitly disables fmask
       // on amdvlk, which makes MSAA performance unusable on these GPUs.
