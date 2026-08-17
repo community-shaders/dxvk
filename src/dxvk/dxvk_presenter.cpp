@@ -775,6 +775,15 @@ namespace dxvk {
       }
     }
 
+    if (colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+      Logger::warn(str::format("Presenter: HDR10 unsupported; query returned ",
+        surfaceFormats.size(), " surface format(s); FSE pNext=", m_chainFseInfo ? "yes" : "no"));
+      for (const auto& surfaceFormat : surfaceFormats) {
+        Logger::warn(str::format("Presenter:   format=", surfaceFormat.format,
+          ", colorSpace=", surfaceFormat.colorSpace));
+      }
+    }
+
     return false;
   }
 
@@ -1522,19 +1531,6 @@ namespace dxvk {
     const VkSurfaceFormatKHR*       pSupported,
           VkColorSpaceKHR           desired) {
     VkColorSpaceKHR fallback = pSupported[0].colorSpace;
-
-#if defined(DXVK_WSI_WIN32)
-    // Native Nvidia HDR10 swapchains can stop updating in the Windows compositor.
-    // Keep the D3D back buffer in HDR10 and use the existing present blit to scRGB.
-    if (desired == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
-        m_device->properties().core.properties.vendorID == uint16_t(DxvkGpuVendor::Nvidia)) {
-      for (uint32_t i = 0; i < numSupported; i++) {
-        if (pSupported[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
-          return pSupported[i].colorSpace;
-      }
-    }
-
-#endif
 
     for (uint32_t i = 0; i < numSupported; i++) {
       if (pSupported[i].colorSpace == desired)
