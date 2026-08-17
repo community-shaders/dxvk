@@ -675,6 +675,12 @@ namespace dxvk {
             uint64_t                  frameId,
             DxvkSubmitStatus*         status);
 
+    void submitInteropCommandBuffer(
+            VkCommandBuffer           commandBuffer,
+            VkSemaphore               signalSemaphore,
+            VkFence                   fence,
+            uint64_t                  presentWaitGeneration);
+
     /**
      * \brief Locks submission queue
      * 

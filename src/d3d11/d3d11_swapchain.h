@@ -90,6 +90,9 @@ namespace dxvk {
     void STDMETHODCALLTYPE SetTargetFrameRate(
             double                    FrameRate);
 
+    uint64_t enqueueInteropCommandBuffer(VkCommandBuffer commandBuffer,
+      VkSemaphore signalSemaphore, VkFence fence);
+
   private:
 
     enum BindingIds : uint32_t {
@@ -114,13 +117,13 @@ namespace dxvk {
 
     uint64_t                  m_frameId      = DXGI_MAX_SWAP_CHAIN_BUFFERS;
 
-    // Synchronous present (DXVK_SYNC_PRESENT=1): the app thread blocks until the submit thread
-    // executed the real vkQueuePresentKHR for this frame. Restores the reference Streamline
-    // sample's property that Present() IS the real present — every bit of the SL interposer's
-    // CPU-side per-frame bookkeeping observes the app quiescent at the presented frame. Unlike
-    // the DLSS-G evaluate waitIdle this is a CPU/thread drain, not a GPU fence wait.
+    // Environment override that forces depth zero for every present.
     bool                      m_syncPresent  = false;
-    DxvkSubmitStatus          m_presentStatus;
+    // Status objects for bounded asynchronous present. Entries remain owned by
+    // the app thread until waitForSubmission has retired them.
+    std::array<DxvkSubmitStatus, 8> m_presentStatuses;
+    small_vector<uint32_t, 8> m_pendingPresentStatuses;
+    uint32_t                  m_nextPresentStatus = 0;
 
     uint32_t                  m_frameLatency = DefaultFrameLatency;
     uint32_t                  m_frameLatencyCap = 0;

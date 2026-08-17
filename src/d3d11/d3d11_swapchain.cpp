@@ -8,19 +8,30 @@
 
 namespace dxvk {
 
-  // Synchronous present (dxvkSetSyncPresent, @110), read LIVE per-present in PresentImage. The host
-  // (CS) keeps it ON exactly while a frame-generation present proxy is active: sync present forces the
-  // render thread to WAIT for the real vkQueuePresentKHR (matches the Streamline sample's synchronous
-  // present), so a DLSS-G/FFX present is never in flight past the D3D11 hook — the alt-tab safety
-  // property. Default DXVK present is async — the D3D11 Present hook only QUEUES the present onto the
-  // submit thread — which is both safe and FASTER when no FG proxy is present, so CS turns sync OFF
-  // with frame generation off. This global is the reliable delivery path: SetEnvironmentVariable does
-  // NOT reach DXVK's separate CRT std::getenv, so the DXVK_SYNC_PRESENT env var only works when set in
-  // the process env before launch; CS uses this export instead.
-  std::atomic<bool> g_dxvkSyncPresent = { false };
+  std::atomic<D3D11SwapChain*> g_dxvkActiveSwapchain = { nullptr };
+
+  // Live CPU-side bound for intercepted Vulkan present calls. UINT32_MAX is
+  // unrestricted, zero completes each present before returning, and positive
+  // values cap outstanding calls. CS uses zero for ownership/options
+  // transitions and FSR-G, and two for steady-state DLSS-G.
+  std::atomic<uint32_t> g_dxvkPresentQueueDepth = { UINT32_MAX };
 
   extern "C" void dxvkSetSyncPresent(uint32_t on) {
-    g_dxvkSyncPresent.store(on != 0u, std::memory_order_release);
+    g_dxvkPresentQueueDepth.store(on ? 0u : UINT32_MAX, std::memory_order_release);
+  }
+
+  extern "C" void dxvkSetPresentQueueDepth(uint32_t depth) {
+    g_dxvkPresentQueueDepth.store(depth == UINT32_MAX ? depth : std::min(depth, 7u),
+      std::memory_order_release);
+  }
+
+  extern "C" uint64_t dxvkEnqueueInteropCommandBuffer(
+          VkCommandBuffer commandBuffer,
+          VkSemaphore     signalSemaphore,
+          VkFence         fence) {
+    if (auto swapchain = g_dxvkActiveSwapchain.load(std::memory_order_acquire))
+      return swapchain->enqueueInteropCommandBuffer(commandBuffer, signalSemaphore, fence);
+    return 0;
   }
 
   static uint16_t MapGammaControlPoint(float x) {
@@ -93,10 +104,13 @@ namespace dxvk {
     CreatePresenter();
     CreateBackBuffers();
     CreateBlitter();
+    g_dxvkActiveSwapchain.store(this, std::memory_order_release);
   }
 
 
   D3D11SwapChain::~D3D11SwapChain() {
+    D3D11SwapChain* expected = this;
+    g_dxvkActiveSwapchain.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     // Avoids hanging when in this state, see comment
     // in DxvkDevice::~DxvkDevice.
     if (this_thread::isInModuleDetachment())
@@ -106,6 +120,21 @@ namespace dxvk {
     
     DestroyFrameLatencyEvent();
     DestroyLatencyTracker();
+  }
+
+  uint64_t D3D11SwapChain::enqueueInteropCommandBuffer(
+          VkCommandBuffer commandBuffer,
+          VkSemaphore     signalSemaphore,
+          VkFence         fence) {
+    if (commandBuffer == VK_NULL_HANDLE || fence == VK_NULL_HANDLE)
+      return 0;
+    const uint64_t generation = signalSemaphore != VK_NULL_HANDLE
+      ? reservePresentWaitSemaphore(signalSemaphore)
+      : 0;
+    if (signalSemaphore != VK_NULL_HANDLE && !generation)
+      return 0;
+    m_device->submitInteropCommandBuffer(commandBuffer, signalSemaphore, fence, generation);
+    return signalSemaphore != VK_NULL_HANDLE ? generation : 1;
   }
 
 
@@ -439,17 +468,30 @@ namespace dxvk {
     viewInfo.layerIndex = 0u;
     viewInfo.layerCount = 1u;
 
-    // Synchronous present: arm the status BEFORE queuing the CS chunk; the submission queue
-    // flips it (and notifies) once the real vkQueuePresentKHR executed on the submit thread.
-    // g_dxvkSyncPresent is read PER-PRESENT (not baked at swapchain creation) so the host can
-    // toggle it live with the frame-generation state: sync present exists for the FG present
-    // proxies (a DLSS-G/FFX present must never be in flight past the D3D11 hook), and paying
-    // its render-thread wait with frame generation OFF is pure overhead — stock async present
-    // is safe there. m_syncPresent (DXVK_SYNC_PRESENT env) still forces it on unconditionally.
+    // Arm status storage before queuing the CS chunk. The submission thread
+    // completes it after the intercepted vkQueuePresentKHR returns.
+    const uint32_t presentQueueDepth = m_syncPresent
+      ? 0u
+      : g_dxvkPresentQueueDepth.load(std::memory_order_acquire);
     DxvkSubmitStatus* presentStatus = nullptr;
-    if (m_syncPresent || g_dxvkSyncPresent.load(std::memory_order_acquire)) {
-      m_presentStatus.result.store(VK_NOT_READY);
-      presentStatus = &m_presentStatus;
+    if (presentQueueDepth != UINT32_MAX) {
+      // Retire the oldest call only when the configured overlap bound is full.
+      while (presentQueueDepth && m_pendingPresentStatuses.size() >= presentQueueDepth) {
+        const uint32_t statusIndex = m_pendingPresentStatuses.front();
+        const auto waitStart = std::chrono::steady_clock::now();
+        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
+        const auto waitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - waitStart).count();
+        if (waitUs >= 500)
+          Logger::info(str::format("D3D11SwapChain: bounded present gate waited ", waitUs, " us"));
+        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
+        if (presentResult < 0)
+          return E_FAIL;
+      }
+      const uint32_t statusIndex = m_nextPresentStatus++ % m_presentStatuses.size();
+      presentStatus = &m_presentStatuses[statusIndex];
+      presentStatus->result.store(VK_NOT_READY);
+      m_pendingPresentStatuses.push_back(statusIndex);
     }
 
     immediateContext->EmitCs([
@@ -492,14 +534,26 @@ namespace dxvk {
 
     immediateContext->FlushCsChunk();
 
-    // Synchronous present: block this (the app's render) thread until the submit thread executed
-    // the real vkQueuePresentKHR. CPU-side drain only — no GPU fence is waited. This pins every
-    // SL-interposer present callback to a moment where the app is quiescent at the presented
-    // frame, the reference Streamline sample's implicit property.
-    if (presentStatus) {
-      VkResult presentResult = m_device->waitForSubmission(presentStatus);
-      if (presentResult < 0)
-        return E_FAIL;
+    // Depth zero is a CPU-side transition barrier only; it does not wait for a
+    // GPU fence. Returning to unrestricted mode also retires bounded statuses.
+    if (presentQueueDepth == 0u) {
+      while (!m_pendingPresentStatuses.empty()) {
+        const uint32_t statusIndex = m_pendingPresentStatuses.front();
+        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
+        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
+        if (presentResult < 0)
+          return E_FAIL;
+      }
+    } else if (presentQueueDepth == UINT32_MAX) {
+      // A transition back to unrestricted async mode must still retire status
+      // objects armed by the preceding bounded mode before they can be reused.
+      while (!m_pendingPresentStatuses.empty()) {
+        const uint32_t statusIndex = m_pendingPresentStatuses.front();
+        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
+        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
+        if (presentResult < 0)
+          return E_FAIL;
+      }
     }
 
     if (m_latency) {

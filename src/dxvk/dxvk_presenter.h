@@ -22,6 +22,10 @@
 
 namespace dxvk {
 
+  uint64_t reservePresentWaitSemaphore(VkSemaphore semaphore);
+  void activatePresentWaitSemaphore(uint64_t generation);
+  void failPresentWaitSemaphore(uint64_t generation);
+
   using PresenterSurfaceProc = std::function<VkResult (VkSurfaceKHR*)>;
 
   class DxvkDevice;

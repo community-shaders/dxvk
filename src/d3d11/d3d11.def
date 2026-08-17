@@ -9,7 +9,6 @@ EXPORTS
     dxvkSetSwapchainTornDownCallback @102
     dxvkSetTargetFrameRate @103
     dxvkSetFsePNextChain @107
-    dxvkPushPresentWaitSemaphore @108
     dxvkGetPresenterSurfaceState @109
     dxvkSetSyncPresent @110
     dxvkGetPresentWaitSemaphoreState @111
@@ -18,3 +17,6 @@ EXPORTS
     dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle @114
     dxvkSetPresentCompletedCallback @116
     dxvkSetPresentBeginCallback @117
+    dxvkSetPresentQueueDepth @118
+    dxvkEnqueueInteropCommandBuffer @120
+    dxvkSetTearingPreference @121

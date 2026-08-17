@@ -61,6 +61,18 @@ namespace dxvk {
     m_appendCond.notify_all();
   }
 
+  void DxvkSubmissionQueue::submitInterop(
+          DxvkInteropSubmitInfo submitInfo,
+          DxvkSubmitStatus*     status) {
+    std::unique_lock<dxvk::mutex> lock(m_mutex);
+
+    DxvkSubmitEntry entry = { };
+    entry.status = status;
+    entry.interop = submitInfo;
+    m_submitQueue.push(std::move(entry));
+    m_appendCond.notify_all();
+  }
+
 
   void DxvkSubmissionQueue::present(
           DxvkPresentInfo           presentInfo,
@@ -154,7 +166,21 @@ namespace dxvk {
         if (m_callback)
           m_callback(true);
 
-        if (entry.submit.cmdList != nullptr) {
+        if (entry.interop.commandBuffer != VK_NULL_HANDLE) {
+          VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+          submitInfo.commandBufferCount = 1;
+          submitInfo.pCommandBuffers = &entry.interop.commandBuffer;
+          if (entry.interop.signalSemaphore != VK_NULL_HANDLE) {
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &entry.interop.signalSemaphore;
+          }
+          entry.result = m_device->vkd()->vkQueueSubmit(
+            m_device->queues().graphics.queueHandle, 1, &submitInfo, entry.interop.fence);
+          if (entry.result == VK_SUCCESS && entry.interop.presentWaitGeneration)
+            activatePresentWaitSemaphore(entry.interop.presentWaitGeneration);
+          else if (entry.result != VK_SUCCESS && entry.interop.presentWaitGeneration)
+            failPresentWaitSemaphore(entry.interop.presentWaitGeneration);
+        } else if (entry.submit.cmdList != nullptr) {
           if (entry.latency.tracker) {
             entry.latency.tracker->notifyQueueSubmit(entry.latency.frameId);
 
@@ -244,7 +270,10 @@ namespace dxvk {
       DxvkSubmitEntry entry = std::move(m_finishQueue.front());
       lock.unlock();
       
-      if (entry.submit.cmdList != nullptr) {
+      if (entry.interop.commandBuffer != VK_NULL_HANDLE) {
+        // The application-owned fence governs command-buffer and resource
+        // lifetime. Submission FIFO ordering is complete at this point.
+      } else if (entry.submit.cmdList != nullptr) {
         VkResult status = m_lastError.load();
 
         if (status != VK_ERROR_DEVICE_LOST) {

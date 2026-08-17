@@ -12,6 +12,14 @@
 
 namespace dxvk {
 
+  static std::atomic<int32_t> g_dxvkTearingPreference = { -1 };
+
+  // 0 = force tear-free, 1 = allow tearing, 2 = use DXVK configuration.
+  extern "C" void dxvkSetTearingPreference(uint32_t preference) {
+    g_dxvkTearingPreference.store(preference <= 1u ? int32_t(preference) : -1,
+      std::memory_order_release);
+  }
+
   struct PresenterSurfaceStateSnapshot {
     uint64_t serial = 0;
     uint32_t format = VK_FORMAT_UNDEFINED;
@@ -156,6 +164,7 @@ namespace dxvk {
     uint32_t imageIndex = 0;
     PresentWaitState state = PresentWaitState::None;
     bool attached = false;
+    bool eligible = false;
   };
 
   static constexpr uint32_t MaxPresentWaitSnapshots = 64;
@@ -167,7 +176,7 @@ namespace dxvk {
   // Pending records form a generation-ordered FIFO. DXVK's D3D11 present path
   // is asynchronous, so the app may register several frames before the Vulkan
   // presenter consumes them. Queued records remain keyed until reacquire proof.
-  extern "C" uint64_t dxvkPushPresentWaitSemaphore(VkSemaphore sem) {
+  static uint64_t createPresentWaitSemaphore(VkSemaphore sem) {
     if (sem == VK_NULL_HANDLE)
       return 0;
 
@@ -183,8 +192,32 @@ namespace dxvk {
     uint64_t generation = ++g_dxvkNextPresentWaitGeneration;
     if (!generation)
       generation = ++g_dxvkNextPresentWaitGeneration;
-    *freeSnapshot = { sem, VK_NULL_HANDLE, 0, generation, 0, PresentWaitState::Pending, false };
+    *freeSnapshot = { sem, VK_NULL_HANDLE, 0, generation, 0, PresentWaitState::Pending, false, false };
     return generation;
+  }
+
+  uint64_t reservePresentWaitSemaphore(VkSemaphore sem) {
+    return createPresentWaitSemaphore(sem);
+  }
+
+  void activatePresentWaitSemaphore(uint64_t generation) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.generation == generation && snapshot.state == PresentWaitState::Pending) {
+        snapshot.eligible = true;
+        return;
+      }
+    }
+  }
+
+  void failPresentWaitSemaphore(uint64_t generation) {
+    std::lock_guard lock(g_dxvkPresentWaitMutex);
+    for (auto& snapshot : g_dxvkPresentWaits) {
+      if (snapshot.generation == generation && snapshot.state == PresentWaitState::Pending) {
+        snapshot.state = PresentWaitState::Uncertain;
+        return;
+      }
+    }
   }
 
   // Cancellation is valid only while the exact registered handle is still pending.
@@ -482,7 +515,7 @@ namespace dxvk {
     modeInfo.swapchainCount = 1;
     modeInfo.pPresentModes  = &m_presentMode;
 
-    // App-provided extra present-wait semaphore (dxvkPushPresentWaitSemaphore): queue-orders
+    // App-provided extra present-wait semaphore: queue-orders
     // the present after external work the app submitted outside DXVK's own timeline — used by
     // Streamline DLSS-G so its evaluate/tag submissions are GPU-ordered ahead of the present
     // that reads them (pure queue sync, no CPU stall; the generated frames flash without it).
@@ -498,7 +531,7 @@ namespace dxvk {
       std::lock_guard lock(g_dxvkPresentWaitMutex);
       PresentWaitSnapshot* oldestPending = nullptr;
       for (auto& snapshot : g_dxvkPresentWaits) {
-        if (snapshot.state == PresentWaitState::Pending && !snapshot.attached &&
+        if (snapshot.state == PresentWaitState::Pending && snapshot.eligible && !snapshot.attached &&
             snapshot.semaphore != VK_NULL_HANDLE) {
           pendingPresentWaitCount += 1;
           if (!oldestPending || snapshot.generation < oldestPending->generation)
@@ -542,9 +575,12 @@ namespace dxvk {
       fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
     }
 
-    // Present on the dedicated present queue (second graphics-family queue when the hardware
-    // exposes one; aliases graphics otherwise). Only this call touches that queue.
-    VkQueue presentQueue = m_device->queues().present.queueHandle;
+    // DLSS-G's input tags and intercepted present must share one queue order.
+    // DXVK's submission thread externally synchronizes this call with graphics
+    // submissions. Other presenters retain the dedicated present queue.
+    VkQueue presentQueue = dlssgOwned
+      ? m_device->queues().graphics.queueHandle
+      : m_device->queues().present.queueHandle;
     DxvkPresentCallbackInfo callbackInfo = {
       sizeof(DxvkPresentCallbackInfo), 1u, dlssgOwned ? 2u : (fgOwned ? 1u : 0u), m_imageIndex,
       frameId, uint64_t(reinterpret_cast<uintptr_t>(m_swapchain)), m_presentWaitSwapchainSerial,
@@ -1630,6 +1666,9 @@ namespace dxvk {
     uint32_t numDesired = 0;
 
     Tristate tearFree = m_device->config().tearFree;
+    const int32_t tearingPreference = g_dxvkTearingPreference.load(std::memory_order_acquire);
+    if (tearingPreference >= 0)
+      tearFree = tearingPreference ? Tristate::False : Tristate::True;
 
     if (!syncInterval) {
       if (tearFree != Tristate::True)
