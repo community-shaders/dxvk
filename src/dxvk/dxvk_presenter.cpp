@@ -17,10 +17,7 @@ namespace dxvk {
     uint32_t format = VK_FORMAT_UNDEFINED;
     uint32_t requestedColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     uint32_t effectiveColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    uint32_t flags = 0;
   };
-
-  constexpr uint32_t PresenterSurfaceFlagGammaEncodeHdr10ToScRgb = 1u << 0;
 
   static std::mutex g_dxvkPresenterSurfaceStateMutex;
   static PresenterSurfaceStateSnapshot g_dxvkPresenterSurfaceState;
@@ -28,8 +25,7 @@ namespace dxvk {
   static uint64_t getPresenterSurfaceState(
           uint32_t* format,
           uint32_t* requestedColorSpace,
-          uint32_t* effectiveColorSpace,
-          uint32_t* flags) {
+          uint32_t* effectiveColorSpace) {
     std::lock_guard lock(g_dxvkPresenterSurfaceStateMutex);
 
     if (!g_dxvkPresenterSurfaceState.serial)
@@ -41,8 +37,6 @@ namespace dxvk {
       *requestedColorSpace = g_dxvkPresenterSurfaceState.requestedColorSpace;
     if (effectiveColorSpace)
       *effectiveColorSpace = g_dxvkPresenterSurfaceState.effectiveColorSpace;
-    if (flags)
-      *flags = g_dxvkPresenterSurfaceState.flags;
 
     return g_dxvkPresenterSurfaceState.serial;
   }
@@ -51,29 +45,19 @@ namespace dxvk {
           uint32_t* format,
           uint32_t* requestedColorSpace,
           uint32_t* effectiveColorSpace) {
-    return getPresenterSurfaceState(format, requestedColorSpace, effectiveColorSpace, nullptr);
-  }
-
-  extern "C" uint64_t dxvkGetPresenterSurfaceState2(
-          uint32_t* format,
-          uint32_t* requestedColorSpace,
-          uint32_t* effectiveColorSpace,
-          uint32_t* flags) {
-    return getPresenterSurfaceState(format, requestedColorSpace, effectiveColorSpace, flags);
+    return getPresenterSurfaceState(format, requestedColorSpace, effectiveColorSpace);
   }
 
   static void publishPresenterSurfaceState(
           VkFormat format,
           VkColorSpaceKHR requestedColorSpace,
-          VkColorSpaceKHR effectiveColorSpace,
-          uint32_t flags) {
+          VkColorSpaceKHR effectiveColorSpace) {
     std::lock_guard lock(g_dxvkPresenterSurfaceStateMutex);
 
     g_dxvkPresenterSurfaceState.serial += 1;
     g_dxvkPresenterSurfaceState.format = uint32_t(format);
     g_dxvkPresenterSurfaceState.requestedColorSpace = uint32_t(requestedColorSpace);
     g_dxvkPresenterSurfaceState.effectiveColorSpace = uint32_t(effectiveColorSpace);
-    g_dxvkPresenterSurfaceState.flags = flags;
   }
 
   // External FFX frame-generation ownership predicate, set by the CS WSI hook. Returns true for the
@@ -1361,15 +1345,10 @@ namespace dxvk {
         m_presentWaitSwapchainSerial = ++g_dxvkNextPresentWaitSwapchainSerial;
     }
 
-    const bool gammaEncodeHdr10ToScRgb =
-      m_preferredFormat.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
-      surfaceFormat.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT &&
-      m_device->properties().core.properties.vendorID == uint16_t(DxvkGpuVendor::Nvidia);
     publishPresenterSurfaceState(
       surfaceFormat.format,
       m_preferredFormat.colorSpace,
-      surfaceFormat.colorSpace,
-      gammaEncodeHdr10ToScRgb ? PresenterSurfaceFlagGammaEncodeHdr10ToScRgb : 0u);
+      surfaceFormat.colorSpace);
 
     return VK_SUCCESS;
   }
