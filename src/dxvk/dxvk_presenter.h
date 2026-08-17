@@ -155,7 +155,10 @@ namespace dxvk {
      * frame-interpolation-swapchain model and avoiding a stacked-present-loop deadlock. Set
      * automatically at swapchain creation via the dxvkSetFrameGenOwnershipQuery predicate.
      */
-    void setFrameGenOwned(bool owned) { m_frameGenOwned.store(owned, std::memory_order_release); }
+    void setFrameGenOwner(uint32_t owner) {
+      m_frameGenOwned.store(owner != 0u, std::memory_order_release);
+      m_dlssgOwned.store(owner == 2u, std::memory_order_release);
+    }
     bool isFrameGenOwned() const { return m_frameGenOwned.load(std::memory_order_acquire); }
 
     /**
@@ -349,8 +352,9 @@ namespace dxvk {
     std::queue<PresenterFrame>  m_frameQueue;
 
     // True when an external FFX frame-generation swapchain owns the real present/acquire/pacing for
-    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwned.
+    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwner.
     std::atomic<bool>           m_frameGenOwned = { false };
+    std::atomic<bool>           m_dlssgOwned = { false };
 
     uint64_t                    m_lastSignaled = 0u;
     uint64_t                    m_lastCompleted = 0u;

@@ -79,10 +79,45 @@ namespace dxvk {
   // External FFX frame-generation ownership predicate, set by the CS WSI hook. Returns true for the
   // external FFX frame-interpolation swapchain; when owned, the Presenter becomes a thin submit +
   // hand-off and lets FFX own the present loop. Null => never owned.
-  std::atomic<bool (*)(VkSwapchainKHR)> g_dxvkFrameGenOwnsSwapchain = { nullptr };
+  // 0 = normal swapchain, 1 = FSR replacement swapchain, 2 = DLSS-G proxy.
+  std::atomic<uint32_t (*)(VkSwapchainKHR)> g_dxvkFrameGenOwnsSwapchain = { nullptr };
 
-  extern "C" void dxvkSetFrameGenOwnershipQuery(bool (*query)(VkSwapchainKHR)) {
+  extern "C" void dxvkSetFrameGenOwnershipQuery(uint32_t (*query)(VkSwapchainKHR)) {
     g_dxvkFrameGenOwnsSwapchain.store(query, std::memory_order_release);
+  }
+
+  struct DxvkPresentCallbackInfo {
+    uint32_t size;
+    uint32_t version;
+    uint32_t frameGenOwner;
+    uint32_t imageIndex;
+    uint64_t frameId;
+    uint64_t swapchain;
+    uint64_t swapchainSerial;
+    uint64_t presenter;
+    uint64_t queue;
+    uint64_t presentWaitGeneration;
+    uint32_t pendingPresentWaitCount;
+    int32_t  presentResult;
+  };
+
+  // Presenter-scoped callbacks. The payload prevents global Streamline state
+  // from consuming options, markers, or semaphore generations for an unrelated
+  // swapchain when more than one DXVK presenter exists.
+  std::atomic<void (*)(const DxvkPresentCallbackInfo*)> g_dxvkPresentCompletedCallback = { nullptr };
+
+  extern "C" void dxvkSetPresentCompletedCallback(void (*callback)(const DxvkPresentCallbackInfo*)) {
+    g_dxvkPresentCompletedCallback.store(callback, std::memory_order_release);
+  }
+
+  // Runs immediately before vkQueuePresentKHR on the same thread. Streamline
+  // requires DLSS-G option changes to be ordered with the Present that consumes
+  // them; issuing SetOptions from the D3D render thread races DXVK's async
+  // presenter and can wedge the plugin pacer during a mode transition.
+  std::atomic<void (*)(const DxvkPresentCallbackInfo*)> g_dxvkPresentBeginCallback = { nullptr };
+
+  extern "C" void dxvkSetPresentBeginCallback(void (*callback)(const DxvkPresentCallbackInfo*)) {
+    g_dxvkPresentBeginCallback.store(callback, std::memory_order_release);
   }
 
   // One-shot request to recreate the Vulkan swapchain on the next acquire. CS uses this on a DLSS-G ->
@@ -121,18 +156,6 @@ namespace dxvk {
     g_dxvkExternalFrameRate.store(fps < 0.0 ? 0.0 : fps, std::memory_order_release);
   }
 
-  // Skip the D3D11 swapchain's frame-latency throttle (SyncFrameLatency). Set by the app while
-  // Streamline DLSS-G runs in eBlockPresentingClientQueue: SL paces the app by blocking inside
-  // the present itself, and DXVK's own latency wait then deadlocks the pipeline — its signal
-  // fires on the submit thread, which is parked inside SL's blocking present; the render thread
-  // starves waiting for it and can never deliver the next frame SL's block needs to release.
-  // With the throttle skipped, SL's block is the sole (and intended) pacing.
-  std::atomic<bool> g_dxvkSkipFrameLatencySync = { false };
-
-  extern "C" void dxvkSetSkipFrameLatencySync(uint32_t skip) {
-    g_dxvkSkipFrameLatencySync.store(skip != 0u, std::memory_order_release);
-  }
-
   enum class PresentWaitState : uint32_t {
     None = 0,
     Pending = 1,
@@ -157,7 +180,9 @@ namespace dxvk {
   static uint64_t g_dxvkNextPresentWaitGeneration = 0;
   static uint64_t g_dxvkNextPresentWaitSwapchainSerial = 0;
 
-  // At most one record is pending attachment; queued records remain keyed until reacquire proof.
+  // Pending records form a generation-ordered FIFO. DXVK's D3D11 present path
+  // is asynchronous, so the app may register several frames before the Vulkan
+  // presenter consumes them. Queued records remain keyed until reacquire proof.
   extern "C" uint64_t dxvkPushPresentWaitSemaphore(VkSemaphore sem) {
     if (sem == VK_NULL_HANDLE)
       return 0;
@@ -165,8 +190,6 @@ namespace dxvk {
     std::lock_guard lock(g_dxvkPresentWaitMutex);
     PresentWaitSnapshot* freeSnapshot = nullptr;
     for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Pending)
-        return 0;
       if (!freeSnapshot && snapshot.state == PresentWaitState::None)
         freeSnapshot = &snapshot;
     }
@@ -221,12 +244,15 @@ namespace dxvk {
     return 0;
   }
 
-  // The caller must prove the Vulkan device idle before releasing queued waits.
+  // The caller must prove the Vulkan device idle before releasing registered
+  // waits. Pending entries were never attached to a present; queued entries may
+  // have been consumed. Device idle makes both safe to retire.
   extern "C" uint32_t dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle() {
     std::lock_guard lock(g_dxvkPresentWaitMutex);
     uint32_t released = 0;
     for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Queued) {
+      if (snapshot.state == PresentWaitState::Pending ||
+          snapshot.state == PresentWaitState::Queued) {
         snapshot.state = PresentWaitState::Released;
         released += 1;
       }
@@ -305,16 +331,6 @@ namespace dxvk {
     // KHR and EXT variants of this extension are completely identical
     m_hasSwapchainMaintenance1 = m_device->features().khrSwapchainMaintenance1.swapchainMaintenance1
                               || m_device->features().extSwapchainMaintenance1.swapchainMaintenance1;
-
-    // TEST round 16 (DXVK_NO_SWAPCHAIN_MAINT=1): create plain swapchains like the Streamline
-    // sample. The sl.dlss_g pacer's flip metering never reaches its 'good' FC feedback state
-    // against DXVK's maintenance1 swapchains (present-modes pNext / dynamic mode switching),
-    // and the eBlockPresentingClientQueue present then wedges waiting the pacer flush. The
-    // sample's plain swapchain achieves 'good' in ~300ms and interpolation doubles.
-    if (const char* v = std::getenv("DXVK_NO_SWAPCHAIN_MAINT"); v && v[0] == '1') {
-      m_hasSwapchainMaintenance1 = false;
-      Logger::info("Presenter: swapchain_maintenance1 disabled (DXVK_NO_SWAPCHAIN_MAINT=1)");
-    }
 
     // Gamescope WSI is currently broken and doesn't properly signal
     // the present fence if presentation is queued but fails.
@@ -490,19 +506,28 @@ namespace dxvk {
     uint32_t waitSemaphoreCount = 1;
 
     uint64_t extraWaitGeneration = 0;
-    {
+    uint32_t pendingPresentWaitCount = 0;
+    // Present-tag waits belong exclusively to the DLSS-G proxy swapchain.
+    // Never let an auxiliary presenter consume the process-global FIFO.
+    bool dlssgOwned = m_dlssgOwned.load(std::memory_order_acquire);
+    if (dlssgOwned) {
       std::lock_guard lock(g_dxvkPresentWaitMutex);
+      PresentWaitSnapshot* oldestPending = nullptr;
       for (auto& snapshot : g_dxvkPresentWaits) {
         if (snapshot.state == PresentWaitState::Pending && !snapshot.attached &&
             snapshot.semaphore != VK_NULL_HANDLE) {
-          waitSemaphores[waitSemaphoreCount++] = snapshot.semaphore;
-          extraWaitGeneration = snapshot.generation;
-          snapshot.swapchain = m_swapchain;
-          snapshot.swapchainSerial = m_presentWaitSwapchainSerial;
-          snapshot.imageIndex = m_imageIndex;
-          snapshot.attached = true;
-          break;
+          pendingPresentWaitCount += 1;
+          if (!oldestPending || snapshot.generation < oldestPending->generation)
+            oldestPending = &snapshot;
         }
+      }
+      if (oldestPending) {
+        waitSemaphores[waitSemaphoreCount++] = oldestPending->semaphore;
+        extraWaitGeneration = oldestPending->generation;
+        oldestPending->swapchain = m_swapchain;
+        oldestPending->swapchainSerial = m_presentWaitSwapchainSerial;
+        oldestPending->imageIndex = m_imageIndex;
+        oldestPending->attached = true;
       }
     }
 
@@ -519,16 +544,9 @@ namespace dxvk {
     // waitForSwapchainFence blocks on the unsignaled fence. Pass a clean VkPresentInfoKHR.
     bool fgOwned = m_frameGenOwned.load();
 
-    // VkPresentIdKHR: attached for normal presents, stripped for FFX-wrapped ones (FFX's
-    // replacement vkQueuePresentKHR chokes on the pNext structs). EXCEPTION: while Streamline
-    // DLSS-G runs in eBlockPresentingClientQueue (signalled via dxvkSetSkipFrameLatencySync),
-    // the present ID must be attached even though the swapchain is FG-owned — sl.dlss_g's frame
-    // pacer times the real-frame release off present-completion tracking, and without the ID its
-    // flush times out every frame ("Worker thread 'nv.sl.dlss_g.thread.pacer' timed out") and
-    // the blocking present wedges the pipeline.
-    bool dlssgBlocking = g_dxvkSkipFrameLatencySync.load(std::memory_order_acquire);
-
-    if ((!fgOwned || dlssgBlocking) && frameId && m_hasPresentId) {
+    // FSR's replacement swapchain rejects these pNext structures, but DLSS-G's
+    // pacer requires the present ID for real-frame completion tracking.
+    if ((!fgOwned || dlssgOwned) && frameId && m_hasPresentId) {
       if (m_device->features().khrPresentId2.presentId2)
         presentId2.pNext = const_cast<void*>(std::exchange(info.pNext, &presentId2));
       else
@@ -540,12 +558,32 @@ namespace dxvk {
       fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
     }
 
-    // Present on the DEDICATED present queue (second graphics-family queue when the hardware
-    // exposes one; aliases graphics otherwise). Only this call ever touches that queue, so it
-    // needs no lock — and Streamline DLSS-G's blocking present (eBlockPresentingClientQueue)
-    // then parks a driver queue-domain that submissions never share.
-    VkResult status = m_vkd->vkQueuePresentKHR(
-      m_device->queues().present.queueHandle, &info);
+    // Present on the dedicated present queue (second graphics-family queue when the hardware
+    // exposes one; aliases graphics otherwise). Only this call touches that queue.
+    VkQueue presentQueue = m_device->queues().present.queueHandle;
+    DxvkPresentCallbackInfo callbackInfo = {
+      sizeof(DxvkPresentCallbackInfo), 1u, dlssgOwned ? 2u : (fgOwned ? 1u : 0u), m_imageIndex,
+      frameId, uint64_t(reinterpret_cast<uintptr_t>(m_swapchain)), m_presentWaitSwapchainSerial,
+      uint64_t(reinterpret_cast<uintptr_t>(this)),
+      uint64_t(reinterpret_cast<uintptr_t>(presentQueue)), extraWaitGeneration,
+      pendingPresentWaitCount, int32_t(VK_NOT_READY)
+    };
+    if (dlssgOwned) {
+      if (auto callback = g_dxvkPresentBeginCallback.load(std::memory_order_acquire))
+        callback(&callbackInfo);
+    }
+
+    VkResult status = m_vkd->vkQueuePresentKHR(presentQueue, &info);
+
+    // Keep option delivery, markers, and state queries on the real present thread.
+    // Community Shaders associates the returned input-completion timeline with
+    // the corresponding resource slot and polls it before reuse. No GPU queue
+    // wait is injected here, avoiding a wait-before-signal cycle.
+    if (dlssgOwned) {
+      callbackInfo.presentResult = int32_t(status);
+      if (auto callback = g_dxvkPresentCompletedCallback.load(std::memory_order_acquire))
+        callback(&callbackInfo);
+    }
 
     if (extraWaitGeneration) {
       PresentWaitState waitState = PresentWaitState::Uncertain;
@@ -1183,16 +1221,7 @@ namespace dxvk {
     swapInfo.presentMode            = m_presentMode;
     swapInfo.clipped                = VK_TRUE;
 
-    // TEST round 17 (DXVK_NO_MUTABLE_SWAPCHAIN=1): plain-format swapchain like the Streamline
-    // sample. Mutable-format swapchain images can lose direct-flip eligibility, and sl.dlss_g's
-    // pacer wedges submitting its hardware present (NtDxgkSubmitPresentToHwQueue) — the pacer
-    // needs flippable images.
-    static const bool noMutable = [] {
-      const char* v = std::getenv("DXVK_NO_MUTABLE_SWAPCHAIN");
-      return v && v[0] == '1';
-    }();
-
-    if (!noMutable && m_device->features().khrSwapchainMutableFormat && formatList.viewFormatCount) {
+    if (m_device->features().khrSwapchainMutableFormat && formatList.viewFormatCount) {
       swapInfo.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
       formatList.pNext = std::exchange(swapInfo.pNext, &formatList);
     }
@@ -1230,7 +1259,7 @@ namespace dxvk {
     // thin submit + hand-off (no second present loop) — query the registered predicate now.
     {
       auto query = g_dxvkFrameGenOwnsSwapchain.load(std::memory_order_acquire);
-      setFrameGenOwned(query && m_swapchain && query(m_swapchain));
+      setFrameGenOwner(query && m_swapchain ? query(m_swapchain) : 0u);
     }
 
     // Import actual swap chain images
@@ -1623,17 +1652,8 @@ namespace dxvk {
 
     Tristate tearFree = m_device->config().tearFree;
 
-    // TEST (SL blocking mode): prefer MAILBOX over IMMEDIATE while DLSS-G's
-    // eBlockPresentingClientQueue runs (signalled via dxvkSetSkipFrameLatencySync). The DLSS-G
-    // pacer wedges in NtDxgkSubmitPresentToHwQueue under IMMEDIATE (hardware present queue never
-    // retires deterministically); MAILBOX retires flips on vblank without SL seeing vsync-on.
-    const bool dlssgBlocking = g_dxvkSkipFrameLatencySync.load(std::memory_order_acquire);
-
     if (!syncInterval) {
-      // MAILBOX is forced (IMMEDIATE skipped) while SL's DLSS-G blocking mode is flagged — note
-      // the flag only affects swapchains created after it flips; tested and INSUFFICIENT for the
-      // pacer wedge anyway (NtDxgkSubmitPresentToHwQueue stall is present-mode-independent).
-      if (!dlssgBlocking && tearFree != Tristate::True)
+      if (tearFree != Tristate::True)
         desired[numDesired++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
       desired[numDesired++] = VK_PRESENT_MODE_MAILBOX_KHR;
     } else {

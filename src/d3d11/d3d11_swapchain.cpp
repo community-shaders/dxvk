@@ -8,9 +8,6 @@
 
 namespace dxvk {
 
-  // Defined in dxvk_presenter.cpp (dxvkSetSkipFrameLatencySync export).
-  extern std::atomic<bool> g_dxvkSkipFrameLatencySync;
-
   // Synchronous present (dxvkSetSyncPresent, @110), read LIVE per-present in PresentImage. The host
   // (CS) keeps it ON exactly while a frame-generation present proxy is active: sync present forces the
   // render thread to WAIT for the real vkQueuePresentKHR (matches the Streamline sample's synchronous
@@ -677,12 +674,6 @@ namespace dxvk {
 
 
   void D3D11SwapChain::SyncFrameLatency() {
-    // App-requested skip (dxvkSetSkipFrameLatencySync): under Streamline DLSS-G's
-    // eBlockPresentingClientQueue the blocking present itself paces the app, and this wait
-    // deadlocks the pipeline (its signal fires on the submit thread, which SL's block parks).
-    if (g_dxvkSkipFrameLatencySync.load(std::memory_order_acquire))
-      return;
-
     // Wait for the sync event so that we respect the maximum frame latency
     m_frameLatencySignal->wait(m_frameId - GetActualFrameLatency());
 
