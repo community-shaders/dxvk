@@ -8,9 +8,15 @@
 #include "dxvk_device.h"
 #include "dxvk_presenter.h"
 
+#include "../../include/cs_dxvk_api.h"
+
 #include "../wsi/wsi_window.h"
 
 namespace dxvk {
+
+  extern "C" uint32_t dxvkGetCsApiVersion() {
+    return CS_DXVK_API_VERSION;
+  }
 
   static std::atomic<int32_t> g_dxvkTearingPreference = { -1 };
 
@@ -78,20 +84,7 @@ namespace dxvk {
     g_dxvkFrameGenOwnsSwapchain.store(query, std::memory_order_release);
   }
 
-  struct DxvkPresentCallbackInfo {
-    uint32_t size;
-    uint32_t version;
-    uint32_t frameGenOwner;
-    uint32_t imageIndex;
-    uint64_t frameId;
-    uint64_t swapchain;
-    uint64_t swapchainSerial;
-    uint64_t presenter;
-    uint64_t queue;
-    uint64_t presentWaitGeneration;
-    uint32_t pendingPresentWaitCount;
-    int32_t  presentResult;
-  };
+  using DxvkPresentCallbackInfo = CsDxvkPresentCallbackInfo;
 
   // Presenter-scoped callbacks. The payload prevents global Streamline state
   // from consuming options, markers, or semaphore generations for an unrelated

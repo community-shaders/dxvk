@@ -20,3 +20,4 @@ EXPORTS
     dxvkSetPresentQueueDepth @118
     dxvkEnqueueInteropCommandBuffer @120
     dxvkSetTearingPreference @121
+    dxvkGetCsApiVersion @122
