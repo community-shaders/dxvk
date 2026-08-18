@@ -5,7 +5,14 @@
 namespace dxvk::wsi {
 
   std::vector<const char *> Win32WsiDriver::getInstanceExtensions() {
-    return { VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
+    // Non-sRGB surface formats (HDR10 and scRGB) are only returned by
+    // vkGetPhysicalDeviceSurfaceFormatsKHR when this instance extension is
+    // enabled. Without it, dxgi.enableHDR merely exposes the DXGI option while
+    // SetColorSpace1 still fails because the Vulkan presenter sees sRGB only.
+    return {
+      VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+      VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME,
+    };
   }
 
   static bool createWin32WsiDriver(WsiDriver **driver) {

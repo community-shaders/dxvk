@@ -213,9 +213,8 @@ namespace dxvk {
     DxvkDeviceQueueIndex transfer;
     DxvkDeviceQueueIndex sparse;
     // Dedicated presentation queue: same family as graphics, second queue index when the family
-    // exposes one (aliases graphics otherwise). Splits the driver's per-queue lock / hardware
-    // present-queue domain between presents and submissions — targeted at Streamline DLSS-G's
-    // eBlockPresentingClientQueue, whose pacer wedges against client presents on a shared queue.
+    // exposes one (aliases graphics otherwise). This separates presentation from graphics
+    // submissions and matches the queue topology used by the frame-generation integration.
     DxvkDeviceQueueIndex present;
   };
 

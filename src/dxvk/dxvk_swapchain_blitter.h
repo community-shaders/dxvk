@@ -49,6 +49,8 @@ namespace dxvk {
     VkBool32 compositeHud = VK_FALSE;
     /// Bit indicating whether the software cursor needs to be composited
     VkBool32 compositeCursor = VK_FALSE;
+    /// Gamma compensation for Nvidia's Windows HDR10-to-scRGB fallback
+    VkBool32 gammaEncodeHdr10ToScRgb = VK_FALSE;
 
     size_t hash() const {
       DxvkHashState hash;
@@ -61,6 +63,7 @@ namespace dxvk {
       hash.add(uint32_t(needsGamma));
       hash.add(uint32_t(compositeHud));
       hash.add(uint32_t(compositeCursor));
+      hash.add(uint32_t(gammaEncodeHdr10ToScRgb));
       return hash;
     }
 
@@ -73,7 +76,8 @@ namespace dxvk {
           && needsBlit == other.needsBlit
           && needsGamma == other.needsGamma
           && compositeHud == other.compositeHud
-          && compositeCursor == other.compositeCursor;
+          && compositeCursor == other.compositeCursor
+          && gammaEncodeHdr10ToScRgb == other.gammaEncodeHdr10ToScRgb;
     }
   };
 
@@ -185,6 +189,7 @@ namespace dxvk {
       VkBool32 dstIsSrgb;
       VkBool32 compositeHud;
       VkBool32 compositeCursor;
+      VkBool32 gammaEncodeHdr10ToScRgb;
     };
 
     struct PushConstants {

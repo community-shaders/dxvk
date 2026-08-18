@@ -298,6 +298,11 @@ namespace dxvk {
     key.needsBlit = dstRect.extent != srcRect.extent;
     key.compositeHud = composite && m_hudSrv;
     key.compositeCursor = composite && m_cursorView;
+#if defined(DXVK_WSI_WIN32)
+    key.gammaEncodeHdr10ToScRgb = srcColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT
+      && dstColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT
+      && m_device->properties().core.properties.vendorID == uint16_t(DxvkGpuVendor::Nvidia);
+#endif
 
     VkPipeline pipeline = getBlitPipeline(key);
 
@@ -715,7 +720,7 @@ namespace dxvk {
     const DxvkSwapchainPipelineKey&   key) {
     auto vk = m_device->vkd();
 
-    static const std::array<VkSpecializationMapEntry, 8> specMap = {{
+    static const std::array<VkSpecializationMapEntry, 9> specMap = {{
       { 0, offsetof(SpecConstants, sampleCount),    sizeof(VkSampleCountFlagBits) },
       { 1, offsetof(SpecConstants, gammaBound),     sizeof(VkBool32) },
       { 2, offsetof(SpecConstants, srcSpace),       sizeof(VkColorSpaceKHR) },
@@ -724,6 +729,7 @@ namespace dxvk {
       { 5, offsetof(SpecConstants, dstIsSrgb),      sizeof(VkBool32) },
       { 6, offsetof(SpecConstants, compositeHud),   sizeof(VkBool32) },
       { 7, offsetof(SpecConstants, compositeCursor),sizeof(VkBool32) },
+      { 8, offsetof(SpecConstants, gammaEncodeHdr10ToScRgb), sizeof(VkBool32) },
     }};
 
     SpecConstants specConstants = { };
@@ -735,6 +741,7 @@ namespace dxvk {
     specConstants.dstIsSrgb = lookupFormatInfo(key.dstFormat)->flags.test(DxvkFormatFlag::ColorSpaceSrgb);
     specConstants.compositeCursor = key.compositeCursor;
     specConstants.compositeHud = key.compositeHud;
+    specConstants.gammaEncodeHdr10ToScRgb = key.gammaEncodeHdr10ToScRgb;
 
     // Avoid redundant color space conversions if color spaces
     // and images properties match and we don't do a resolve

@@ -647,6 +647,19 @@ namespace dxvk {
     std::lock_guard<sync::Spinlock> statLock(m_statLock);
     m_statCounters.merge(commandList->statCounters());
   }
+
+  void DxvkDevice::submitInteropCommandBuffer(
+          VkCommandBuffer commandBuffer,
+          VkSemaphore     signalSemaphore,
+          VkFence         fence,
+          uint64_t        presentWaitGeneration) {
+    DxvkInteropSubmitInfo submitInfo;
+    submitInfo.commandBuffer = commandBuffer;
+    submitInfo.signalSemaphore = signalSemaphore;
+    submitInfo.fence = fence;
+    submitInfo.presentWaitGeneration = presentWaitGeneration;
+    m_submissionQueue.submitInterop(submitInfo, nullptr);
+  }
   
   
   VkResult DxvkDevice::waitForSubmission(DxvkSubmitStatus* status) {
@@ -695,14 +708,16 @@ namespace dxvk {
   }
   
   
-  void DxvkDevice::waitForIdle() {
+  VkResult DxvkDevice::waitForIdle() {
     m_submissionQueue.waitForIdle();
     m_submissionQueue.lockDeviceQueue();
 
-    if (m_vkd->vkDeviceWaitIdle(m_vkd->device()) != VK_SUCCESS)
+    const VkResult result = m_vkd->vkDeviceWaitIdle(m_vkd->device());
+    if (result != VK_SUCCESS)
       Logger::err("DxvkDevice: waitForIdle: Operation failed");
 
     m_submissionQueue.unlockDeviceQueue();
+    return result;
   }
   
   

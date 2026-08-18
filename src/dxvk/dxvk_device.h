@@ -675,6 +675,12 @@ namespace dxvk {
             uint64_t                  frameId,
             DxvkSubmitStatus*         status);
 
+    void submitInteropCommandBuffer(
+            VkCommandBuffer           commandBuffer,
+            VkSemaphore               signalSemaphore,
+            VkFence                   fence,
+            uint64_t                  presentWaitGeneration);
+
     /**
      * \brief Locks submission queue
      * 
@@ -742,8 +748,9 @@ namespace dxvk {
      * previously submitted command buffers. This may be
      * used to ensure that resources that were previously
      * used by the GPU can be safely destroyed.
+     * \returns Vulkan device-idle result
      */
-    void waitForIdle();
+    VkResult waitForIdle();
     
   private:
     

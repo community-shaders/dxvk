@@ -22,6 +22,10 @@
 
 namespace dxvk {
 
+  uint64_t reservePresentWaitSemaphore(VkSemaphore semaphore);
+  void activatePresentWaitSemaphore(uint64_t generation);
+  void failPresentWaitSemaphore(uint64_t generation);
+
   using PresenterSurfaceProc = std::function<VkResult (VkSurfaceKHR*)>;
 
   class DxvkDevice;
@@ -155,7 +159,10 @@ namespace dxvk {
      * frame-interpolation-swapchain model and avoiding a stacked-present-loop deadlock. Set
      * automatically at swapchain creation via the dxvkSetFrameGenOwnershipQuery predicate.
      */
-    void setFrameGenOwned(bool owned) { m_frameGenOwned.store(owned, std::memory_order_release); }
+    void setFrameGenOwner(uint32_t owner) {
+      m_frameGenOwned.store(owner != 0u, std::memory_order_release);
+      m_dlssgOwned.store(owner == 2u, std::memory_order_release);
+    }
     bool isFrameGenOwned() const { return m_frameGenOwned.load(std::memory_order_acquire); }
 
     /**
@@ -295,6 +302,7 @@ namespace dxvk {
 
     VkSurfaceKHR                m_surface     = VK_NULL_HANDLE;
     VkSwapchainKHR              m_swapchain   = VK_NULL_HANDLE;
+    uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
 
@@ -348,8 +356,9 @@ namespace dxvk {
     std::queue<PresenterFrame>  m_frameQueue;
 
     // True when an external FFX frame-generation swapchain owns the real present/acquire/pacing for
-    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwned.
+    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwner.
     std::atomic<bool>           m_frameGenOwned = { false };
+    std::atomic<bool>           m_dlssgOwned = { false };
 
     uint64_t                    m_lastSignaled = 0u;
     uint64_t                    m_lastCompleted = 0u;
@@ -365,7 +374,7 @@ namespace dxvk {
 
     static const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> s_colorSpaceFallbacks;
 
-    void updateSwapChain();
+    bool updateSwapChain();
 
     VkResult recreateSwapChain();
 
@@ -419,7 +428,7 @@ namespace dxvk {
 
     void destroyLatencySemaphore();
 
-    void waitForSwapchainFence(
+    bool waitForSwapchainFence(
             PresenterSync&            sync);
 
     void runFrameThread();
