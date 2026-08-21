@@ -33,6 +33,8 @@ namespace dxvk {
             VkPhysicalDevice          Adapter,
             VkSurfaceKHR*             pSurface);
 
+    HWND STDMETHODCALLTYPE GetWindow();
+
   private:
 
     PFN_vkGetInstanceProcAddr m_vkGetInstanceProcAddr = nullptr;

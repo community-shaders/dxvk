@@ -91,6 +91,7 @@ namespace dxvk {
     m_surfaceFactory(pSurfaceFactory),
     m_desc(*pDesc),
     m_device(pDevice->GetDXVKDevice()),
+    m_nativePresenter(std::make_unique<D3D11NativePresenter>(m_device)),
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
     // DXVK_SYNC_PRESENT env forces synchronous present for the swapchain's whole lifetime.
     // The dxvkSetSyncPresent export is deliberately NOT baked here — PresentImage reads
@@ -233,8 +234,15 @@ namespace dxvk {
     if (m_desc.Width != pDesc->Width || m_desc.Height != pDesc->Height)
       m_presenter->setSurfaceExtent({ m_desc.Width, m_desc.Height });
 
+    const bool nativePresenterActive = m_nativePresenter && m_nativePresenter->ready();
     m_desc = *pDesc;
     CreateBackBuffers();
+
+    if (nativePresenterActive && !m_nativePresenter->resize(
+        std::max(m_desc.Width, 1u), std::max(m_desc.Height, 1u), m_desc.BufferCount)) {
+      Logger::err("D3D11SwapChain: Native DXGI presenter resize failed; returning to Vulkan WSI");
+      m_nativePresenter->reset();
+    }
     return S_OK;
   }
 
@@ -373,6 +381,24 @@ namespace dxvk {
     m_colorSpace = colorSpace;
 
     m_presenter->setSurfaceFormat(GetSurfaceFormat(m_desc.Format));
+
+    if (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+      if (!m_nativePresenter->ready()) {
+        // Flip-model presentation cannot safely have two swapchains or two
+        // graphics APIs producing for the same HWND. Release Vulkan WSI before
+        // handing visible presentation to system DXGI. If native setup fails,
+        // the normal Vulkan present path recreates these resources on demand.
+        m_presenter->destroyResources();
+        const HWND window = m_surfaceFactory->GetWindow();
+        if (!m_nativePresenter->initialize(window, std::max(m_desc.Width, 1u),
+            std::max(m_desc.Height, 1u), m_desc.BufferCount)) {
+          Logger::warn("D3D11SwapChain: Native DXGI HDR probe unavailable; retaining Vulkan WSI");
+        }
+      }
+    } else if (m_nativePresenter->ready()) {
+      Logger::info("D3D11SwapChain: Leaving native DXGI HDR probe for SDR presentation");
+      m_nativePresenter->reset();
+    }
     return S_OK;
   }
 
@@ -427,6 +453,10 @@ namespace dxvk {
 
 
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
+    if (m_colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+        m_nativePresenter && m_nativePresenter->ready())
+      return PresentImageNative(SyncInterval);
+
     // Flush pending rendering commands before
     auto immediateContext = m_parent->GetContext();
     auto immediateContextLock = immediateContext->LockContext();
@@ -441,9 +471,9 @@ namespace dxvk {
       m_latency->notifyCpuPresentBegin(m_frameId + 1u);
 
     PresenterSync sync;
-    Rc<DxvkImage> backBuffer;
+    Rc<DxvkImage> presentImage;
 
-    VkResult status = m_presenter->acquireNextImage(sync, backBuffer);
+    VkResult status = m_presenter->acquireNextImage(sync, presentImage);
 
     if (status != VK_SUCCESS && m_latency)
       m_latency->discardTimings();
@@ -461,7 +491,7 @@ namespace dxvk {
     DxvkImageViewKey viewInfo = { };
     viewInfo.viewType   = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.usage      = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    viewInfo.format     = backBuffer->info().format;
+    viewInfo.format     = presentImage->info().format;
     viewInfo.aspects    = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.mipIndex   = 0u;
     viewInfo.mipCount   = 1u;
@@ -497,8 +527,8 @@ namespace dxvk {
     immediateContext->EmitCs([
       cDevice         = m_device,
       cBlitter        = m_blitter,
-      cBackBuffer     = backBuffer->createView(viewInfo),
-      cSwapImage      = GetBackBufferView(),
+      cPresentImage   = presentImage->createView(viewInfo),
+      cAppBackBuffer  = GetBackBufferView(),
       cSync           = sync,
       cPresenter      = m_presenter,
       cLatency        = m_latency,
@@ -506,12 +536,16 @@ namespace dxvk {
       cFrameId        = m_frameId,
       cPresentStatus  = presentStatus
     ] (DxvkContext* ctx) {
-      // Update back buffer color space as necessary
-      if (cSwapImage->image()->info().colorSpace != cColorSpace) {
+      // SetColorSpace1 can change the presentation color space after the D3D11
+      // back buffer has already been created. Tag the application's image with
+      // the color space its pixels use. The present image deliberately retains
+      // the actual WSI color space selected by the presenter, so the blitter can
+      // convert when the requested and effective color spaces differ.
+      if (cAppBackBuffer->image()->info().colorSpace != cColorSpace) {
         DxvkImageUsageInfo usage = { };
         usage.colorSpace = cColorSpace;
 
-        ctx->ensureImageCompatibility(cSwapImage->image(), usage);
+        ctx->ensureImageCompatibility(cAppBackBuffer->image(), usage);
       }
 
       // Blit the D3D back buffer onto the actual Vulkan
@@ -519,8 +553,8 @@ namespace dxvk {
       auto contextObjects = ctx->beginExternalRendering();
 
       cBlitter->present(contextObjects,
-        cBackBuffer, VkRect2D(),
-        cSwapImage, VkRect2D());
+        cPresentImage, VkRect2D(),
+        cAppBackBuffer, VkRect2D());
 
       // Submit current command list and present
       ctx->synchronizeWsi(cSync);
@@ -559,6 +593,86 @@ namespace dxvk {
     if (m_latency) {
       m_latency->notifyCpuPresentEnd(m_frameId);
 
+      if (m_latency->needsAutoMarkers()) {
+        immediateContext->EmitCs([
+          cLatency = m_latency,
+          cFrameId = m_frameId
+        ] (DxvkContext* ctx) {
+          ctx->beginLatencyTracking(cLatency, cFrameId + 1u);
+        });
+      }
+    }
+
+    return S_OK;
+  }
+
+
+  HRESULT D3D11SwapChain::PresentImageNative(UINT SyncInterval) {
+    auto immediateContext = m_parent->GetContext();
+    auto immediateContextLock = immediateContext->LockContext();
+
+    immediateContext->EndFrame(m_latency);
+    immediateContext->ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);
+
+    Rc<DxvkImage> presentImage = m_nativePresenter->acquireImage();
+    if (!presentImage)
+      return E_FAIL;
+
+    m_nativePresenter->updateFrameGenerationResources();
+
+    m_frameId += 1u;
+    if (m_latency)
+      m_latency->notifyCpuPresentBegin(m_frameId);
+
+    DxvkImageViewKey viewInfo = { };
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    viewInfo.format = presentImage->info().format;
+    viewInfo.aspects = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.mipIndex = 0u;
+    viewInfo.mipCount = 1u;
+    viewInfo.layerIndex = 0u;
+    viewInfo.layerCount = 1u;
+
+    immediateContext->EmitCs([
+      cBlitter = m_blitter,
+      cNativePresenter = m_nativePresenter.get(),
+      cPresentImage = presentImage->createView(viewInfo),
+      cAppBackBuffer = GetBackBufferView(),
+      cColorSpace = m_colorSpace
+    ] (DxvkContext* ctx) {
+      if (cAppBackBuffer->image()->info().colorSpace != cColorSpace) {
+        DxvkImageUsageInfo usage = { };
+        usage.colorSpace = cColorSpace;
+        ctx->ensureImageCompatibility(cAppBackBuffer->image(), usage);
+      }
+
+      auto contextObjects = ctx->beginExternalRendering();
+      cBlitter->present(contextObjects,
+        cPresentImage, VkRect2D(),
+        cAppBackBuffer, VkRect2D());
+      cNativePresenter->recordFrameGenerationCopies(ctx);
+      ctx->flushCommandList(nullptr, nullptr);
+    });
+
+    if (m_backBuffers.size() > 1u)
+      RotateBackBuffers(immediateContext);
+
+    immediateContext->FlushCsChunk();
+    immediateContext->SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    if (m_device->waitForIdle() != VK_SUCCESS)
+      return E_FAIL;
+
+    const HRESULT hr = m_nativePresenter->present(SyncInterval);
+    if (FAILED(hr)) {
+      Logger::err(str::format("D3D11SwapChain: Native DXGI present failed: ", hr));
+      return hr;
+    }
+
+    m_frameLatencySignal->signal(m_frameId);
+
+    if (m_latency) {
+      m_latency->notifyCpuPresentEnd(m_frameId);
       if (m_latency->needsAutoMarkers()) {
         immediateContext->EmitCs([
           cLatency = m_latency,

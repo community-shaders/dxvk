@@ -35,6 +35,41 @@ typedef struct CsDxvkPresentCallbackInfo {
   int32_t presentResult;
 } CsDxvkPresentCallbackInfo;
 
+typedef enum CsDxvkNativeObjectType {
+  CS_DXVK_NATIVE_OBJECT_DEVICE = 1,
+  CS_DXVK_NATIVE_OBJECT_QUEUE = 2,
+  CS_DXVK_NATIVE_OBJECT_SWAPCHAIN = 3,
+  CS_DXVK_NATIVE_OBJECT_FACTORY = 4,
+} CsDxvkNativeObjectType;
+
+typedef struct CsDxvkNativePresentInfo {
+  uint32_t size;
+  uint32_t version;
+  void* commandList;
+  void* depth;
+  void* motionVectors;
+  void* hudlessColor;
+  uint32_t renderWidth;
+  uint32_t renderHeight;
+  uint32_t displayWidth;
+  uint32_t displayHeight;
+  uint64_t frameId;
+} CsDxvkNativePresentInfo;
+
+typedef void (*PFN_csDxvkUpgradeNativeObject)(uint32_t type, void** object);
+typedef void (*PFN_csDxvkNativePresentBegin)(const CsDxvkNativePresentInfo* info);
+typedef void (*PFN_csDxvkNativePresentEnd)(int32_t result);
+
+typedef struct CsDxvkNativePresenterApi {
+  uint32_t size;
+  uint32_t version;
+  void* createDXGIFactory2;
+  void* d3d12CreateDevice;
+  PFN_csDxvkUpgradeNativeObject upgradeObject;
+  PFN_csDxvkNativePresentBegin presentBegin;
+  PFN_csDxvkNativePresentEnd presentEnd;
+} CsDxvkNativePresenterApi;
+
 typedef uint32_t (*PFN_csDxvkGetApiVersion)(void);
 typedef void (*PFN_csDxvkSetTearingPreference)(uint32_t preference);
 typedef uint64_t (*PFN_csDxvkGetPresenterSurfaceState)(uint32_t* format,
@@ -55,6 +90,10 @@ typedef uint32_t (*PFN_csDxvkGetPresentWaitSemaphoreState)(uint64_t generation);
 typedef uint32_t (*PFN_csDxvkClearPresentWaitSemaphore)(uint64_t generation);
 typedef uint32_t (*PFN_csDxvkCancelPresentWaitSemaphore)(VkSemaphore semaphore);
 typedef uint32_t (*PFN_csDxvkReleaseQueuedPresentWaitSemaphoresAfterIdle)(void);
+typedef void (*PFN_csDxvkSetNativePresenterApi)(const CsDxvkNativePresenterApi* api);
+typedef void (*PFN_csDxvkSetNativeFrameGenerationResources)(void* depth,
+  void* motionVectors, void* hudlessColor, uint32_t renderWidth,
+  uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight);
 
 #ifdef __cplusplus
 }

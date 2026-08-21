@@ -21,3 +21,5 @@ EXPORTS
     dxvkEnqueueInteropCommandBuffer @120
     dxvkSetTearingPreference @121
     dxvkGetCsApiVersion @122
+    dxvkSetNativePresenterApi @123
+    dxvkSetNativeFrameGenerationResources @124

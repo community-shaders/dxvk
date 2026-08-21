@@ -48,6 +48,11 @@ namespace dxvk {
   }
 
 
+  HWND STDMETHODCALLTYPE DxgiSurfaceFactory::GetWindow() {
+    return m_window;
+  }
+
+
   HWND DxgiSurfaceFactory::CreateDummyWindow() {
 #ifdef _WIN32
     static std::atomic<bool> s_wndClassRegistered = { false };

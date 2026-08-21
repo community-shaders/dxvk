@@ -12,8 +12,6 @@ layout(constant_id = 4) const uint c_dst_color_space = VK_COLOR_SPACE_SRGB_NONLI
 layout(constant_id = 5) const bool c_dst_is_srgb = true;
 layout(constant_id = 6) const bool c_composite_hud = false;
 layout(constant_id = 7) const bool c_composite_cursor = false;
-layout(constant_id = 8) const bool c_gamma_encode_hdr10_to_scrgb = false;
-
 layout(set = 0, binding = 0) uniform sampler s_samplers[];
 
 layout(set = 1, binding = 0) uniform texture2D s_image;
@@ -136,8 +134,6 @@ vec4 sc_rgb_to_output(vec4 color) {
     }
 
     case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
-      if (c_gamma_encode_hdr10_to_scrgb)
-        color.rgb = linear_to_srgb(max(color.rgb, vec3(0.0f)));
       return color;
 
     case VK_COLOR_SPACE_HDR10_ST2084_EXT:

@@ -1334,7 +1334,13 @@ namespace dxvk {
       }
     }
 
-    if (allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM)
+    // D3D12 heap/resource handles already identify allocations owned and kept
+    // resident by the native D3D12 device. D3DKMTOpenResourceFromNtHandle is
+    // a D3D10/11 runtime bookkeeping path and rejects these handles even though
+    // Vulkan imported them successfully.
+    if (allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM &&
+        allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT &&
+        allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT)
       allocation->initKmtHandles(allocationInfo.handleType);
 
     return allocation;
