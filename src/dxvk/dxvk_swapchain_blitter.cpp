@@ -737,11 +737,23 @@ namespace dxvk {
 
     // Avoid redundant color space conversions if color spaces
     // and images properties match and we don't do a resolve
+    // Sample-only A/B diagnostic. DXVK normally replaces matching source and
+    // destination color spaces with PASS_THROUGH below. Keeping the real HDR10
+    // specialization constants forces the present shader to decode PQ into
+    // scRGB and encode it back to PQ without changing the WSI color space.
+    const char* forceHdr10Conversion = std::getenv("DXVK_FORCE_HDR10_PRESENT_CONVERSION");
+    const bool forceConversion = forceHdr10Conversion && forceHdr10Conversion[0] == '1'
+      && key.srcSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT
+      && key.dstSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+
     if (key.srcSpace == key.dstSpace && key.srcSamples == VK_SAMPLE_COUNT_1_BIT
-     && !key.compositeCursor && !key.compositeHud) {
+     && !key.compositeCursor && !key.compositeHud && !forceConversion) {
       specConstants.srcSpace = VK_COLOR_SPACE_PASS_THROUGH_EXT;
       specConstants.dstSpace = VK_COLOR_SPACE_PASS_THROUGH_EXT;
     }
+
+    if (forceConversion)
+      Logger::info("Presenter: Forcing HDR10 PQ -> scRGB -> HDR10 conversion blit");
 
     VkSpecializationInfo specInfo = { };
     specInfo.mapEntryCount = specMap.size();

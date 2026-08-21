@@ -39,6 +39,7 @@ namespace dxvk {
    */
   struct PresenterDesc {
     bool deferSurfaceCreation = false;
+    void* fullScreenMonitor = nullptr;
   };
 
   /**
@@ -305,6 +306,8 @@ namespace dxvk {
     uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+    void*                       m_fullScreenMonitor = nullptr;
+    bool                        m_fullScreenExclusiveAcquired = false;
 
     // Chain VkSurfaceFullScreenExclusiveInfoEXT into surface/swapchain queries. An explicit
     // DISALLOWED chain routes the NVIDIA ICD onto the GDI-copy present path; omitting it (the

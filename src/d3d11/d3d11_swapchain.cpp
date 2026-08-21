@@ -3,6 +3,7 @@
 #include "d3d11_swapchain.h"
 
 #include "../dxvk/dxvk_latency_builtin.h"
+#include "../wsi/wsi_window.h"
 
 #include "../util/util_win32_compat.h"
 
@@ -733,6 +734,11 @@ namespace dxvk {
 
   void D3D11SwapChain::CreatePresenter() {
     PresenterDesc presenterDesc = { };
+    // Do not even query the monitor outside the dedicated crash-reproduction
+    // mode, so the diagnostic cannot perturb ordinary DXVK presentation.
+    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE"); value && value[0] == '1')
+      presenterDesc.fullScreenMonitor = reinterpret_cast<void*>(
+        wsi::getWindowMonitor(m_surfaceFactory->GetWindow()));
     presenterDesc.deferSurfaceCreation = m_parent->GetOptions()->deferSurfaceCreation;
 
     m_presenter = new Presenter(m_device, m_frameLatencySignal, presenterDesc, [

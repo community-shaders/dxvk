@@ -318,13 +318,22 @@ namespace dxvk {
   : m_device(device), m_signal(signal),
     m_vki(device->instance()->vki()),
     m_vkd(device->vkd()),
-    m_surfaceProc(std::move(proc)) {
+    m_surfaceProc(std::move(proc)),
+    m_fullScreenMonitor(desc.fullScreenMonitor) {
     // Only enable FSE if the user explicitly opts in. On Windows, FSE
     // is required to support VRR or HDR, but blocks alt-tabbing or
     // overlapping windows, which breaks a number of games.
     m_fullscreenMode = m_device->config().allowFse
       ? VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT
       : VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+
+    // Sample-only crash diagnostic. ALLOWED is DXVK's normal opt-in; this mode
+    // exercises the full APPLICATION_CONTROLLED Win32 lifecycle explicitly.
+    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE");
+        value && value[0] == '1' && m_fullScreenMonitor) {
+      m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
+      Logger::info("Presenter: Enabling application-controlled fullscreen-exclusive crash diagnostic");
+    }
 
     updateFsePNextChainMode();
 
@@ -442,6 +451,11 @@ namespace dxvk {
       m_hdrMetadataDirty = false;
 
       if (m_device->features().extHdrMetadata) {
+        Logger::info(str::format(
+          "Presenter: Submitting HDR metadata: max mastering=", m_hdrMetadata->maxLuminance,
+          " nits, min mastering=", m_hdrMetadata->minLuminance,
+          " nits, MaxCLL=", m_hdrMetadata->maxContentLightLevel,
+          " nits, MaxFALL=", m_hdrMetadata->maxFrameAverageLightLevel, " nits"));
         m_vkd->vkSetHdrMetadataEXT(m_vkd->device(),
           1, &m_swapchain, &(*m_hdrMetadata));
       }
@@ -1062,8 +1076,13 @@ namespace dxvk {
     // The frame-generation method may have changed since the last (re)create.
     updateFsePNextChainMode();
 
+    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
+    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenExclusiveInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenExclusiveInfo.fullScreenExclusive = m_fullscreenMode;
+
+    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+      fullScreenExclusiveInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     surfaceInfo.surface = m_surface;
@@ -1217,6 +1236,9 @@ namespace dxvk {
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
 
+    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+      fullScreenInfo.pNext = &fullScreenWin32Info;
+
     VkSwapchainPresentModesCreateInfoKHR modeInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_KHR };
     modeInfo.presentModeCount       = compatibleModes.size();
     modeInfo.pPresentModes          = compatibleModes.data();
@@ -1254,8 +1276,12 @@ namespace dxvk {
     if (presentWait2Caps.presentWait2Supported)
       swapInfo.flags |= VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR;
 
-    if (m_device->features().extFullScreenExclusive && m_chainFseInfo)
-      fullScreenInfo.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
+    if (m_device->features().extFullScreenExclusive && m_chainFseInfo) {
+      if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+        fullScreenWin32Info.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
+      else
+        fullScreenInfo.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
+    }
 
     if (m_hasSwapchainMaintenance1)
       modeInfo.pNext = std::exchange(swapInfo.pNext, &modeInfo);
@@ -1274,6 +1300,17 @@ namespace dxvk {
     if ((status = m_vkd->vkCreateSwapchainKHR(m_vkd->device(), &swapInfo, nullptr, &m_swapchain))) {
       Logger::err(str::format("Presenter: Failed to create Vulkan swapchain: ", status));
       return status;
+    }
+
+    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT) {
+      status = m_vkd->vkAcquireFullScreenExclusiveModeEXT(m_vkd->device(), m_swapchain);
+      Logger::info(str::format("Presenter: Application-controlled fullscreen-exclusive acquire returned ", status));
+      if (status != VK_SUCCESS) {
+        m_vkd->vkDestroySwapchainKHR(m_vkd->device(), m_swapchain, nullptr);
+        m_swapchain = VK_NULL_HANDLE;
+        return status;
+      }
+      m_fullScreenExclusiveAcquired = true;
     }
 
     // An external FFX frame-generation layer may have replaced this swapchain with its own wrapped
@@ -1395,8 +1432,13 @@ namespace dxvk {
   VkResult Presenter::getSupportedFormats(std::vector<VkSurfaceFormatKHR>& formats) const {
     uint32_t numFormats = 0;
 
+    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
+    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
+
+    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+      fullScreenInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     if (m_chainFseInfo)
@@ -1444,8 +1486,13 @@ namespace dxvk {
   VkResult Presenter::getSupportedPresentModes(std::vector<VkPresentModeKHR>& modes) const {
     uint32_t numModes = 0;
 
+    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
+    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
+
+    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+      fullScreenInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     if (m_chainFseInfo)
@@ -1524,6 +1571,22 @@ namespace dxvk {
     const VkSurfaceFormatKHR*       pSupported,
           VkColorSpaceKHR           desired) {
     VkColorSpaceKHR fallback = pSupported[0].colorSpace;
+
+    // Sample-only all-Vulkan HDR10-to-scRGB path. Keep the application's
+    // backbuffer tagged as PQ/BT.2020, but select a linear-scRGB WSI surface so
+    // the existing presenter shader performs the conversion. Streamline wraps
+    // this Vulkan swapchain directly; no D3D12 or DXGI output swapchain exists.
+    if (desired == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+      const char* viaScRgb = std::getenv("DXVK_HDR10_VIA_SCRGB");
+      if (viaScRgb && viaScRgb[0] == '1') {
+        for (uint32_t i = 0; i < numSupported; i++) {
+          if (pSupported[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+            Logger::info("Presenter: Selecting scRGB WSI for HDR10-to-scRGB Vulkan Streamline mode");
+            return VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+          }
+        }
+      }
+    }
 
     for (uint32_t i = 0; i < numSupported; i++) {
       if (pSupported[i].colorSpace == desired)
@@ -1763,6 +1826,12 @@ namespace dxvk {
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.acquire, nullptr);
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.present, nullptr);
       m_vkd->vkDestroyFence(m_vkd->device(), sem.fence, nullptr);
+    }
+
+    if (m_fullScreenExclusiveAcquired && m_swapchain) {
+      VkResult status = m_vkd->vkReleaseFullScreenExclusiveModeEXT(m_vkd->device(), m_swapchain);
+      Logger::info(str::format("Presenter: Application-controlled fullscreen-exclusive release returned ", status));
+      m_fullScreenExclusiveAcquired = false;
     }
 
     // The conditional is here because some third party layers don't properly handle null swapchains
