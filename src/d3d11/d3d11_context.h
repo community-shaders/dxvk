@@ -72,6 +72,7 @@ namespace dxvk {
 
     template<typename T> friend class D3D11DeviceContextExt;
     template<typename T> friend class D3D11UserDefinedAnnotation;
+    friend class D3D11NativePresenter;
 
     // Use a local staging buffer to handle tiny uploads, most
     // of the time we're fine with hitting the global allocator

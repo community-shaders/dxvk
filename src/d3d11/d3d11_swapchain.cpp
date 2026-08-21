@@ -91,7 +91,6 @@ namespace dxvk {
     m_surfaceFactory(pSurfaceFactory),
     m_desc(*pDesc),
     m_device(pDevice->GetDXVKDevice()),
-    m_nativePresenter(std::make_unique<D3D11NativePresenter>(m_device)),
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
     // DXVK_SYNC_PRESENT env forces synchronous present for the swapchain's whole lifetime.
     // The dxvkSetSyncPresent export is deliberately NOT baked here — PresentImage reads
@@ -234,14 +233,14 @@ namespace dxvk {
     if (m_desc.Width != pDesc->Width || m_desc.Height != pDesc->Height)
       m_presenter->setSurfaceExtent({ m_desc.Width, m_desc.Height });
 
-    const bool nativePresenterActive = m_nativePresenter && m_nativePresenter->ready();
+    const bool dlssgPresenterActive = m_dlssgPresenter && m_dlssgPresenter->ready();
     m_desc = *pDesc;
     CreateBackBuffers();
 
-    if (nativePresenterActive && !m_nativePresenter->resize(
+    if (dlssgPresenterActive && !m_dlssgPresenter->resize(
         std::max(m_desc.Width, 1u), std::max(m_desc.Height, 1u), m_desc.BufferCount)) {
-      Logger::err("D3D11SwapChain: Native DXGI presenter resize failed; returning to Vulkan WSI");
-      m_nativePresenter->reset();
+      Logger::err("D3D11SwapChain: HDR DLSS-G presenter resize failed; returning to Vulkan WSI");
+      m_dlssgPresenter.reset();
     }
     return S_OK;
   }
@@ -382,22 +381,31 @@ namespace dxvk {
 
     m_presenter->setSurfaceFormat(GetSurfaceFormat(m_desc.Format));
 
-    if (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-      if (!m_nativePresenter->ready()) {
+    const bool useDlssgWorkaround = D3D11NativePresenter::workaroundConfigured() &&
+      (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+       colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+    if (useDlssgWorkaround) {
+      if (!m_dlssgPresenter)
+        m_dlssgPresenter = std::make_unique<D3D11NativePresenter>(m_device, m_parent);
+      if (!m_dlssgPresenter->ready()) {
         // Flip-model presentation cannot safely have two swapchains or two
         // graphics APIs producing for the same HWND. Release Vulkan WSI before
-        // handing visible presentation to system DXGI. If native setup fails,
-        // the normal Vulkan present path recreates these resources on demand.
+        // handing this explicitly selected DLSS-G workaround to system DXGI.
+        // If setup fails, normal Vulkan presentation recreates its resources.
         m_presenter->destroyResources();
         const HWND window = m_surfaceFactory->GetWindow();
-        if (!m_nativePresenter->initialize(window, std::max(m_desc.Width, 1u),
-            std::max(m_desc.Height, 1u), m_desc.BufferCount)) {
-          Logger::warn("D3D11SwapChain: Native DXGI HDR probe unavailable; retaining Vulkan WSI");
+        if (!m_dlssgPresenter->initialize(window, std::max(m_desc.Width, 1u),
+            std::max(m_desc.Height, 1u), m_desc.BufferCount, colorSpace)) {
+          Logger::warn("D3D11SwapChain: DLSS-G workaround unavailable; retaining Vulkan WSI");
+          m_dlssgPresenter.reset();
         }
+      } else if (!m_dlssgPresenter->setColorSpace(colorSpace)) {
+        Logger::err("D3D11SwapChain: DLSS-G presenter color-space change failed; returning to Vulkan WSI");
+        m_dlssgPresenter.reset();
       }
-    } else if (m_nativePresenter->ready()) {
-      Logger::info("D3D11SwapChain: Leaving native DXGI HDR probe for SDR presentation");
-      m_nativePresenter->reset();
+    } else if (m_dlssgPresenter) {
+      Logger::info("D3D11SwapChain: Leaving HDR DLSS-G workaround presentation");
+      m_dlssgPresenter.reset();
     }
     return S_OK;
   }
@@ -453,8 +461,8 @@ namespace dxvk {
 
 
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
-    if (m_colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
-        m_nativePresenter && m_nativePresenter->ready())
+    if (D3D11NativePresenter::workaroundConfigured() &&
+        m_dlssgPresenter && m_dlssgPresenter->ready())
       return PresentImageNative(SyncInterval);
 
     // Flush pending rendering commands before
@@ -614,11 +622,11 @@ namespace dxvk {
     immediateContext->EndFrame(m_latency);
     immediateContext->ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);
 
-    Rc<DxvkImage> presentImage = m_nativePresenter->acquireImage();
+    Rc<DxvkImage> presentImage = m_dlssgPresenter->acquireImage();
     if (!presentImage)
       return E_FAIL;
 
-    m_nativePresenter->updateFrameGenerationResources();
+    m_dlssgPresenter->updateFrameGenerationResources();
 
     m_frameId += 1u;
     if (m_latency)
@@ -636,7 +644,7 @@ namespace dxvk {
 
     immediateContext->EmitCs([
       cBlitter = m_blitter,
-      cNativePresenter = m_nativePresenter.get(),
+      cNativePresenter = m_dlssgPresenter.get(),
       cPresentImage = presentImage->createView(viewInfo),
       cAppBackBuffer = GetBackBufferView(),
       cColorSpace = m_colorSpace
@@ -645,6 +653,12 @@ namespace dxvk {
         DxvkImageUsageInfo usage = { };
         usage.colorSpace = cColorSpace;
         ctx->ensureImageCompatibility(cAppBackBuffer->image(), usage);
+      }
+
+      if (cPresentImage->image()->info().colorSpace != cColorSpace) {
+        DxvkImageUsageInfo usage = { };
+        usage.colorSpace = cColorSpace;
+        ctx->ensureImageCompatibility(cPresentImage->image(), usage);
       }
 
       auto contextObjects = ctx->beginExternalRendering();
@@ -663,7 +677,7 @@ namespace dxvk {
     if (m_device->waitForIdle() != VK_SUCCESS)
       return E_FAIL;
 
-    const HRESULT hr = m_nativePresenter->present(SyncInterval);
+    const HRESULT hr = m_dlssgPresenter->present(SyncInterval);
     if (FAILED(hr)) {
       Logger::err(str::format("D3D11SwapChain: Native DXGI present failed: ", hr));
       return hr;

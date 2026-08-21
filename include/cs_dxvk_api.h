@@ -35,40 +35,69 @@ typedef struct CsDxvkPresentCallbackInfo {
   int32_t presentResult;
 } CsDxvkPresentCallbackInfo;
 
-typedef enum CsDxvkNativeObjectType {
-  CS_DXVK_NATIVE_OBJECT_DEVICE = 1,
-  CS_DXVK_NATIVE_OBJECT_QUEUE = 2,
-  CS_DXVK_NATIVE_OBJECT_SWAPCHAIN = 3,
-  CS_DXVK_NATIVE_OBJECT_FACTORY = 4,
-} CsDxvkNativeObjectType;
+typedef enum CsDxvkDlssgObjectType {
+  CS_DXVK_DLSSG_OBJECT_DEVICE = 1,
+  CS_DXVK_DLSSG_OBJECT_FACTORY = 2,
+} CsDxvkDlssgObjectType;
 
-typedef struct CsDxvkNativePresentInfo {
+typedef struct CsDxvkDlssgPresentInfo {
   uint32_t size;
   uint32_t version;
   void* commandList;
   void* depth;
   void* motionVectors;
   void* hudlessColor;
-  uint32_t renderWidth;
-  uint32_t renderHeight;
-  uint32_t displayWidth;
-  uint32_t displayHeight;
   uint64_t frameId;
-} CsDxvkNativePresentInfo;
+} CsDxvkDlssgPresentInfo;
 
-typedef void (*PFN_csDxvkUpgradeNativeObject)(uint32_t type, void** object);
-typedef void (*PFN_csDxvkNativePresentBegin)(const CsDxvkNativePresentInfo* info);
-typedef void (*PFN_csDxvkNativePresentEnd)(int32_t result);
-
-typedef struct CsDxvkNativePresenterApi {
+typedef struct CsDxvkDlssUpscaleRequest {
   uint32_t size;
   uint32_t version;
-  void* createDXGIFactory2;
-  void* d3d12CreateDevice;
-  PFN_csDxvkUpgradeNativeObject upgradeObject;
-  PFN_csDxvkNativePresentBegin presentBegin;
-  PFN_csDxvkNativePresentEnd presentEnd;
-} CsDxvkNativePresenterApi;
+  void* colorIn;
+  void* colorOut;
+  void* depth;
+  void* motionVectors;
+  uint32_t renderWidth;
+  uint32_t renderHeight;
+  uint32_t outputWidth;
+  uint32_t outputHeight;
+  uint32_t qualityMode;
+  float jitterX;
+  float jitterY;
+  uint32_t frameId;
+} CsDxvkDlssUpscaleRequest;
+
+typedef struct CsDxvkDlssEvaluationInfo {
+  uint32_t size;
+  uint32_t version;
+  void* commandList;
+  void* colorIn;
+  void* colorOut;
+  void* depth;
+  void* motionVectors;
+  uint32_t renderWidth;
+  uint32_t renderHeight;
+  uint32_t outputWidth;
+  uint32_t outputHeight;
+  uint32_t qualityMode;
+  float jitterX;
+  float jitterY;
+  uint32_t frameId;
+} CsDxvkDlssEvaluationInfo;
+
+typedef void (*PFN_csDxvkUpgradeDlssgObject)(uint32_t type, void** object);
+typedef void (*PFN_csDxvkDlssgPresentBegin)(const CsDxvkDlssgPresentInfo* info);
+typedef void (*PFN_csDxvkDlssgPresentEnd)(int32_t result);
+typedef bool (*PFN_csDxvkEvaluateDlss)(const CsDxvkDlssEvaluationInfo* info);
+
+typedef struct CsDxvkDlssgPresenterWorkaroundApi {
+  uint32_t size;
+  uint32_t version;
+  PFN_csDxvkUpgradeDlssgObject upgradeObject;
+  PFN_csDxvkDlssgPresentBegin presentBegin;
+  PFN_csDxvkDlssgPresentEnd presentEnd;
+  PFN_csDxvkEvaluateDlss evaluateDlss;
+} CsDxvkDlssgPresenterWorkaroundApi;
 
 typedef uint32_t (*PFN_csDxvkGetApiVersion)(void);
 typedef void (*PFN_csDxvkSetTearingPreference)(uint32_t preference);
@@ -90,10 +119,11 @@ typedef uint32_t (*PFN_csDxvkGetPresentWaitSemaphoreState)(uint64_t generation);
 typedef uint32_t (*PFN_csDxvkClearPresentWaitSemaphore)(uint64_t generation);
 typedef uint32_t (*PFN_csDxvkCancelPresentWaitSemaphore)(VkSemaphore semaphore);
 typedef uint32_t (*PFN_csDxvkReleaseQueuedPresentWaitSemaphoresAfterIdle)(void);
-typedef void (*PFN_csDxvkSetNativePresenterApi)(const CsDxvkNativePresenterApi* api);
-typedef void (*PFN_csDxvkSetNativeFrameGenerationResources)(void* depth,
-  void* motionVectors, void* hudlessColor, uint32_t renderWidth,
-  uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight);
+typedef void (*PFN_csDxvkConfigureDlssgPresenterWorkaround)(
+  const CsDxvkDlssgPresenterWorkaroundApi* api);
+typedef void (*PFN_csDxvkSetDlssgPresenterResources)(void* depth,
+  void* motionVectors, void* hudlessColor);
+typedef bool (*PFN_csDxvkEvaluateDlssWorkaround)(const CsDxvkDlssUpscaleRequest* request);
 
 #ifdef __cplusplus
 }

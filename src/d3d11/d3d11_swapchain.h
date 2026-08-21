@@ -110,7 +110,8 @@ namespace dxvk {
 
     Rc<DxvkDevice>            m_device;
     Rc<Presenter>             m_presenter;
-    std::unique_ptr<D3D11NativePresenter> m_nativePresenter;
+    // Allocated only when Community Shaders explicitly selects its HDR DLSS-G workaround.
+    std::unique_ptr<D3D11NativePresenter> m_dlssgPresenter;
 
     Rc<DxvkSwapchainBlitter>  m_blitter;
     Rc<DxvkLatencyTracker>    m_latency;
