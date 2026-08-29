@@ -526,10 +526,15 @@ namespace dxvk {
 
     uint64_t extraWaitGeneration = 0;
     uint32_t pendingPresentWaitCount = 0;
-    // Present-tag waits belong exclusively to the DLSS-G proxy swapchain.
-    // Never let an auxiliary presenter consume the process-global FIFO.
     bool dlssgOwned = m_dlssgOwned.load(std::memory_order_acquire);
-    if (dlssgOwned) {
+
+    // Attach a pending wait regardless of who owns the present. Gating this on
+    // dlssgOwned leaves any semaphore registered during a method TRANSITION unattached
+    // -- ownership is only established once the swapchain has been recreated -- and the
+    // host then sees a registered-but-unpresented generation, quarantines it, and faults
+    // its command ring every frame. Attaching it is correct in every case: it only
+    // queue-orders this present after work the host already submitted.
+    {
       std::lock_guard lock(g_dxvkPresentWaitMutex);
       PresentWaitSnapshot* oldestPending = nullptr;
       for (auto& snapshot : g_dxvkPresentWaits) {
