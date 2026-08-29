@@ -492,7 +492,7 @@ namespace dxvk {
       // nope out if there is any scaling going on.
       VkExtent3D swapExtent = { m_desc.Width, m_desc.Height, 1u };
 
-      if (!m_hasHud && backBuffer->info().extent == swapExtent )
+      if (!m_hasHud && presentImage->info().extent == swapExtent )
         dirtyRects = NormalizeDirtyRects(pPresentParameters);
     } else {
       // Nuke incremental present image out of existence to
