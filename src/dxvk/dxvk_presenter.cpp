@@ -1016,6 +1016,19 @@ namespace dxvk {
 
       if (vr == VK_ERROR_SURFACE_LOST_KHR)
         destroySurface();
+
+      // Entering fullscreen-exclusive immediately invalidates the swapchain, so the
+      // first present after the acquire reports OUT_OF_DATE and lands here. By that
+      // point destroySwapchain() has already released exclusive mode, and the NVIDIA
+      // Windows ICD then refuses to back another APPLICATION_CONTROLLED swapchain
+      // with the surface that was created against the pre-exclusive window state --
+      // it fails with VK_ERROR_INITIALIZATION_FAILED indefinitely. Dropping the
+      // surface lets the retry below rebuild both, which completes the transition.
+      if (vr == VK_ERROR_INITIALIZATION_FAILED
+       && m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT) {
+        Logger::info("Presenter: Exclusive swapchain creation failed; rebuilding the surface and retrying");
+        destroySurface();
+      }
     }
 
     if (!m_surface) {
