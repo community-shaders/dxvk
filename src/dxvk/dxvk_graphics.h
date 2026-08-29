@@ -28,6 +28,7 @@ namespace dxvk {
     HasStorageDescriptors,
     HasSampleRateShading,
     HasSampleMaskExport,
+    HasLayerExport,
     UnrollMergedDraws,
   };
 
@@ -378,14 +379,14 @@ namespace dxvk {
       // Find a pipeline handle to use. If no optimized pipeline has
       // been compiled yet, use the slower base pipeline instead.
       DxvkGraphicsPipelineHandle result;
-      result.handle = fastHandle.load(std::memory_order_acquire);
+      result.handle = fastHandle.load();
       result.type = DxvkGraphicsPipelineType::FastPipeline;
       result.attachments = attachments;
 
       if (likely(fastHandle))
         return result;
 
-      result.handle = baseHandle.load(std::memory_order_acquire);
+      result.handle = baseHandle.load();
       result.type = DxvkGraphicsPipelineType::BasePipeline;
       return result;
     }
@@ -667,6 +668,8 @@ namespace dxvk {
 
     std::pair<VkResult, VkPipeline> createOptimizedPipeline(
       const DxvkGraphicsPipelineFastInstanceKey& key) const;
+
+    DxvkShader& getLastPreRasterStage();
 
     void destroyBasePipelines();
 

@@ -225,8 +225,12 @@ namespace dxvk {
     if (!m_device->canUseDescriptorHeap() || m_device->hasCudaInterop()) {
       VkResult vr = vk->vkCreateSampler(vk->device(), createInfo, nullptr, &descriptor.samplerObject);
 
-      if (vr)
+      // Not fatal on descriptor heap path
+      if (vr && !m_device->canUseDescriptorHeap())
         throw DxvkError(str::format("Failed to create sampler object: ", vr));
+
+      if (vr)
+        Logger::warn(str::format("Failed to create legacy sampler object: ", vr));
     }
 
     if (m_device->canUseDescriptorHeap()) {
@@ -539,10 +543,10 @@ namespace dxvk {
       // to the way releasing samplers is implemented upon reaching
       // a ref count of 0, it is possible that we reach this before
       // the releasing thread inserted the list into the LRU list.
-      if (!sampler.object->m_refCount.fetch_add(1u, std::memory_order_acquire)) {
+      if (!sampler.object->m_refCount.fetch_add(1u)) {
         removeLru(sampler, entry->second);
 
-        m_samplersLive.store(m_samplersLive.load() + 1u, std::memory_order_relaxed);
+        m_samplersLive.store(m_samplersLive.load() + 1u);
       }
 
       // We already took a reference, forward the pointer as-is
@@ -574,7 +578,7 @@ namespace dxvk {
     m_samplerLut.insert_or_assign(key, samplerIndex);
 
     // Update statistics
-    m_samplersLive.store(m_samplersLive.load() + 1u, std::memory_order_relaxed);
+    m_samplersLive.store(m_samplersLive.load() + 1u);
     return &sampler.object.value();
   }
 
@@ -591,7 +595,7 @@ namespace dxvk {
     // the pool is locked.
     auto& sampler = m_samplers.at(index);
 
-    if (sampler.object->m_refCount.load(std::memory_order_relaxed))
+    if (sampler.object->m_refCount.load())
       return;
 
     // It is also possible that two threads end up here while the ref

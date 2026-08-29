@@ -628,10 +628,12 @@ namespace dxvk {
           m_metadata.flags.set(DxvkShaderFlag::ExportsPosition);
         } break;
 
-        case dxbc_spv::ir::BuiltIn::eLayerIndex:
+        case dxbc_spv::ir::BuiltIn::eLayerIndex: {
+          m_metadata.flags.set(DxvkShaderFlag::ExportsLayer);
+        } break;
+
         case dxbc_spv::ir::BuiltIn::eViewportIndex: {
-          if (m_stage != dxbc_spv::ir::ShaderStage::eGeometry)
-            m_metadata.flags.set(DxvkShaderFlag::ExportsViewportIndexLayerFromVertexStage);
+          m_metadata.flags.set(DxvkShaderFlag::ExportsViewport);
         } break;
 
         case dxbc_spv::ir::BuiltIn::eSampleMask: {
@@ -2163,12 +2165,12 @@ namespace dxvk {
 
 
   void DxvkIrShader::convertIr(const char* reason) {
-    if (m_convertedIr.load(std::memory_order_acquire))
+    if (m_convertedIr.load())
       return;
 
     std::lock_guard lock(m_mutex);
 
-    if (m_convertedIr.load(std::memory_order_relaxed))
+    if (m_convertedIr.load())
       return;
 
     if (reason && Logger::logLevel() <= LogLevel::Debug)
@@ -2184,7 +2186,7 @@ namespace dxvk {
     // Destroy original converter, we no longer need it
     m_baseIr = nullptr;
 
-    m_convertedIr.store(true, std::memory_order_release);
+    m_convertedIr.store(true);
 
     // Need to do this *after* marking the conversion as done since lowering
     // to SPIR-V itself will otherwise call into this method again
@@ -2217,6 +2219,7 @@ namespace dxvk {
     options.arithmeticOptions.lowerDot = true;
     options.arithmeticOptions.lowerSinCos = m_info.options.flags.test(DxvkShaderCompileFlag::LowerSinCos);
     options.arithmeticOptions.lowerMsad = true;
+    options.arithmeticOptions.lowerUdiv = true;
     options.arithmeticOptions.lowerF32toF16 = m_info.options.flags.test(DxvkShaderCompileFlag::LowerF32toF16);
     options.arithmeticOptions.lowerConvertFtoI = m_info.options.flags.test(DxvkShaderCompileFlag::LowerFtoI);
     options.arithmeticOptions.lowerGsVertexCountIn = false;

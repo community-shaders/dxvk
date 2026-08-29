@@ -492,7 +492,11 @@ namespace dxvk {
   }
 
 
-  VkResult Presenter::presentImage(uint64_t frameId, const Rc<DxvkLatencyTracker>& tracker) {
+  VkResult Presenter::presentImage(
+          uint64_t                frameId,
+    const Rc<DxvkLatencyTracker>& tracker,
+          uint32_t                rectCount,
+    const VkRectLayerKHR*         rects) {
     PresenterSync& currSync = m_semaphores.at(m_frameIndex);
 
     releasePresentWaitsForImage(m_swapchain, m_presentWaitSwapchainSerial, m_imageIndex);
@@ -546,6 +550,14 @@ namespace dxvk {
       }
     }
 
+    VkPresentRegionKHR region = {};
+    region.rectangleCount = rectCount;
+    region.pRectangles = rects;
+
+    VkPresentRegionsKHR regionInfo = { VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR };
+    regionInfo.swapchainCount = 1;
+    regionInfo.pRegions = &region;
+
     VkPresentInfoKHR info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     info.waitSemaphoreCount = waitSemaphoreCount;
     info.pWaitSemaphores    = waitSemaphores.data();
@@ -572,6 +584,14 @@ namespace dxvk {
       modeInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &modeInfo));
       fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
     }
+
+    // Incremental present is another pNext struct on VkPresentInfoKHR, so it is
+    // gated on !fgOwned for the same reason as present-ID and maintenance1 above:
+    // an external frame-generation layer's replacement vkQueuePresentKHR does not
+    // handle DXVK's chained structs.
+    if (!fgOwned && m_hasIncrementalPresent && !m_presentRepaint
+     && m_acquireStatus == VK_SUCCESS && rectCount)
+      regionInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &regionInfo));
 
     // DLSS-G's input tags and the intercepted present must share one queue order with
     // graphics submissions; DXVK's submission thread externally synchronizes this call
@@ -689,6 +709,8 @@ namespace dxvk {
     }
 
     m_presentPending = false;
+    m_presentRepaint = false;
+
     m_surfaceCond.notify_one();
     return status;
   }
@@ -1374,6 +1396,12 @@ namespace dxvk {
     m_hasPresentId = presentId2Caps.presentId2Supported || m_device->features().khrPresentId.presentId;
     m_hasPresentWait = presentWait2Caps.presentWait2Supported || m_device->features().khrPresentWait.presentWait;
 
+    // Only support incremental present if the surface isn't transformed. Spec says
+    // that present rects are defined with respect to the current surface transform,
+    // not with the pre-transform set on the swap chain.
+    if (m_device->features().khrIncrementalPresent)
+      m_hasIncrementalPresent = caps.surfaceCapabilities.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
     // Do not launch the present-wait worker for an FFX frame-generation-owned swapchain: it would
     // call vkWaitForPresentKHR on FFX's wrapped swapchain (which FFX, not DXVK, paces), racing
     // FFX's own present thread. signalFrame releases the frame-latency signal directly instead.
@@ -1393,6 +1421,8 @@ namespace dxvk {
       surfaceFormat.format,
       m_preferredFormat.colorSpace,
       surfaceFormat.colorSpace);
+
+    m_presentRepaint = true;
 
     return VK_SUCCESS;
   }
@@ -1784,6 +1814,7 @@ namespace dxvk {
     m_acquireStatus = VK_NOT_READY;
 
     m_presentPending = false;
+    m_presentRepaint = false;
 
     m_hdrMetadataDirty = true;
 
@@ -1792,6 +1823,7 @@ namespace dxvk {
 
     m_hasPresentId = false;
     m_hasPresentWait = false;
+    m_hasIncrementalPresent = false;
   }
 
 

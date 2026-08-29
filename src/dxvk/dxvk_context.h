@@ -456,13 +456,13 @@ namespace dxvk {
     /**
      * \brief Clears an active render target
      * 
-     * \param [in] imageView Render target view to clear
+     * \param [in] attachment Render target to clear
      * \param [in] clearAspects Image aspects to clear
      * \param [in] clearValue The clear value
      * \param [in] discardAspects Image aspects to discard
      */
     void clearRenderTarget(
-      const Rc<DxvkImageView>&    imageView,
+      const DxvkAttachment&       attachment,
             VkImageAspectFlags    clearAspects,
             VkClearValue          clearValue,
             VkImageAspectFlags    discardAspects);
@@ -1336,6 +1336,9 @@ namespace dxvk {
     Rc<DxvkDevice>          m_device;
     DxvkObjects*            m_common;
 
+    uint64_t                m_frameCount = 0u;
+    std::pair<uint64_t, uint64_t> m_framesToCapture = {};
+
     uint64_t                m_trackingId = 0u;
     uint64_t                m_submitWaitId = 0u;
     uint64_t                m_submitLastId = 0u;
@@ -1346,6 +1349,7 @@ namespace dxvk {
 
     Rc<DxvkCommandList>     m_cmd;
     Rc<DxvkBuffer>          m_zeroBuffer;
+    Rc<DxvkBuffer>          m_specBuffer;
 
     Rc<DxvkBuffer>          m_scratchBuffer;
     VkDeviceSize            m_scratchOffset = 0u;
@@ -1562,6 +1566,13 @@ namespace dxvk {
             uint32_t              maxCount,
             uint32_t              stride);
 
+    std::pair<uint32_t, VkDeviceSize> computeDrawCount(
+            uint32_t              count,
+            VkDeviceSize          bufferSize,
+            VkDeviceSize          argOffset,
+            VkDeviceSize          argStride,
+            VkDeviceSize          argSize);
+
     void generateMipmapsHw(
       const Rc<DxvkImageView>&        imageView,
             VkFilter                  filter);
@@ -1622,6 +1633,12 @@ namespace dxvk {
             VkDeviceSize              subresourceAlignment,
             VkDeviceSize              sourceOffset);
 
+    void acquireShadowAttachment(const DxvkAttachment& attachment);
+    void releaseShadowAttachment(const DxvkAttachment& attachment);
+
+    void acquireShadowAttachments();
+    void releaseShadowAttachments();
+
     VkAttachmentStoreOp determineClearStoreOp(
             VkAttachmentLoadOp        loadOp) const;
 
@@ -1666,7 +1683,7 @@ namespace dxvk {
             VkRenderingAttachmentInfo&  attachment,
             DxvkAccess                  access) const;
 
-    void adjustRenderArea(const VkRect2D& rect);
+    void adjustRenderArea(const VkRect2D& rect, bool layered);
 
     void beginRenderPass();
     void endRenderPass(bool suspend);
@@ -1846,7 +1863,6 @@ namespace dxvk {
       return DxvkAccessFlags();
     }
 
-
     void emitMemoryBarrier(
             VkPipelineStageFlags      srcStages,
             VkAccessFlags             srcAccess,
@@ -1882,6 +1898,9 @@ namespace dxvk {
     
     Rc<DxvkBuffer> createZeroBuffer(
             VkDeviceSize              size);
+
+    DxvkResourceBufferInfo allocateSpecDataBuffer(
+      const DxvkPipelineLayout*       layout);
 
     void freeZeroBuffer();
 
@@ -2104,9 +2123,7 @@ namespace dxvk {
 
     void accessDrawBuffer(
             VkDeviceSize              offset,
-            uint32_t                  count,
-            uint32_t                  stride,
-            uint32_t                  size);
+            VkDeviceSize              size);
 
     void accessDrawCountBuffer(
             VkDeviceSize              offset);
@@ -2271,6 +2288,10 @@ namespace dxvk {
       m_cmd->track(view.image(), access);
     }
 
+    void beginFrameCapture();
+
+    void endFrameCapture();
+
     bool formatsAreImageCopyCompatible(
             VkFormat                  dstFormat,
             VkFormat                  srcFormat);
@@ -2289,6 +2310,8 @@ namespace dxvk {
 
     static VkFormat sanitizeTexelBufferFormat(
             VkFormat                  srcFormat);
+
+    static std::pair<uint64_t, uint64_t> parseFrameCaptureEnv();
 
   };
   

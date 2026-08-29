@@ -204,7 +204,7 @@ layout(set = SRV_SET, binding = SRV_PS_BASE) uniform texture3D t3d[TextureStageC
 
 layout(set = SAMPLER_SET, binding = 0) uniform sampler sampler_heap[];
 
-vec4 calculateFog(vec4 oColor) {
+vec3 calculateFog(vec3 oColor) {
     FogState fogState = getFogState();
 
     vec3 fogColor = unpackUnorm4x8(global.packedFogColorAndAlphaRef).bgr;
@@ -244,13 +244,9 @@ vec4 calculateFog(vec4 oColor) {
             break;
     }
 
-    fogFactor = spvNClamp(fogFactor, 0.0, 1.0);
-
-    vec4 color = oColor;
-    vec3 color3 = color.rgb;
-    vec3 fogFact3 = vec3(fogFactor);
-    vec3 lerpedFrog = mix(fogColor, color3, fogFact3);
-    return vec4(lerpedFrog.r, lerpedFrog.g, lerpedFrog.b, color.a);
+    // Flush nan to 1 to "disable" fog, just to be safe
+    fogFactor = spvNMax(spvNMin(fogFactor, 1.0f), 0.0f);
+    return mix(fogColor, oColor, fogFactor.xxx);
 }
 
 
@@ -300,10 +296,10 @@ vec4 sampleTexture(uint stage, vec4 texcoord, vec4 previousStageTextureVal) {
             texcoord = calculateBumpmapCoords(stage, texcoord, previousStageTextureVal);
     }
 
-    // The only time we should ever be able to observe a null texture is with
-    // D3DTOP_PREMODULATE. It's not 100% clear what's supposed to happen in
-    // that case, but make it so that the multiplication has no effect for now.
-    vec4 texVal = vec4(1.0f);
+    // We can encounter null textures in certain scenarios where only alpha
+    // samples the texture, or the color op itself implicitly samples. For
+    // some reason this appears to return a null vector on native.
+    vec4 texVal = vec4(0.0f);
 
     switch (state.type) {
         case TEXTURE_TYPE_2D:
@@ -621,7 +617,7 @@ void main() {
     if (isSpecularEnabled())
         state.current.xyz += in_Color1.xyz;
 
-    state.current = calculateFog(state.current);
+    state.current.xyz = calculateFog(state.current.xyz);
 
     out_Color0 = state.current;
 

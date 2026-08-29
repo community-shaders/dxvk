@@ -3,8 +3,12 @@
 #include "d3d11_swapchain.h"
 
 #include "../dxvk/dxvk_latency_builtin.h"
+#include "../dxvk/dxvk_shader_spirv.h"
 
 #include "../util/util_win32_compat.h"
+
+#include <d3d11_composition_vert.h>
+#include <d3d11_composition_frag.h>
 
 namespace dxvk {
 
@@ -329,7 +333,7 @@ namespace dxvk {
     }
 
     try {
-      hr = PresentImage(SyncInterval);
+      hr = PresentImage(SyncInterval, pPresentParameters);
     } catch (const DxvkError& e) {
       Logger::err(e.message());
       hr = E_FAIL;
@@ -419,6 +423,9 @@ namespace dxvk {
   Rc<DxvkImageView> D3D11SwapChain::GetBackBufferView() {
     Rc<DxvkImage> image = GetCommonTexture(m_backBuffers[0].ptr())->GetImage();
 
+    if (m_compositionBuffer)
+      image = m_compositionBuffer;
+
     DxvkImageViewKey key;
     key.viewType = VK_IMAGE_VIEW_TYPE_2D;
     key.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -433,7 +440,9 @@ namespace dxvk {
   }
 
 
-  HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
+  HRESULT D3D11SwapChain::PresentImage(
+            UINT                      SyncInterval,
+      const DXGI_PRESENT_PARAMETERS*  pPresentParameters) {
     // Flush pending rendering commands before
     auto immediateContext = m_parent->GetContext();
     auto immediateContextLock = immediateContext->LockContext();
@@ -460,6 +469,37 @@ namespace dxvk {
 
     if (status == VK_NOT_READY)
       return DXGI_STATUS_OCCLUDED;
+
+    // Incremental presentation is only supported with flip model presentation
+    // on native, not 100% sure about the exact validation here.
+    bool incrementalPresent = UseIncrementalPresent(pPresentParameters);
+
+    bool sequential = m_desc.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL ||
+                      m_desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+
+    if (incrementalPresent && !sequential) {
+      Logger::err("D3D11: Incremental present only supported with sequential present modes.");
+      return DXGI_ERROR_INVALID_CALL;
+    }
+
+    DirtyRectList dirtyRects;
+
+    if (incrementalPresent) {
+      CompositeIncrementalPresent(immediateContext, pPresentParameters);
+
+      // Redraw everything if the HUD is active since we don't
+      // keep track of the exact screen areas there. Likewise,
+      // nope out if there is any scaling going on.
+      VkExtent3D swapExtent = { m_desc.Width, m_desc.Height, 1u };
+
+      if (!m_hasHud && backBuffer->info().extent == swapExtent )
+        dirtyRects = NormalizeDirtyRects(pPresentParameters);
+    } else {
+      // Nuke incremental present image out of existence to
+      // save memory, also to pick the correct source image
+      m_compositionBuffer = nullptr;
+      m_compositionScroll = nullptr;
+    }
 
     m_frameId += 1;
 
@@ -511,7 +551,8 @@ namespace dxvk {
       cLatency        = m_latency,
       cColorSpace     = m_colorSpace,
       cFrameId        = m_frameId,
-      cPresentStatus  = presentStatus
+      cPresentStatus  = presentStatus,
+      cDirtyRects     = std::move(dirtyRects)
     ] (DxvkContext* ctx) {
       // SetColorSpace1 can change the presentation color space after the D3D11
       // back buffer has already been created. Tag the application's image with
@@ -537,7 +578,8 @@ namespace dxvk {
       ctx->synchronizeWsi(cSync);
       ctx->flushCommandList(nullptr, nullptr);
 
-      cDevice->presentImage(cPresenter, cLatency, cFrameId, cPresentStatus);
+      cDevice->presentImage(cPresenter, cLatency, cFrameId,
+        cDirtyRects.size(), cDirtyRects.data(), cPresentStatus);
     });
 
     if (m_backBuffers.size() > 1u)
@@ -635,6 +677,9 @@ namespace dxvk {
     // creating a new one to free up resources
     m_backBuffers.clear();
 
+    m_compositionBuffer = nullptr;
+    m_compositionScroll = nullptr;
+
     bool sequential = m_desc.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL ||
                       m_desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     uint32_t backBufferCount = sequential ? m_desc.BufferCount : 1u;
@@ -707,6 +752,7 @@ namespace dxvk {
         m_latencyHud = hud->addItem<hud::HudLatencyItem>("latency", 4);
     }
 
+    m_hasHud = hud && !hud->empty();
     m_blitter = new DxvkSwapchainBlitter(m_device, std::move(hud));
   }
 
@@ -793,6 +839,383 @@ namespace dxvk {
     m_parent->QueryInterface(__uuidof(ID3DLowLatencyDevice), reinterpret_cast<void**>(&llDevice));
 
     return static_cast<D3D11ReflexDevice*>(llDevice.ptr());
+  }
+
+
+  void D3D11SwapChain::CompositeIncrementalPresent(
+          D3D11ImmediateContext*   pContext,
+    const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    Rc<DxvkImage> backBuffer = GetCommonTexture(m_backBuffers.front().ptr())->GetImage();
+
+    if (!m_compositionVs || !m_compositionFs)
+      CreateCompositionShaders();
+
+    pContext->ResetDirtyTracking();
+    pContext->ResetCommandListState();
+
+    if (!m_compositionBuffer) {
+      // Create front buffer as a shader-readable render target
+      DxvkImageCreateInfo imageInfo = backBuffer->info();
+      imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                      | VK_IMAGE_USAGE_SAMPLED_BIT
+                      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                      | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      imageInfo.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                       | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                       | VK_PIPELINE_STAGE_TRANSFER_BIT;
+      imageInfo.access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+                       | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       | VK_ACCESS_SHADER_READ_BIT
+                       | VK_ACCESS_TRANSFER_READ_BIT
+                       | VK_ACCESS_TRANSFER_WRITE_BIT;
+      imageInfo.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      imageInfo.debugName = "Composition";
+
+      m_compositionBuffer = m_device->createImage(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+      // Create another image that we can render the scroll region to
+      imageInfo.debugName = "Composition (Scroll)";
+      m_compositionScroll = m_device->createImage(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+      // Create internal images for incremental presentation. If this is the
+      // first frame to use incremental present, then we know for sure that
+      // the last back buffer contains the full contents last presented, so
+      // simply copy the last back buffer to it.
+      pContext->EmitCs([
+        cPrevImage    = GetCommonTexture(m_backBuffers.back().ptr())->GetImage(),
+        cCurrImage    = m_compositionBuffer,
+        cScrollImage  = m_compositionScroll
+      ] (DxvkContext* ctx) {
+        VkExtent3D extent = cCurrImage->info().extent;
+
+        VkImageSubresourceLayers subresource = {};
+        subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subresource.layerCount = 1u;
+
+        ctx->initImage(cScrollImage, VK_IMAGE_LAYOUT_UNDEFINED);
+        ctx->initImage(cCurrImage, VK_IMAGE_LAYOUT_UNDEFINED);
+        ctx->copyImage(cCurrImage, subresource, VkOffset3D(),
+          cPrevImage, subresource, VkOffset3D(), extent);
+      });
+    }
+
+    DxvkImageViewKey renderViewInfo = {};
+    renderViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    renderViewInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    renderViewInfo.format = backBuffer->info().format;
+    renderViewInfo.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    renderViewInfo.aspects = VK_IMAGE_ASPECT_COLOR_BIT;
+    renderViewInfo.mipCount = 1u;
+    renderViewInfo.layerCount = 1u;
+    renderViewInfo.packedSwizzle = DxvkImageViewKey::packSwizzle({
+      VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
+      VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A });
+
+    DxvkImageViewKey shaderViewInfo = renderViewInfo;
+    shaderViewInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    shaderViewInfo.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Swapchain resolution
+    VkExtent2D resolution = {
+      backBuffer->info().extent.width,
+      backBuffer->info().extent.height };
+
+    // Set up all render state
+    pContext->EmitCs([
+      cVs = m_compositionVs,
+      cFs = m_compositionFs
+    ] (DxvkContext* ctx) mutable {
+      ctx->beginDebugLabel(vk::makeLabel(0xc6c0dc, "DXGI incremental present"));
+
+      ctx->bindShader<VK_SHADER_STAGE_VERTEX_BIT>(std::move(cVs));
+      ctx->bindShader<VK_SHADER_STAGE_FRAGMENT_BIT>(std::move(cFs));
+
+      DxvkInputAssemblyState iaState = {};
+      iaState.setPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+
+      ctx->setInputAssemblyState(iaState);
+
+      DxvkRasterizerState rsState = {};
+      rsState.setPolygonMode(VK_POLYGON_MODE_FILL);
+      rsState.setCullMode(VK_CULL_MODE_BACK_BIT);
+      rsState.setFrontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE);
+      rsState.setSampleCount(VK_SAMPLE_COUNT_1_BIT);
+
+      ctx->setRasterizerState(rsState);
+    });
+
+    // Check if we have a valid, non-empty scroll region and a non-zero
+    // scroll offset. If so, we need to copy the scroll area first.
+    bool scroll = false;
+
+    if (pPresentParameters->pScrollRect && pPresentParameters->pScrollOffset) {
+      scroll = pPresentParameters->pScrollRect->right > pPresentParameters->pScrollRect->left
+            && pPresentParameters->pScrollRect->bottom > pPresentParameters->pScrollRect->top
+            && (pPresentParameters->pScrollOffset->x || pPresentParameters->pScrollOffset->y);
+    }
+
+    if (scroll) {
+      pContext->EmitCs([
+        cSrcView      = m_compositionBuffer->createView(shaderViewInfo),
+        cDstView      = m_compositionScroll->createView(renderViewInfo),
+        cScrollRect   = *pPresentParameters->pScrollRect,
+        cScrollOffset = *pPresentParameters->pScrollOffset
+      ] (DxvkContext* ctx) mutable {
+        DxvkAttachment attachment = {};
+        attachment.view = cDstView;
+
+        ctx->clearRenderTarget(attachment, 0u, VkClearValue(), VK_IMAGE_ASPECT_COLOR_BIT);
+
+        DxvkRenderTargets rts = {};
+        rts.color[0].view = std::move(cDstView);
+
+        ctx->bindRenderTargets(std::move(rts), 0u);
+        ctx->bindResourceImageView(VK_SHADER_STAGE_FRAGMENT_BIT, 0, std::move(cSrcView));
+
+        DxvkViewport viewport = {};
+        viewport.scissor.extent.width = uint32_t(cScrollRect.right - cScrollRect.left);
+        viewport.scissor.extent.height = uint32_t(cScrollRect.bottom - cScrollRect.top);
+        viewport.viewport.width = float(viewport.scissor.extent.width);
+        viewport.viewport.height = float(viewport.scissor.extent.height);
+        viewport.viewport.maxDepth = 1.0f;
+
+        ctx->setViewports(1u, &viewport);
+
+        CompositionArgs args = {};
+        args.srcOffset.x = cScrollRect.left - cScrollOffset.x;
+        args.srcOffset.y = cScrollRect.top - cScrollOffset.y;
+        args.extent = viewport.scissor.extent;
+        args.resolution = viewport.scissor.extent;
+
+        ctx->pushData(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(args), &args);
+
+        VkDrawIndirectCommand draw = {};
+        draw.vertexCount = 4u;
+        draw.instanceCount = 1u;
+
+        ctx->draw(1u, &draw);
+      });
+    }
+
+    // Bind actual front buffer for rendering now
+    pContext->EmitCs([
+      cDstView    = m_compositionBuffer->createView(renderViewInfo),
+      cResolution = resolution
+    ] (DxvkContext* ctx) mutable {
+      DxvkRenderTargets rts = {};
+      rts.color[0].view = std::move(cDstView);
+
+      ctx->bindRenderTargets(std::move(rts), 0u);
+
+      DxvkViewport viewport = {};
+      viewport.scissor.extent = cResolution;
+      viewport.viewport.width = float(cResolution.width);
+      viewport.viewport.height = float(cResolution.height);
+      viewport.viewport.maxDepth = 1.0f;
+
+      ctx->setViewports(1u, &viewport);
+    });
+
+    if (scroll) {
+      pContext->EmitCs([
+        cScrollView   = m_compositionScroll->createView(shaderViewInfo),
+        cBufferView   = backBuffer->createView(shaderViewInfo),
+        cScrollRect   = *pPresentParameters->pScrollRect,
+        cScrollOffset = *pPresentParameters->pScrollOffset,
+        cResolution   = resolution
+      ] (DxvkContext* ctx) mutable {
+        CompositionArgs args = {};
+        args.srcOffset = { cScrollRect.left - cScrollOffset.x, cScrollRect.top - cScrollOffset.y };
+        args.dstOffset = { cScrollRect.left, cScrollRect.top };
+        args.extent.width = cScrollRect.right - cScrollRect.left;
+        args.extent.height = cScrollRect.bottom - cScrollRect.top;
+        args.resolution = cResolution;
+
+        VkDrawIndirectCommand draw = {};
+        draw.vertexCount = 4u;
+        draw.instanceCount = 1u;
+
+        ctx->bindResourceImageView(VK_SHADER_STAGE_FRAGMENT_BIT, 0, std::move(cBufferView));
+        ctx->pushData(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(args), &args);
+        ctx->draw(1u, &draw);
+
+        args.srcOffset = { 0, 0 };
+        args.dstOffset = { cScrollRect.left, cScrollRect.top };
+        args.extent.width = cScrollRect.right - cScrollRect.left - std::abs(cScrollOffset.x);
+        args.extent.height = cScrollRect.bottom - cScrollRect.top - std::abs(cScrollOffset.y);
+        args.resolution = cResolution;
+
+        if (cScrollOffset.x > 0) {
+          args.srcOffset.x += cScrollOffset.x;
+          args.dstOffset.x += cScrollOffset.x;
+        }
+
+        if (cScrollOffset.y > 0) {
+          args.srcOffset.y += cScrollOffset.y;
+          args.dstOffset.y += cScrollOffset.y;
+        }
+
+        ctx->bindResourceImageView(VK_SHADER_STAGE_FRAGMENT_BIT, 0, std::move(cScrollView));
+        ctx->pushData(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(args), &args);
+        ctx->draw(1u, &draw);
+      });
+    }
+
+    // Apply all the actual dirty rects
+    if (pPresentParameters->DirtyRectsCount) {
+      pContext->EmitCs([
+        cSrcView = backBuffer->createView(shaderViewInfo)
+      ] (DxvkContext* ctx) mutable {
+        ctx->bindResourceImageView(VK_SHADER_STAGE_FRAGMENT_BIT, 0, std::move(cSrcView));
+      });
+
+      for (uint32_t i = 0u; i < pPresentParameters->DirtyRectsCount; i++) {
+        RECT rect = pPresentParameters->pDirtyRects[i];
+
+        if (rect.right > rect.left && rect.bottom > rect.top) {
+          pContext->EmitCs([
+            cRect       = rect,
+            cResolution = resolution
+          ] (DxvkContext* ctx) mutable {
+            VkDrawIndirectCommand draw = {};
+            draw.vertexCount = 4u;
+            draw.instanceCount = 1u;
+
+            CompositionArgs args = {};
+            args.srcOffset.x = cRect.left;
+            args.srcOffset.y = cRect.top;
+            args.dstOffset.x = cRect.left;
+            args.dstOffset.y = cRect.top;
+            args.extent.width = cRect.right - cRect.left;
+            args.extent.height = cRect.bottom - cRect.top;
+            args.resolution = cResolution;
+
+            ctx->pushData(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(args), &args);
+            ctx->draw(1u, &draw);
+          });
+        }
+      }
+    }
+
+    // Ensure D3D context state is properly reapplied
+    pContext->EmitCs([] (DxvkContext* ctx) {
+      ctx->endDebugLabel();
+    });
+
+    pContext->RestoreCommandListState();
+  }
+
+
+
+  bool D3D11SwapChain::UseIncrementalPresent(
+    const DXGI_PRESENT_PARAMETERS* pPresentParameters) const {
+    if (!pPresentParameters)
+      return false;
+
+    if (pPresentParameters->DirtyRectsCount) {
+      bool hasFullRect = false;
+
+      RECT fullRect = {};
+      fullRect.right = m_desc.Width;
+      fullRect.bottom = m_desc.Height;
+
+      for (uint32_t i = 0u; i < pPresentParameters->DirtyRectsCount; i++) {
+        const auto& rect = pPresentParameters->pDirtyRects[i];
+
+        hasFullRect = hasFullRect || (rect.left <= fullRect.left && rect.top <= fullRect.top
+          && rect.right >= fullRect.right && rect.bottom >= fullRect.bottom);
+      }
+
+      if (!hasFullRect)
+        return true;
+    }
+
+    if (pPresentParameters->pScrollRect && pPresentParameters->pScrollOffset) {
+      const auto& rect = *pPresentParameters->pScrollRect;
+      const auto& offset = *pPresentParameters->pScrollOffset;
+
+      if (rect.left < rect.right && rect.top < rect.bottom && (offset.x || offset.y))
+        return true;
+    }
+
+    return false;
+  }
+
+
+  void D3D11SwapChain::CreateCompositionShaders() {
+    const std::array<DxvkBindingInfo, 1> fsBindings = {{
+      { 0u, 0u, 0u, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1u, VK_IMAGE_VIEW_TYPE_2D, VK_ACCESS_SHADER_READ_BIT },
+    }};
+
+    DxvkSpirvShaderCreateInfo vsInfo = { };
+    vsInfo.localPushData = DxvkPushDataBlock(0, sizeof(CompositionArgs), sizeof(uint32_t), 0u);
+    vsInfo.debugName = "DXGI_VS";
+    m_compositionVs = new DxvkSpirvShader(vsInfo, d3d11_composition_vert);
+
+    DxvkSpirvShaderCreateInfo fsInfo = { };
+    fsInfo.bindingCount = fsBindings.size();
+    fsInfo.bindings = fsBindings.data();
+    fsInfo.debugName = "DXGI_FS";
+    m_compositionFs = new DxvkSpirvShader(fsInfo, d3d11_composition_frag);
+  }
+
+
+  D3D11SwapChain::DirtyRectList D3D11SwapChain::NormalizeDirtyRects(const DXGI_PRESENT_PARAMETERS* pPresentParameters) const {
+    DirtyRectList result;
+
+    if (pPresentParameters->pScrollRect && pPresentParameters->pScrollOffset
+     && (pPresentParameters->pScrollOffset->x || pPresentParameters->pScrollOffset->y))
+      AddDirtyRect(result, *pPresentParameters->pScrollRect);
+
+    for (uint32_t i = 0u; i < pPresentParameters->DirtyRectsCount; i++)
+      AddDirtyRect(result, pPresentParameters->pDirtyRects[i]);
+
+    return result;
+  }
+
+
+  void D3D11SwapChain::AddDirtyRect(DirtyRectList& List, RECT Rect) const {
+    // Clamp rect to screen area, and ignore if the result is empty
+    Rect.left = std::max<int32_t>(Rect.left, 0);
+    Rect.top = std::max<int32_t>(Rect.top, 0);
+    Rect.right = std::min<int32_t>(Rect.right, m_desc.Width);
+    Rect.bottom = std::min<int32_t>(Rect.bottom, m_desc.Height);
+
+    if (Rect.left >= Rect.right || Rect.top >= Rect.bottom)
+      return;
+
+    // Scan existing list and remove any rects that overlap,
+    // merging the overlapping rectangles into the new rect.
+    auto iter = List.begin();
+
+    while (iter != List.end()) {
+      RECT next = {};
+      next.left = iter->offset.x;
+      next.right = iter->offset.x + iter->extent.width;
+      next.top = iter->offset.y;
+      next.bottom = iter->offset.y + iter->extent.height;
+
+      bool overlap = next.left < Rect.right && Rect.left < next.right
+                  && next.top < Rect.bottom && Rect.top < next.bottom;
+
+      if (overlap) {
+        iter = List.erase(iter);
+
+        Rect.left = std::min(Rect.left, next.left);
+        Rect.top = std::min(Rect.top, next.top);
+        Rect.right = std::max(Rect.right, next.right);
+        Rect.bottom = std::max(Rect.bottom, next.bottom);
+      } else {
+        iter++;
+      }
+    }
+
+    // No more overlapping rectangles in list, add new one.
+    auto& vkRect = List.emplace_back();
+    vkRect.offset.x = Rect.left;
+    vkRect.offset.y = Rect.top;
+    vkRect.extent.width = Rect.right - Rect.left;
+    vkRect.extent.height = Rect.bottom - Rect.top;
   }
 
 

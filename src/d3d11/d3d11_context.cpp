@@ -245,6 +245,9 @@ namespace dxvk {
     auto rtv = dynamic_cast<D3D11RenderTargetView*>(pResourceView);
     auto uav = dynamic_cast<D3D11UnorderedAccessView*>(pResourceView);
 
+    if (rtv && rtv->GetBufferView())
+      return;
+
     Rc<DxvkImageView> view;
     if (dsv) view = dsv->GetImageView();
     if (rtv) view = rtv->GetImageView();
@@ -271,7 +274,10 @@ namespace dxvk {
 
     if (rtv || dsv) {
       EmitCs([cView = view] (DxvkContext* ctx) {
-        ctx->clearRenderTarget(cView, 0, VkClearValue(), cView->info().aspects);
+        DxvkAttachment attachment = {};
+        attachment.view = cView;
+
+        ctx->clearRenderTarget(attachment, 0, VkClearValue(), cView->info().aspects);
       });
     }
   }
@@ -493,16 +499,16 @@ namespace dxvk {
 
     AddCost(GpuCostEstimate::Transfer);
 
-    auto view  = rtv->GetImageView();
-    auto color = ConvertColorValue(ColorRGBA, view->formatInfo());
+    DxvkAttachment attachment = {};
+    attachment.view = rtv->GetImageView();
+    attachment.shadow = rtv->GetBufferView();
 
     EmitCs([
-      cClearValue = color,
-      cImageView  = std::move(view)
+      cClearValue = ConvertColorValue(ColorRGBA, attachment.view->formatInfo()),
+      cAttachment = std::move(attachment)
     ] (DxvkContext* ctx) {
-      ctx->clearRenderTarget(cImageView,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        cClearValue, 0u);
+      ctx->clearRenderTarget(cAttachment,
+        VK_IMAGE_ASPECT_COLOR_BIT, cClearValue, 0u);
     });
   }
 
@@ -627,7 +633,10 @@ namespace dxvk {
         imageUsage.viewFormatCount = 1;
         imageUsage.viewFormats = &cDstFormat;
 
-        ctx->ensureImageCompatibility(cDstView->image(), imageUsage);
+        if (!ctx->ensureImageCompatibility(cDstView->image(), imageUsage)) {
+          Logger::err("D3D11: Failed to recreate image for ClearUAV");
+          return;
+        }
 
         // If necessary, recreate the view
         Rc<DxvkImageView> view = cDstView;
@@ -737,12 +746,15 @@ namespace dxvk {
     clearValue.depthStencil.depth   = Depth;
     clearValue.depthStencil.stencil = Stencil;
 
+    DxvkAttachment attachment = {};
+    attachment.view = dsv->GetImageView();
+
     EmitCs([
       cClearValue = clearValue,
       cAspectMask = aspectMask,
-      cImageView  = dsv->GetImageView()
+      cAttachment = std::move(attachment)
     ] (DxvkContext* ctx) {
-      ctx->clearRenderTarget(cImageView,
+      ctx->clearRenderTarget(cAttachment,
         cAspectMask, cClearValue, 0u);
     });
   }
@@ -776,6 +788,12 @@ namespace dxvk {
         ClearImageView(std::move(imgView), Color, pRect, NumRects);
     } else if (rtv) {
       Rc<DxvkImageView> imgView = rtv->GetImageView();
+      Rc<DxvkBufferView> bufView = rtv->GetBufferView();
+
+      if (bufView) {
+        Logger::err("D3D11: ClearView on buffer RTV not supported.");
+        return;
+      }
 
       if (imgView)
         ClearImageView(std::move(imgView), Color, pRect, NumRects);
@@ -1154,9 +1172,6 @@ namespace dxvk {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
 
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndexedIndirectCommand)))
-      return;
-
     if (unlikely(HasDirtyGraphicsBindings()))
       ApplyDirtyGraphicsBindings();
 
@@ -1191,9 +1206,6 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndirectCommand)))
-      return;
 
     if (unlikely(HasDirtyGraphicsBindings()))
       ApplyDirtyGraphicsBindings();
@@ -1253,9 +1265,6 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDispatchIndirectCommand)))
-      return;
 
     AddCost(GpuCostEstimate::DispatchIndirect);
 
@@ -3733,6 +3742,7 @@ namespace dxvk {
     for (UINT i = 0; i < m_state.om.rtvs.size(); i++) {
       if (m_state.om.rtvs[i] != nullptr) {
         attachments.color[i].view = m_state.om.rtvs[i]->GetImageView();
+        attachments.color[i].shadow = m_state.om.rtvs[i]->GetBufferView();
         sampleCount = m_state.om.rtvs[i]->GetSampleCount();
       }
     }
@@ -4185,22 +4195,15 @@ namespace dxvk {
       cView       = std::move(View),
       cClearValue = clearValue
     ] (DxvkContext* ctx, const VkRect2D* rects, size_t count) {
-      constexpr VkImageUsageFlags rtUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
       VkImageAspectFlags clearAspect = cView->formatInfo()->aspectMask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT);
 
       for (size_t i = 0; i < count; i++) {
         VkOffset3D offset = { rects[i].offset.x, rects[i].offset.y, 0 };
         VkExtent3D extent = { rects[i].extent.width, rects[i].extent.height, 1u };
 
-        if (extent.width && extent.height) {
-          bool isFullSize = cView->mipLevelExtent(0) == extent;
-
-          if ((cView->info().usage & rtUsage) && isFullSize)
-            ctx->clearRenderTarget(cView, clearAspect, cClearValue, 0u);
-          else
+        if (extent.width && extent.height)
             ctx->clearImageView(cView, offset, extent, clearAspect, cClearValue);
         }
-      }
     });
 
     if (NumRects) {

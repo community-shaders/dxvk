@@ -4,6 +4,7 @@
 
 #include "d3d9_options.h"
 #include "d3d9_format.h"
+#include "d3d9_bridge.h"
 
 #include "../dxvk/dxvk_adapter.h"
 
@@ -101,16 +102,14 @@ namespace dxvk {
 
     void RefreshFormatsTable() const;
 
-    bool IsExtended() const;
-
-    bool IsD3D8Compatible() const;
+    bool IsD3DCompatibile(D3DCompatibility d3dCompatibility) const;
 
     force_inline void incRef() {
-      m_refCount.fetch_add(1u, std::memory_order_acquire);
+      m_refCount.fetch_add(1u);
     }
 
     force_inline void decRef() {
-      if (m_refCount.fetch_sub(1u, std::memory_order_acquire) == 1u)
+      if (m_refCount.fetch_sub(1u) == 1u)
         delete this;
     }
 

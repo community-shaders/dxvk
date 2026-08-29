@@ -129,11 +129,15 @@ namespace dxvk {
      * Presents the last successfuly acquired image.
      * \param [in] frameId Frame number.
      * \param [in] tracker Latency tracker
+     * \param [in] rectCount Number of dirty rects
+     * \param [in] rects Dirty rectangles
      * \returns Status of the operation
      */
     VkResult presentImage(
             uint64_t                frameId,
-      const Rc<DxvkLatencyTracker>& tracker);
+      const Rc<DxvkLatencyTracker>& tracker,
+            uint32_t                rectCount,
+      const VkRectLayerKHR*         rects);
 
     /**
      * \brief Signals a given frame
@@ -328,6 +332,7 @@ namespace dxvk {
     bool                        m_hasPresentId = false;
     bool                        m_hasPresentWait = false;
     bool                        m_hasSwapchainMaintenance1 = false;
+    bool                        m_hasIncrementalPresent = false;
 
     VkPresentModeKHR            m_presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
@@ -336,6 +341,7 @@ namespace dxvk {
 
     VkResult                    m_acquireStatus = VK_NOT_READY;
     bool                        m_presentPending = false;
+    bool                        m_presentRepaint = false;
 
     std::optional<VkHdrMetadataEXT> m_hdrMetadata;
     bool                        m_hdrMetadataDirty = false;
