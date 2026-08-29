@@ -169,6 +169,21 @@ namespace dxvk {
     }
 
     /**
+     * \brief Whether a DLSS-G proxy currently owns this swapchain
+     *
+     * True when the ownership predicate classified the swapchain as owner type 2.
+     * The D3D11 swapchain uses this to skip its frame-latency throttle: Streamline
+     * DLSS-G in eBlockPresentingClientQueue paces the application by blocking inside
+     * the present itself, and DXVK's latency wait then deadlocks the pipeline — the
+     * signal that would release it fires on the submit thread, which is parked inside
+     * Streamline's blocking present, so the render thread starves and can never
+     * deliver the frame that block is waiting for. See D3D11SwapChain::SyncFrameLatency.
+     */
+    bool isDlssgOwned() const {
+      return m_dlssgOwned.load(std::memory_order_acquire);
+    }
+
+    /**
      * \brief Changes sync interval
      *
      * Changes the Vulkan present mode as necessary.
