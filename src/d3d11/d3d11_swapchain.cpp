@@ -118,7 +118,7 @@ namespace dxvk {
       return;
 
     m_presenter->destroyResources();
-    
+
     DestroyFrameLatencyEvent();
     DestroyLatencyTracker();
   }
@@ -732,13 +732,50 @@ namespace dxvk {
   }
 
 
+  // The WSI dispatch layer (dxvk::wsi::) keeps its driver pointer in a file-local
+  // static inside wsi_platform.cpp. wsi_lib is a *static* library that gets linked
+  // into dxvk_dxgi.dll and dxvk_d3d11.dll separately, so each DLL owns a private
+  // copy of that pointer. Only DxvkInstance calls wsi::init(), and the instance is
+  // constructed inside dxvk_dxgi.dll, so the d3d11 module's copy stays null for the
+  // entire process lifetime. Calling any dxvk::wsi:: entry point from here therefore
+  // dereferences a null driver and access-violates. Resolve the monitor with the
+  // Win32 API directly, mirroring Win32WsiDriver::getWindowMonitor().
+  static HMONITOR GetMonitorForWindow(HWND hWindow) {
+    if (!hWindow)
+      return nullptr;
+
+    RECT windowRect = { 0, 0, 0, 0 };
+
+    if (!::GetWindowRect(hWindow, &windowRect))
+      return ::MonitorFromWindow(hWindow, MONITOR_DEFAULTTOPRIMARY);
+
+    return ::MonitorFromPoint(
+      { (windowRect.left + windowRect.right) / 2,
+        (windowRect.top + windowRect.bottom) / 2 },
+      MONITOR_DEFAULTTOPRIMARY);
+  }
+
+
   void D3D11SwapChain::CreatePresenter() {
     PresenterDesc presenterDesc = { };
     // Do not even query the monitor outside the dedicated crash-reproduction
     // mode, so the diagnostic cannot perturb ordinary DXVK presentation.
-    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE"); value && value[0] == '1')
-      presenterDesc.fullScreenMonitor = reinterpret_cast<void*>(
-        wsi::getWindowMonitor(m_surfaceFactory->GetWindow()));
+    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE"); value && value[0] == '1') {
+      HMONITOR monitor = GetMonitorForWindow(m_surfaceFactory->GetWindow());
+
+      if (!monitor) {
+        // VkSurfaceFullScreenExclusiveWin32InfoEXT::hmonitor must be a valid
+        // handle whenever APPLICATION_CONTROLLED is requested, so leaving this
+        // null would move the fault into the ICD instead. Stay on ALLOWED.
+        Logger::warn("D3D11SwapChain: Could not resolve a monitor for the swapchain window; "
+                     "leaving application-controlled FSE disabled");
+      } else {
+        Logger::info(str::format("D3D11SwapChain: Application-controlled FSE monitor resolved: 0x",
+          std::hex, reinterpret_cast<uintptr_t>(monitor)));
+      }
+
+      presenterDesc.fullScreenMonitor = reinterpret_cast<void*>(monitor);
+    }
     presenterDesc.deferSurfaceCreation = m_parent->GetOptions()->deferSurfaceCreation;
 
     m_presenter = new Presenter(m_device, m_frameLatencySignal, presenterDesc, [
