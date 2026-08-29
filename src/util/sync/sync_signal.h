@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <list>
+#include <vector>
 
 #include "../rc/util_rc.h"
 
@@ -146,18 +147,34 @@ namespace dxvk::sync {
     }
 
     void signal(uint64_t value) {
-      std::unique_lock<dxvk::mutex> lock(m_mutex);
-      m_value.store(value, std::memory_order_release);
-      m_cond.notify_all();
+      // Callbacks must be detached from the list and the lock dropped before any
+      // of them run. A frame-latency callback can tear down the swapchain, which
+      // releases the presenter, which releases the last reference to this fence --
+      // so invoking them while iterating m_callbacks would resume iterating a
+      // freed list. That reliably crashed the Streamline path in
+      // CallbackFence::signal with a reused-memory list node. Running them outside
+      // the lock also stops a callback that signals back into this fence from
+      // re-entering a non-recursive mutex.
+      std::vector<std::function<void ()>> ready;
 
-      for (auto i = m_callbacks.begin(); i != m_callbacks.end(); ) {
-        if (value >= i->first) {
-          i->second();
-          i = m_callbacks.erase(i);
-        } else {
-          i++;
+      {
+        std::unique_lock<dxvk::mutex> lock(m_mutex);
+        m_value.store(value, std::memory_order_release);
+        m_cond.notify_all();
+
+        for (auto i = m_callbacks.begin(); i != m_callbacks.end(); ) {
+          if (value >= i->first) {
+            ready.push_back(std::move(i->second));
+            i = m_callbacks.erase(i);
+          } else {
+            i++;
+          }
         }
       }
+
+      // Nothing below may touch *this*: the first callback is allowed to destroy it.
+      for (auto& callback : ready)
+        callback();
     }
 
     void wait(uint64_t value) {
