@@ -882,10 +882,10 @@ namespace dxvk {
           Rc<DxvkLatencyTracker>      LatencyTracker) {
     D3D10DeviceLock lock = LockContext();
 
-    // Present boundary: destroy resource wrappers whose deletion was deferred a
-    // few frames ago (non-owningly-bound D3D11Buffer/SRV). By now the CS thread
-    // has drained past any raw pointer to them. See D3D11Device::RetireResource.
-    m_parent->FlushRetiredResources();
+    // Destroy resource wrappers (non-owningly-bound D3D11Buffer/SRV) that the CS
+    // thread has provably executed past. See D3D11Device::RetireResource.
+    m_parent->FlushRetiredResources(
+      GetCurrentSequenceNumber(), m_csThread.lastSequenceNumber());
 
     // Don't keep draw buffers alive indefinitely. This cannot be
     // done in ExecuteFlush because command recording itself might
@@ -1149,6 +1149,15 @@ namespace dxvk {
     });
 
     FlushCsChunk();
+
+    // Also drain retired wrappers here, not only at the present boundary: an app that
+    // churns resources without presenting (level load, streaming burst) would otherwise
+    // let them pile up until the next EndFrame. Placed after FlushCsChunk so recording
+    // is finished and the completed sequence number is as fresh as possible. Destroying
+    // an already-dead wrapper is not a context state change, so unlike SetDrawBuffers
+    // this is safe in ExecuteFlush.
+    m_parent->FlushRetiredResources(
+      GetCurrentSequenceNumber(), m_csThread.lastSequenceNumber());
 
     // Notify flush tracker about the flush
     m_flushSeqNum = m_csSeqNum;

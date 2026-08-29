@@ -49,6 +49,7 @@ namespace dxvk {
     VkBool32 compositeHud = VK_FALSE;
     /// Bit indicating whether the software cursor needs to be composited
     VkBool32 compositeCursor = VK_FALSE;
+
     size_t hash() const {
       DxvkHashState hash;
       hash.add(uint32_t(srcSpace));

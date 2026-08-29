@@ -30,6 +30,9 @@ namespace dxvk {
     // Unconditionally enable BDA usage
     m_info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
+    // Usage flags are final now, so the cached allocation descriptors can be built
+    initStorageInfo();
+
     // Create and assign actual buffer resource
     assignStorage(allocateStorage());
   }
@@ -49,6 +52,10 @@ namespace dxvk {
     m_info          (createInfo),
     m_stableAddress (true) {
     m_allocator->registerResource(this);
+
+    // Imported buffers never allocate through the caches, but keep the cached
+    // descriptors consistent with m_info so allocateStorage stays well-defined.
+    initStorageInfo();
 
     DxvkAllocationInfo allocationInfo = { };
     allocationInfo.resourceCookie = cookie();

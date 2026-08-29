@@ -77,10 +77,10 @@ namespace dxvk {
     }
 
   protected:
-
+    
     std::atomic<uint32_t> m_refCount   = { 0ul };
     std::atomic<uint32_t> m_refPrivate = { 0ul };
-
+    
     // Final-destruction hook. Defaults to immediate delete; overridden by
     // resource types (D3D11Buffer / D3D11ShaderResourceView) that are bound
     // non-owningly and captured by raw pointer into async CS closures, so

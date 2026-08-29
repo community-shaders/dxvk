@@ -248,8 +248,19 @@ namespace dxvk {
       // differs by any character ("dxvk", "DXVK2" and "vkd3d" all work). Report a
       // non-matching name only when HDR is actually in use, so SDR titles keep
       // whatever else that profile does for them.
-      const bool hdrEnabled = env::getEnvVar("DXVK_HDR") == "1"
-        || m_config.getOption<bool>("dxgi.enableHDR", false);
+
+      // Matches the DxgiOptions default for enableHDR (config key, falling back to the
+      // DXVK_HDR env var).
+      //
+      // KNOWN GAP: DxgiOptions can subsequently force enableHDR off for UE4 DX11 titles
+      // (see isHDRDisallowed), and this cannot see that. Such a title would report
+      // "DXVK_HDR" while HDR is actually disabled, losing whatever else the NVIDIA
+      // profile does for it. Not replicated here deliberately: the suppression keys off
+      // whether d3d12.dll is loaded, which is not yet settled at instance-creation time,
+      // so a copy of that heuristic would be unreliable rather than merely duplicated.
+      // Use DXVK_ENGINE_NAME=DXVK to force the profile back on if a UE4 title needs it.
+      const bool hdrEnabled = m_config.getOption<bool>("dxgi.enableHDR",
+        env::getEnvVar("DXVK_HDR") == "1");
 
       // DXVK_ENGINE_NAME overrides this outright, so the profile can be opted back
       // into (or any other name tested) without a rebuild.

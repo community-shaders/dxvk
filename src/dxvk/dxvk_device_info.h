@@ -212,10 +212,6 @@ namespace dxvk {
     DxvkDeviceQueueIndex graphics;
     DxvkDeviceQueueIndex transfer;
     DxvkDeviceQueueIndex sparse;
-    // Dedicated presentation queue: same family as graphics, second queue index when the family
-    // exposes one (aliases graphics otherwise). This separates presentation from graphics
-    // submissions and matches the queue topology used by the frame-generation integration.
-    DxvkDeviceQueueIndex present;
   };
 
 

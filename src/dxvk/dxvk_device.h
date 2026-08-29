@@ -69,9 +69,6 @@ namespace dxvk {
     DxvkDeviceQueue graphics;
     DxvkDeviceQueue transfer;
     DxvkDeviceQueue sparse;
-    // Dedicated presentation queue (second graphics-family queue when available, else an alias
-    // of graphics). See DxvkDeviceQueueMapping::present.
-    DxvkDeviceQueue present;
   };
   
   /**

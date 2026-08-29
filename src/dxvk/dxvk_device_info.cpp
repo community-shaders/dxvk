@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cstdlib>
 #include <iomanip>
 #include <set>
 #include <sstream>
@@ -520,7 +519,7 @@ namespace dxvk {
 
       // Pascal reportedly sees massive perf drops with descriptor buffer
       if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        enableDescriptorBuffer = false;
+        enableDescriptorBuffer = m_hasMeshShader;
 
       // On RDNA2 and older, descriptor buffer implicitly disables fmask
       // on amdvlk, which makes MSAA performance unusable on these GPUs.
@@ -673,24 +672,10 @@ namespace dxvk {
         VK_QUEUE_SPARSE_BINDING_BIT);
     }
 
-    // Dedicated present queue (opt-in via DXVK_PRESENT_QUEUE_SPLIT=1): second queue of the
-    // graphics family when available, else an alias of the graphics queue. Built while chasing
-    // the DLSS-G blocking-mode wedge (the actual fix was the FSE pNext change, not this), and
-    // the split BREAKS sl.fsr's game-queue capture — it identifies the game queue as "the queue
-    // the app presents on", so FFX composes against the present-only queue while the real
-    // rendering runs elsewhere, wedging intermittently. Default: alias (single-queue behavior).
-    m_queueMapping.present.family = m_queueMapping.graphics.family;
-    m_queueMapping.present.index = m_queueMapping.graphics.index;
-    if (const char* v = std::getenv("DXVK_PRESENT_QUEUE_SPLIT"); v && v[0] == '1') {
-      if (graphicsQueue.queueFamilyProperties.queueCount > m_queueMapping.graphics.index + 1u)
-        m_queueMapping.present.index = m_queueMapping.graphics.index + 1u;
-    }
-
     // Actually enable all the queues
     enableQueue(m_queueMapping.graphics);
     enableQueue(m_queueMapping.transfer);
     enableQueue(m_queueMapping.sparse);
-    enableQueue(m_queueMapping.present);
 
     // Fix up queue priority pointers
     uint32_t maxQueueCount = 0u;
@@ -712,9 +697,7 @@ namespace dxvk {
 
     for (auto& q : m_queuesEnabled) {
       if (q.queueFamilyIndex == queue.family) {
-        // Max, not overwrite: a family may host multiple logical queues (graphics + the
-        // dedicated present queue) enabled in any order.
-        q.queueCount = std::max(q.queueCount, queue.index + 1u);
+        q.queueCount = queue.index + 1u;
         return;
       }
     }

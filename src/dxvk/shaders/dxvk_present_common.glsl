@@ -12,6 +12,7 @@ layout(constant_id = 4) const uint c_dst_color_space = VK_COLOR_SPACE_SRGB_NONLI
 layout(constant_id = 5) const bool c_dst_is_srgb = true;
 layout(constant_id = 6) const bool c_composite_hud = false;
 layout(constant_id = 7) const bool c_composite_cursor = false;
+
 layout(set = 0, binding = 0) uniform sampler s_samplers[];
 
 layout(set = 1, binding = 0) uniform texture2D s_image;

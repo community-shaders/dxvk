@@ -318,22 +318,13 @@ namespace dxvk {
   : m_device(device), m_signal(signal),
     m_vki(device->instance()->vki()),
     m_vkd(device->vkd()),
-    m_surfaceProc(std::move(proc)),
-    m_fullScreenMonitor(desc.fullScreenMonitor) {
+    m_surfaceProc(std::move(proc)) {
     // Only enable FSE if the user explicitly opts in. On Windows, FSE
     // is required to support VRR or HDR, but blocks alt-tabbing or
     // overlapping windows, which breaks a number of games.
     m_fullscreenMode = m_device->config().allowFse
       ? VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT
       : VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
-
-    // Sample-only crash diagnostic. ALLOWED is DXVK's normal opt-in; this mode
-    // exercises the full APPLICATION_CONTROLLED Win32 lifecycle explicitly.
-    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE");
-        value && value[0] == '1' && m_fullScreenMonitor) {
-      m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
-      Logger::info("Presenter: Enabling application-controlled fullscreen-exclusive crash diagnostic");
-    }
 
     updateFsePNextChainMode();
 
@@ -582,12 +573,10 @@ namespace dxvk {
       fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
     }
 
-    // DLSS-G's input tags and intercepted present must share one queue order.
-    // DXVK's submission thread externally synchronizes this call with graphics
-    // submissions. Other presenters retain the dedicated present queue.
-    VkQueue presentQueue = dlssgOwned
-      ? m_device->queues().graphics.queueHandle
-      : m_device->queues().present.queueHandle;
+    // DLSS-G's input tags and the intercepted present must share one queue order with
+    // graphics submissions; DXVK's submission thread externally synchronizes this call
+    // against them.
+    VkQueue presentQueue = m_device->queues().graphics.queueHandle;
     DxvkPresentCallbackInfo callbackInfo = {
       sizeof(DxvkPresentCallbackInfo), 1u, dlssgOwned ? 2u : (fgOwned ? 1u : 0u), m_imageIndex,
       frameId, uint64_t(reinterpret_cast<uintptr_t>(m_swapchain)), m_presentWaitSwapchainSerial,
@@ -782,11 +771,16 @@ namespace dxvk {
       }
     }
 
-    if (colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-      Logger::warn(str::format("Presenter: HDR10 unsupported; query returned ",
+    // Diagnostic for the common "HDR silently stayed off" case. Latched: apps reach
+    // here through DxgiSwapChain::CheckColorSpaceSupport, which some poll every frame,
+    // and one line per supported format per call floods the log. Logged at info, since
+    // an app probing for HDR10 on an SDR display is normal, not a warning.
+    if (colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT && !m_loggedHdr10Unsupported) {
+      m_loggedHdr10Unsupported = true;
+      Logger::info(str::format("Presenter: HDR10 unsupported; query returned ",
         surfaceFormats.size(), " surface format(s); FSE pNext=", m_chainFseInfo ? "yes" : "no"));
       for (const auto& surfaceFormat : surfaceFormats) {
-        Logger::warn(str::format("Presenter:   format=", surfaceFormat.format,
+        Logger::info(str::format("Presenter:   format=", surfaceFormat.format,
           ", colorSpace=", surfaceFormat.colorSpace));
       }
     }
@@ -1016,19 +1010,6 @@ namespace dxvk {
 
       if (vr == VK_ERROR_SURFACE_LOST_KHR)
         destroySurface();
-
-      // Entering fullscreen-exclusive immediately invalidates the swapchain, so the
-      // first present after the acquire reports OUT_OF_DATE and lands here. By that
-      // point destroySwapchain() has already released exclusive mode, and the NVIDIA
-      // Windows ICD then refuses to back another APPLICATION_CONTROLLED swapchain
-      // with the surface that was created against the pre-exclusive window state --
-      // it fails with VK_ERROR_INITIALIZATION_FAILED indefinitely. Dropping the
-      // surface lets the retry below rebuild both, which completes the transition.
-      if (vr == VK_ERROR_INITIALIZATION_FAILED
-       && m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT) {
-        Logger::info("Presenter: Exclusive swapchain creation failed; rebuilding the surface and retrying");
-        destroySurface();
-      }
     }
 
     if (!m_surface) {
@@ -1074,10 +1055,6 @@ namespace dxvk {
     if (forced >= 0)
       chain = forced != 0;
 
-    // A/B diagnostic override.
-    if (const char* v = std::getenv("DXVK_CHAIN_FSE"); v && v[0] == '1')
-      chain = true;
-
     if (chain != m_chainFseInfo)
       Logger::info(str::format("Presenter: FSE pNext ", chain ? "chained (copy-path presents)"
                                                               : "not chained (flip-model presents)"));
@@ -1089,13 +1066,8 @@ namespace dxvk {
     // The frame-generation method may have changed since the last (re)create.
     updateFsePNextChainMode();
 
-    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
-    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenExclusiveInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenExclusiveInfo.fullScreenExclusive = m_fullscreenMode;
-
-    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-      fullScreenExclusiveInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     surfaceInfo.surface = m_surface;
@@ -1249,9 +1221,6 @@ namespace dxvk {
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
 
-    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-      fullScreenInfo.pNext = &fullScreenWin32Info;
-
     VkSwapchainPresentModesCreateInfoKHR modeInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_KHR };
     modeInfo.presentModeCount       = compatibleModes.size();
     modeInfo.pPresentModes          = compatibleModes.data();
@@ -1289,12 +1258,8 @@ namespace dxvk {
     if (presentWait2Caps.presentWait2Supported)
       swapInfo.flags |= VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR;
 
-    if (m_device->features().extFullScreenExclusive && m_chainFseInfo) {
-      if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-        fullScreenWin32Info.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
-      else
-        fullScreenInfo.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
-    }
+    if (m_device->features().extFullScreenExclusive && m_chainFseInfo)
+      fullScreenInfo.pNext = const_cast<void*>(std::exchange(swapInfo.pNext, &fullScreenInfo));
 
     if (m_hasSwapchainMaintenance1)
       modeInfo.pNext = std::exchange(swapInfo.pNext, &modeInfo);
@@ -1313,17 +1278,6 @@ namespace dxvk {
     if ((status = m_vkd->vkCreateSwapchainKHR(m_vkd->device(), &swapInfo, nullptr, &m_swapchain))) {
       Logger::err(str::format("Presenter: Failed to create Vulkan swapchain: ", status));
       return status;
-    }
-
-    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT) {
-      status = m_vkd->vkAcquireFullScreenExclusiveModeEXT(m_vkd->device(), m_swapchain);
-      Logger::info(str::format("Presenter: Application-controlled fullscreen-exclusive acquire returned ", status));
-      if (status != VK_SUCCESS) {
-        m_vkd->vkDestroySwapchainKHR(m_vkd->device(), m_swapchain, nullptr);
-        m_swapchain = VK_NULL_HANDLE;
-        return status;
-      }
-      m_fullScreenExclusiveAcquired = true;
     }
 
     // An external FFX frame-generation layer may have replaced this swapchain with its own wrapped
@@ -1420,9 +1374,11 @@ namespace dxvk {
     m_hasPresentId = presentId2Caps.presentId2Supported || m_device->features().khrPresentId.presentId;
     m_hasPresentWait = presentWait2Caps.presentWait2Supported || m_device->features().khrPresentWait.presentWait;
 
-    // Don't launch the present-wait worker for an FFX frame-generation-owned swapchain: it would call
-    // vkWaitForPresentKHR on FFX's wrapped swapchain (which FFX, not DXVK, paces), racing FFX's own
-    // present thread. signalFrame releases the frame-latency signal directly instead.
+    // Do not launch the present-wait worker for an FFX frame-generation-owned swapchain: it would
+    // call vkWaitForPresentKHR on FFX's wrapped swapchain (which FFX, not DXVK, paces), racing
+    // FFX's own present thread. signalFrame releases the frame-latency signal directly instead.
+    // If ownership is later handed back, a recreate re-evaluates this and starts the worker then;
+    // an already-running worker is left alone and simply idles (see runFrameThread).
     if (m_signal && m_hasPresentWait && !m_frameGenOwned.load() && !m_frameThread.joinable())
       m_frameThread = dxvk::thread([this] { runFrameThread(); });
 
@@ -1445,13 +1401,8 @@ namespace dxvk {
   VkResult Presenter::getSupportedFormats(std::vector<VkSurfaceFormatKHR>& formats) const {
     uint32_t numFormats = 0;
 
-    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
-    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
-
-    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-      fullScreenInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     if (m_chainFseInfo)
@@ -1499,13 +1450,8 @@ namespace dxvk {
   VkResult Presenter::getSupportedPresentModes(std::vector<VkPresentModeKHR>& modes) const {
     uint32_t numModes = 0;
 
-    VkSurfaceFullScreenExclusiveWin32InfoEXT fullScreenWin32Info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT };
-    fullScreenWin32Info.hmonitor = reinterpret_cast<HMONITOR>(m_fullScreenMonitor);
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
     fullScreenInfo.fullScreenExclusive = m_fullscreenMode;
-
-    if (m_fullscreenMode == VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-      fullScreenInfo.pNext = &fullScreenWin32Info;
 
     VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
     if (m_chainFseInfo)
@@ -1584,22 +1530,6 @@ namespace dxvk {
     const VkSurfaceFormatKHR*       pSupported,
           VkColorSpaceKHR           desired) {
     VkColorSpaceKHR fallback = pSupported[0].colorSpace;
-
-    // Sample-only all-Vulkan HDR10-to-scRGB path. Keep the application's
-    // backbuffer tagged as PQ/BT.2020, but select a linear-scRGB WSI surface so
-    // the existing presenter shader performs the conversion. Streamline wraps
-    // this Vulkan swapchain directly; no D3D12 or DXGI output swapchain exists.
-    if (desired == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-      const char* viaScRgb = std::getenv("DXVK_HDR10_VIA_SCRGB");
-      if (viaScRgb && viaScRgb[0] == '1') {
-        for (uint32_t i = 0; i < numSupported; i++) {
-          if (pSupported[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-            Logger::info("Presenter: Selecting scRGB WSI for HDR10-to-scRGB Vulkan Streamline mode");
-            return VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
-          }
-        }
-      }
-    }
 
     for (uint32_t i = 0; i < numSupported; i++) {
       if (pSupported[i].colorSpace == desired)
@@ -1841,12 +1771,6 @@ namespace dxvk {
       m_vkd->vkDestroyFence(m_vkd->device(), sem.fence, nullptr);
     }
 
-    if (m_fullScreenExclusiveAcquired && m_swapchain) {
-      VkResult status = m_vkd->vkReleaseFullScreenExclusiveModeEXT(m_vkd->device(), m_swapchain);
-      Logger::info(str::format("Presenter: Application-controlled fullscreen-exclusive release returned ", status));
-      m_fullScreenExclusiveAcquired = false;
-    }
-
     // The conditional is here because some third party layers don't properly handle null swapchains
     if (m_swapchain)
       m_vkd->vkDestroySwapchainKHR(m_vkd->device(), m_swapchain, nullptr);
@@ -1909,12 +1833,18 @@ namespace dxvk {
   void Presenter::runFrameThread() {
     env::setThreadName("dxvk-frame");
 
-    // Defense-in-depth: if the swapchain became FFX frame-generation-owned after this thread started
-    // (e.g. FG toggled on), bail out — FFX owns present-wait/pacing and presentImage stops queuing
-    // frames here. A recreate (which CS forces on toggle) re-evaluates ownership at line ~902.
-    if (m_frameGenOwned.load())
-      return;
-
+    // NOTE: do NOT return early when the swapchain is frame-generation-owned. A
+    // returned std::thread stays joinable, and the spawn guard in createSwapChain
+    // is !m_frameThread.joinable() — so bailing out here would permanently prevent
+    // the worker from being recreated. If frame generation were then switched off,
+    // presentImage would resume queuing frames that nobody consumes: the frame
+    // latency signal would stop firing and destroySwapchain's wait for an empty
+    // queue would block forever.
+    //
+    // Instead the thread just idles. While frame gen owns the swapchain, presentImage
+    // does not enqueue and signalFrame releases the latency signal directly, so the
+    // loop below simply blocks on the condition variable at no cost, and picks work
+    // back up by itself if ownership is handed back.
     while (true) {
       PresenterFrame frame = { };
 

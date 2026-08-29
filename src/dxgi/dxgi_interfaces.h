@@ -62,8 +62,6 @@ IDXGIVkSurfaceFactory : public IUnknown {
           VkInstance                Instance,
           VkPhysicalDevice          Adapter,
           VkSurfaceKHR*             pSurface) = 0;
-
-  virtual HWND STDMETHODCALLTYPE GetWindow() = 0;
 };
 
 

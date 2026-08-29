@@ -148,9 +148,9 @@ namespace dxvk {
 
     // Force fullscreen to a borderless window with no display mode-set. A real exclusive mode-set is
     // revoked by Windows on minimize/alt-tab, which recreates the swapchain and tears down the FFX
-    // frame-generation swapchain, deadlocking (root cause of the alt-tab/minimize freeze). Hardcoded
-    // on in this build.
-    this->fakeFullscreen = true;
+    // frame-generation swapchain, deadlocking (root cause of the alt-tab/minimize freeze). Defaults
+    // ON in this fork -- unlike upstream, where exclusive fullscreen is the normal path.
+    this->fakeFullscreen = config.getOption<bool>("dxgi.fakeFullscreen", true);
 
     // We don't support dcomp swapchains and some games may rely on them failing on creation
     this->enableDummyCompositionSwapchain = config.getOption<bool>("dxgi.enableDummyCompositionSwapchain", false);

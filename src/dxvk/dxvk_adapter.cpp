@@ -301,7 +301,6 @@ namespace dxvk {
     deviceQueues.graphics = getDeviceQueue(vkd, caps, queueMapping.graphics);
     deviceQueues.transfer = getDeviceQueue(vkd, caps, queueMapping.transfer);
     deviceQueues.sparse   = getDeviceQueue(vkd, caps, queueMapping.sparse);
-    deviceQueues.present  = getDeviceQueue(vkd, caps, queueMapping.present);
 
     return new DxvkDevice(m_instance, this, vkd, caps, deviceQueues, DxvkQueueCallback());
   }
@@ -336,8 +335,6 @@ namespace dxvk {
     deviceQueues.graphics = getDeviceQueue(vkd, importCaps, queueMapping.graphics);
     deviceQueues.transfer = getDeviceQueue(vkd, importCaps, queueMapping.transfer);
     deviceQueues.sparse   = getDeviceQueue(vkd, importCaps, queueMapping.sparse);
-    // Imported devices did not request a second queue — the present queue aliases graphics.
-    deviceQueues.present  = deviceQueues.graphics;
 
     return new DxvkDevice(m_instance, this, vkd, importCaps, deviceQueues, args.queueCallback);
   }

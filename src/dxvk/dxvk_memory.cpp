@@ -1,7 +1,14 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
-#include <xmmintrin.h>
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+  #include <xmmintrin.h>
+  #define DXVK_PREFETCH(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T0)
+#elif defined(__GNUC__) || defined(__clang__)
+  #define DXVK_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 3)
+#else
+  #define DXVK_PREFETCH(ptr) ((void)(ptr))
+#endif
 
 #include "../util/util_bit.h"
 
@@ -458,7 +465,7 @@ namespace dxvk {
     // slot.mapPtr here: the mapped targets are scattered across thousands of
     // distinct pages, so the prefetch triggers a page walk on the pop instead.
     if (pool.count >= 4u)
-      _mm_prefetch(reinterpret_cast<const char*>(pool.slots[pool.count - 4u].allocation), _MM_HINT_T0);
+      DXVK_PREFETCH(pool.slots[pool.count - 4u].allocation);
 
     return slot;
   }
@@ -488,7 +495,7 @@ namespace dxvk {
     uint32_t warm = std::min(uint32_t(pool.count), 4u);
 
     for (uint32_t i = 0; i < warm; i++)
-      _mm_prefetch(reinterpret_cast<const char*>(pool.slots[pool.count - 1u - i].allocation), _MM_HINT_T0);
+      DXVK_PREFETCH(pool.slots[pool.count - 1u - i].allocation);
 
     return consumed;
   }
@@ -1334,13 +1341,7 @@ namespace dxvk {
       }
     }
 
-    // D3D12 heap/resource handles already identify allocations owned and kept
-    // resident by the native D3D12 device. D3DKMTOpenResourceFromNtHandle is
-    // a D3D10/11 runtime bookkeeping path and rejects these handles even though
-    // Vulkan imported them successfully.
-    if (allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM &&
-        allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT &&
-        allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT)
+    if (allocationInfo.handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM)
       allocation->initKmtHandles(allocationInfo.handleType);
 
     return allocation;

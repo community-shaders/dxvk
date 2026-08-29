@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -435,11 +436,14 @@ namespace dxvk {
      * D3D11Buffer / D3D11ShaderResourceView are bound non-owningly and captured
      * by raw pointer into async CS closures. When the app drops the last public
      * reference, the wrapper (and the DxvkBuffer/DxvkImageView Rc it holds) must
-     * outlive any raw reference still queued in the CS stream. Instead of an
-     * immediate \c delete, the wrapper is parked here and actually deleted a few
-     * present boundaries later (see \ref FlushRetiredResources), by which point
-     * the CS thread has drained past any reference. Thread-safe: resources may
-     * be released from worker threads.
+     * outlive any raw reference still queued in the CS stream, so instead of an
+     * immediate \c delete the wrapper is parked here.
+     *
+     * No sequence number is taken here: this may run on any thread, and a stale
+     * read could produce a barrier older than the chunk holding the reference.
+     * The immediate context stamps the barrier instead (see
+     * \ref FlushRetiredResources), which is always safe because it runs on the
+     * thread that emits the chunks.
      * \param [in] deleter Type-erased deleter that runs the real destructor.
      */
     void RetireResource(std::function<void()>&& deleter) {
@@ -448,36 +452,69 @@ namespace dxvk {
     }
 
     /**
-     * \brief Actually destroys resources parked >= 2 present boundaries ago
+     * \brief Destroys resources the CS thread has provably drained past
      *
-     * Called once per frame from D3D11ImmediateContext::EndFrame on the render
-     * thread. Uses a small ring of buckets so a retired wrapper always survives
-     * at least two full frames — comfortably longer than the render->CS handoff.
-     * Deletions run OUTSIDE the lock (a destructor may itself retire resources).
+     * Called from the immediate context (EndFrame and ExecuteFlush), which is the
+     * thread that records CS chunks.
+     *
+     * \c CurrentSeq is the sequence number the chunk being recorded will receive,
+     * so it is >= the sequence of every chunk emitted so far — including any that
+     * captured a raw pointer to a resource parked since the last call. Stamping
+     * the pending batch with it therefore yields a barrier that can never be too
+     * early. \c CompletedSeq is the last sequence the CS thread has executed, so
+     * a batch whose barrier it has reached holds no live references.
+     *
+     * This is an exact ordering guarantee, not a heuristic delay: a resource is
+     * destroyed only once the CS thread has run past every chunk that could name
+     * it. Deletions run OUTSIDE the lock, since a destructor may itself retire.
+     * \param [in] CurrentSeq Sequence number of the chunk being recorded
+     * \param [in] CompletedSeq Last sequence number executed by the CS thread
      */
-    void FlushRetiredResources() {
+    void FlushRetiredResources(uint64_t CurrentSeq, uint64_t CompletedSeq) {
       std::vector<std::function<void()>> toDelete;
+
       { std::lock_guard lock(m_retireMutex);
-        toDelete = std::move(m_retireRing[m_retireSlot]);
-        m_retireRing[m_retireSlot] = std::move(m_retirePending);
+        while (!m_retireBatches.empty() && m_retireBatches.front().barrier <= CompletedSeq) {
+          auto& batch = m_retireBatches.front();
+
+          for (auto& fn : batch.deleters)
+            toDelete.push_back(std::move(fn));
+
+          m_retireBatches.pop_front();
+        }
+
+        if (!m_retirePending.empty())
+          m_retireBatches.push_back({ CurrentSeq, std::move(m_retirePending) });
+
         m_retirePending.clear();
-        m_retireSlot = (m_retireSlot + 1u) % uint32_t(m_retireRing.size());
       }
+
       for (auto& fn : toDelete)
         fn();
     }
 
-    /** \brief Deletes everything parked, ignoring the delay (device teardown). */
+    /** \brief Deletes everything parked, ignoring the barrier (device teardown). */
     void DrainRetiredResources() {
       for (;;) {
         std::vector<std::function<void()>> toDelete;
+
         { std::lock_guard lock(m_retireMutex);
-          toDelete = std::move(m_retirePending);
+          for (auto& fn : m_retirePending)
+            toDelete.push_back(std::move(fn));
+
           m_retirePending.clear();
-          for (auto& b : m_retireRing) { for (auto& f : b) toDelete.push_back(std::move(f)); b.clear(); }
+
+          for (auto& batch : m_retireBatches) {
+            for (auto& fn : batch.deleters)
+              toDelete.push_back(std::move(fn));
+          }
+
+          m_retireBatches.clear();
         }
+
         if (toDelete.empty())
           break;
+
         for (auto& fn : toDelete)
           fn();
       }
@@ -563,12 +600,17 @@ namespace dxvk {
     D3D11Initializer*               m_initializer = nullptr;
     D3D10Device*                    m_d3d10Device = nullptr;
 
-    // Deferred-destruction ring for non-owningly-bound resource wrappers.
-    // 3 buckets → a retired wrapper lives 2-3 present boundaries before delete.
-    dxvk::mutex                                  m_retireMutex;
-    std::vector<std::function<void()>>           m_retirePending;
-    std::array<std::vector<std::function<void()>>, 3> m_retireRing = { };
-    uint32_t                                     m_retireSlot = 0u;
+    // Deferred destruction for non-owningly-bound resource wrappers. Each batch
+    // carries the CS sequence number that must complete before its resources can
+    // be destroyed; see RetireResource / FlushRetiredResources.
+    struct RetireBatch {
+      uint64_t                           barrier;
+      std::vector<std::function<void()>> deleters;
+    };
+
+    dxvk::mutex                          m_retireMutex;
+    std::vector<std::function<void()>>   m_retirePending;
+    std::deque<RetireBatch>              m_retireBatches;
 
     D3D11StateObjectSet<D3D11BlendState>        m_bsStateObjects;
     D3D11StateObjectSet<D3D11DepthStencilState> m_dsStateObjects;

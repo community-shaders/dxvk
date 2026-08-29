@@ -1,7 +1,6 @@
 #pragma once
 
 #include "d3d11_texture.h"
-#include "d3d11_native_presenter.h"
 
 #include "../dxvk/hud/dxvk_hud.h"
 
@@ -110,8 +109,6 @@ namespace dxvk {
 
     Rc<DxvkDevice>            m_device;
     Rc<Presenter>             m_presenter;
-    // Allocated only when Community Shaders explicitly selects its HDR DLSS-G workaround.
-    std::unique_ptr<D3D11NativePresenter> m_dlssgPresenter;
 
     Rc<DxvkSwapchainBlitter>  m_blitter;
     Rc<DxvkLatencyTracker>    m_latency;
@@ -145,8 +142,6 @@ namespace dxvk {
     Rc<DxvkImageView> GetBackBufferView();
 
     HRESULT PresentImage(UINT SyncInterval);
-
-    HRESULT PresentImageNative(UINT SyncInterval);
 
     void RotateBackBuffers(D3D11ImmediateContext* ctx);
 

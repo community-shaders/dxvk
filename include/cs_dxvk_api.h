@@ -35,95 +35,53 @@ typedef struct CsDxvkPresentCallbackInfo {
   int32_t presentResult;
 } CsDxvkPresentCallbackInfo;
 
-typedef enum CsDxvkDlssgObjectType {
-  CS_DXVK_DLSSG_OBJECT_DEVICE = 1,
-  CS_DXVK_DLSSG_OBJECT_FACTORY = 2,
-} CsDxvkDlssgObjectType;
 
-typedef struct CsDxvkDlssgPresentInfo {
-  uint32_t size;
-  uint32_t version;
-  void* commandList;
-  void* depth;
-  void* motionVectors;
-  void* hudlessColor;
-  uint64_t frameId;
-} CsDxvkDlssgPresentInfo;
+/* Entry points exported by dxvk_d3d11.dll.
+ *
+ * Each typedef below is named after the symbol it describes and is listed in
+ * export-ordinal order, so this block and src/d3d11/d3d11.def can be diffed by
+ * eye. Typedefs are not linked by name, so a mismatch here is silent -- keep
+ * the two in sync whenever an export is added, renamed, or removed.
+ *
+ * Ordinals 104-106, 108, 115, 119 and 123-125 are holes left by exports that
+ * were removed (123-125 were the D3D12/DXGI bridge presenter). Do not reuse them:
+ * a host built against an older header would bind the old ordinal to a new,
+ * incompatible function. Always take the next free ordinal instead. */
 
-typedef struct CsDxvkDlssUpscaleRequest {
-  uint32_t size;
-  uint32_t version;
-  void* colorIn;
-  void* colorOut;
-  void* depth;
-  void* motionVectors;
-  uint32_t renderWidth;
-  uint32_t renderHeight;
-  uint32_t outputWidth;
-  uint32_t outputHeight;
-  uint32_t qualityMode;
-  float jitterX;
-  float jitterY;
-  uint32_t frameId;
-} CsDxvkDlssUpscaleRequest;
+/* @100 */ typedef uint32_t (*PFN_csDxvkFrameGenOwnershipQuery)(VkSwapchainKHR swapchain);
+/* @100 */ typedef void (*PFN_dxvkSetFrameGenOwnershipQuery)(PFN_csDxvkFrameGenOwnershipQuery query);
+/* @101 */ typedef void (*PFN_dxvkRequestSwapchainRecreate)(void);
+/* @102 */ typedef bool (*PFN_csDxvkSwapchainTornDownCallback)(void);
+/* @102 */ typedef void (*PFN_dxvkSetSwapchainTornDownCallback)(PFN_csDxvkSwapchainTornDownCallback callback);
+/* @103 */ typedef void (*PFN_dxvkSetTargetFrameRate)(double fps);
 
-typedef struct CsDxvkDlssEvaluationInfo {
-  uint32_t size;
-  uint32_t version;
-  void* commandList;
-  void* colorIn;
-  void* colorOut;
-  void* depth;
-  void* motionVectors;
-  uint32_t renderWidth;
-  uint32_t renderHeight;
-  uint32_t outputWidth;
-  uint32_t outputHeight;
-  uint32_t qualityMode;
-  float jitterX;
-  float jitterY;
-  uint32_t frameId;
-} CsDxvkDlssEvaluationInfo;
+/* @107 Selects whether VkSurfaceFullScreenExclusiveInfoEXT is chained into
+ * surface and swapchain queries. 1 = force chain (compositor copy-path
+ * presents), 0 = force no-chain (hardware flips), -1 = follow dxvk.allowFse. */
+/* @107 */ typedef void (*PFN_dxvkSetFsePNextChain)(int32_t mode);
 
-typedef void (*PFN_csDxvkUpgradeDlssgObject)(uint32_t type, void** object);
-typedef void (*PFN_csDxvkDlssgPresentBegin)(const CsDxvkDlssgPresentInfo* info);
-typedef void (*PFN_csDxvkDlssgPresentEnd)(int32_t result);
-typedef bool (*PFN_csDxvkEvaluateDlss)(const CsDxvkDlssEvaluationInfo* info);
-
-typedef struct CsDxvkDlssgPresenterWorkaroundApi {
-  uint32_t size;
-  uint32_t version;
-  PFN_csDxvkUpgradeDlssgObject upgradeObject;
-  PFN_csDxvkDlssgPresentBegin presentBegin;
-  PFN_csDxvkDlssgPresentEnd presentEnd;
-  PFN_csDxvkEvaluateDlss evaluateDlss;
-} CsDxvkDlssgPresenterWorkaroundApi;
-
-typedef uint32_t (*PFN_csDxvkGetApiVersion)(void);
-typedef void (*PFN_csDxvkSetTearingPreference)(uint32_t preference);
-typedef uint64_t (*PFN_csDxvkGetPresenterSurfaceState)(uint32_t* format,
+/* @109 */ typedef uint64_t (*PFN_dxvkGetPresenterSurfaceState)(uint32_t* format,
   uint32_t* requestedColorSpace, uint32_t* effectiveColorSpace);
-typedef uint32_t (*PFN_csDxvkFrameGenOwnershipQuery)(VkSwapchainKHR swapchain);
-typedef void (*PFN_csDxvkSetFrameGenOwnershipQuery)(PFN_csDxvkFrameGenOwnershipQuery query);
+/* @110 */ typedef void (*PFN_dxvkSetSyncPresent)(uint32_t on);
+/* @111 */ typedef uint32_t (*PFN_dxvkGetPresentWaitSemaphoreState)(uint64_t generation);
+/* @112 */ typedef uint32_t (*PFN_dxvkClearPresentWaitSemaphore)(uint64_t generation);
+/* @113 */ typedef uint32_t (*PFN_dxvkCancelPresentWaitSemaphore)(VkSemaphore semaphore);
+/* @114 */ typedef uint32_t (*PFN_dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle)(void);
+
+/* Present callbacks share one signature but are DISTINCT exports with distinct
+ * ordering guarantees: PresentBegin runs immediately before vkQueuePresentKHR on
+ * the present thread, PresentCompleted immediately after it returns. Both fire
+ * only for a DLSS-G-owned swapchain. */
 typedef void (*PFN_csDxvkPresentCallback)(const CsDxvkPresentCallbackInfo* info);
-typedef void (*PFN_csDxvkSetPresentCallback)(PFN_csDxvkPresentCallback callback);
-typedef void (*PFN_csDxvkRequestSwapchainRecreate)(void);
-typedef bool (*PFN_csDxvkSwapchainTornDownCallback)(void);
-typedef void (*PFN_csDxvkSetSwapchainTornDownCallback)(PFN_csDxvkSwapchainTornDownCallback callback);
-typedef void (*PFN_csDxvkSetTargetFrameRate)(double fps);
-typedef void (*PFN_csDxvkSetSyncPresent)(uint32_t on);
-typedef void (*PFN_csDxvkSetPresentQueueDepth)(uint32_t depth);
-typedef uint64_t (*PFN_csDxvkEnqueueInteropCommandBuffer)(VkCommandBuffer commandBuffer,
+/* @116 */ typedef void (*PFN_dxvkSetPresentCompletedCallback)(PFN_csDxvkPresentCallback callback);
+/* @117 */ typedef void (*PFN_dxvkSetPresentBeginCallback)(PFN_csDxvkPresentCallback callback);
+
+/* @118 */ typedef void (*PFN_dxvkSetPresentQueueDepth)(uint32_t depth);
+
+/* @120 */ typedef uint64_t (*PFN_dxvkEnqueueInteropCommandBuffer)(VkCommandBuffer commandBuffer,
   VkSemaphore signalSemaphore, VkFence fence);
-typedef uint32_t (*PFN_csDxvkGetPresentWaitSemaphoreState)(uint64_t generation);
-typedef uint32_t (*PFN_csDxvkClearPresentWaitSemaphore)(uint64_t generation);
-typedef uint32_t (*PFN_csDxvkCancelPresentWaitSemaphore)(VkSemaphore semaphore);
-typedef uint32_t (*PFN_csDxvkReleaseQueuedPresentWaitSemaphoresAfterIdle)(void);
-typedef void (*PFN_csDxvkConfigureDlssgPresenterWorkaround)(
-  const CsDxvkDlssgPresenterWorkaroundApi* api);
-typedef void (*PFN_csDxvkSetDlssgPresenterResources)(void* depth,
-  void* motionVectors, void* hudlessColor);
-typedef bool (*PFN_csDxvkEvaluateDlssWorkaround)(const CsDxvkDlssUpscaleRequest* request);
+/* @121 */ typedef void (*PFN_dxvkSetTearingPreference)(uint32_t preference);
+/* @122 */ typedef uint32_t (*PFN_dxvkGetCsApiVersion)(void);
 
 #ifdef __cplusplus
 }

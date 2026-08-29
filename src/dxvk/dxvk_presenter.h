@@ -39,7 +39,6 @@ namespace dxvk {
    */
   struct PresenterDesc {
     bool deferSurfaceCreation = false;
-    void* fullScreenMonitor = nullptr;
   };
 
   /**
@@ -164,7 +163,6 @@ namespace dxvk {
       m_frameGenOwned.store(owner != 0u, std::memory_order_release);
       m_dlssgOwned.store(owner == 2u, std::memory_order_release);
     }
-    bool isFrameGenOwned() const { return m_frameGenOwned.load(std::memory_order_acquire); }
 
     /**
      * \brief Changes sync interval
@@ -306,8 +304,6 @@ namespace dxvk {
     uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
-    void*                       m_fullScreenMonitor = nullptr;
-    bool                        m_fullScreenExclusiveAcquired = false;
 
     // Chain VkSurfaceFullScreenExclusiveInfoEXT into surface/swapchain queries. An explicit
     // DISALLOWED chain routes the NVIDIA ICD onto the GDI-copy present path; omitting it (the
@@ -374,6 +370,10 @@ namespace dxvk {
     uint32_t                    m_frameRateLimitLatency = 1u;
 
     bool                        m_hasGamescopeFenceSignalBug = false;
+
+    // Latch for the HDR10-unsupported diagnostic. Guarded by m_surfaceMutex, which
+    // supportsColorSpace already holds.
+    bool                        m_loggedHdr10Unsupported = false;
 
     static const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> s_colorSpaceFallbacks;
 

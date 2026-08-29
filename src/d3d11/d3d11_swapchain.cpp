@@ -3,12 +3,16 @@
 #include "d3d11_swapchain.h"
 
 #include "../dxvk/dxvk_latency_builtin.h"
-#include "../wsi/wsi_window.h"
 
 #include "../util/util_win32_compat.h"
 
 namespace dxvk {
 
+  // Interop target for dxvkEnqueueInteropCommandBuffer. PRECONDITION: one D3D11
+  // swapchain per process. With several, the most recently constructed one wins and
+  // the others are unreachable for interop; destroying the active one clears this
+  // rather than falling back to a surviving swapchain. That matches how the host
+  // drives DXVK today -- revisit if multi-swapchain support is ever needed.
   std::atomic<D3D11SwapChain*> g_dxvkActiveSwapchain = { nullptr };
 
   // Live CPU-side bound for intercepted Vulkan present calls. UINT32_MAX is
@@ -95,7 +99,7 @@ namespace dxvk {
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
     // DXVK_SYNC_PRESENT env forces synchronous present for the swapchain's whole lifetime.
     // The dxvkSetSyncPresent export is deliberately NOT baked here — PresentImage reads
-    // g_dxvkSyncPresent per-present so the host toggles it live with the FG state.
+    // g_dxvkPresentQueueDepth per-present so the host toggles it live with the FG state.
     const char* envSync = std::getenv("DXVK_SYNC_PRESENT");
     if (envSync && envSync[0] == '1') {
       m_syncPresent = true;
@@ -234,15 +238,9 @@ namespace dxvk {
     if (m_desc.Width != pDesc->Width || m_desc.Height != pDesc->Height)
       m_presenter->setSurfaceExtent({ m_desc.Width, m_desc.Height });
 
-    const bool dlssgPresenterActive = m_dlssgPresenter && m_dlssgPresenter->ready();
     m_desc = *pDesc;
     CreateBackBuffers();
 
-    if (dlssgPresenterActive && !m_dlssgPresenter->resize(
-        std::max(m_desc.Width, 1u), std::max(m_desc.Height, 1u), m_desc.BufferCount)) {
-      Logger::err("D3D11SwapChain: HDR DLSS-G presenter resize failed; returning to Vulkan WSI");
-      m_dlssgPresenter.reset();
-    }
     return S_OK;
   }
 
@@ -382,32 +380,6 @@ namespace dxvk {
 
     m_presenter->setSurfaceFormat(GetSurfaceFormat(m_desc.Format));
 
-    const bool useDlssgWorkaround = D3D11NativePresenter::workaroundConfigured() &&
-      (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT ||
-       colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
-    if (useDlssgWorkaround) {
-      if (!m_dlssgPresenter)
-        m_dlssgPresenter = std::make_unique<D3D11NativePresenter>(m_device, m_parent);
-      if (!m_dlssgPresenter->ready()) {
-        // Flip-model presentation cannot safely have two swapchains or two
-        // graphics APIs producing for the same HWND. Release Vulkan WSI before
-        // handing this explicitly selected DLSS-G workaround to system DXGI.
-        // If setup fails, normal Vulkan presentation recreates its resources.
-        m_presenter->destroyResources();
-        const HWND window = m_surfaceFactory->GetWindow();
-        if (!m_dlssgPresenter->initialize(window, std::max(m_desc.Width, 1u),
-            std::max(m_desc.Height, 1u), m_desc.BufferCount, colorSpace)) {
-          Logger::warn("D3D11SwapChain: DLSS-G workaround unavailable; retaining Vulkan WSI");
-          m_dlssgPresenter.reset();
-        }
-      } else if (!m_dlssgPresenter->setColorSpace(colorSpace)) {
-        Logger::err("D3D11SwapChain: DLSS-G presenter color-space change failed; returning to Vulkan WSI");
-        m_dlssgPresenter.reset();
-      }
-    } else if (m_dlssgPresenter) {
-      Logger::info("D3D11SwapChain: Leaving HDR DLSS-G workaround presentation");
-      m_dlssgPresenter.reset();
-    }
     return S_OK;
   }
 
@@ -462,10 +434,6 @@ namespace dxvk {
 
 
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
-    if (D3D11NativePresenter::workaroundConfigured() &&
-        m_dlssgPresenter && m_dlssgPresenter->ready())
-      return PresentImageNative(SyncInterval);
-
     // Flush pending rendering commands before
     auto immediateContext = m_parent->GetContext();
     auto immediateContextLock = immediateContext->LockContext();
@@ -577,19 +545,11 @@ namespace dxvk {
 
     immediateContext->FlushCsChunk();
 
-    // Depth zero is a CPU-side transition barrier only; it does not wait for a
-    // GPU fence. Returning to unrestricted mode also retires bounded statuses.
-    if (presentQueueDepth == 0u) {
-      while (!m_pendingPresentStatuses.empty()) {
-        const uint32_t statusIndex = m_pendingPresentStatuses.front();
-        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
-        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
-        if (presentResult < 0)
-          return E_FAIL;
-      }
-    } else if (presentQueueDepth == UINT32_MAX) {
-      // A transition back to unrestricted async mode must still retire status
-      // objects armed by the preceding bounded mode before they can be reused.
+    // Depth zero drains this frame's own status: it is a CPU-side transition barrier
+    // only, not a GPU fence wait. Returning to unrestricted mode drains nothing of its
+    // own, but must still retire statuses armed by a preceding bounded mode before
+    // those slots can be reused.
+    if (presentQueueDepth == 0u || presentQueueDepth == UINT32_MAX) {
       while (!m_pendingPresentStatuses.empty()) {
         const uint32_t statusIndex = m_pendingPresentStatuses.front();
         VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
@@ -602,92 +562,6 @@ namespace dxvk {
     if (m_latency) {
       m_latency->notifyCpuPresentEnd(m_frameId);
 
-      if (m_latency->needsAutoMarkers()) {
-        immediateContext->EmitCs([
-          cLatency = m_latency,
-          cFrameId = m_frameId
-        ] (DxvkContext* ctx) {
-          ctx->beginLatencyTracking(cLatency, cFrameId + 1u);
-        });
-      }
-    }
-
-    return S_OK;
-  }
-
-
-  HRESULT D3D11SwapChain::PresentImageNative(UINT SyncInterval) {
-    auto immediateContext = m_parent->GetContext();
-    auto immediateContextLock = immediateContext->LockContext();
-
-    immediateContext->EndFrame(m_latency);
-    immediateContext->ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);
-
-    Rc<DxvkImage> presentImage = m_dlssgPresenter->acquireImage();
-    if (!presentImage)
-      return E_FAIL;
-
-    m_dlssgPresenter->updateFrameGenerationResources();
-
-    m_frameId += 1u;
-    if (m_latency)
-      m_latency->notifyCpuPresentBegin(m_frameId);
-
-    DxvkImageViewKey viewInfo = { };
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    viewInfo.format = presentImage->info().format;
-    viewInfo.aspects = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.mipIndex = 0u;
-    viewInfo.mipCount = 1u;
-    viewInfo.layerIndex = 0u;
-    viewInfo.layerCount = 1u;
-
-    immediateContext->EmitCs([
-      cBlitter = m_blitter,
-      cNativePresenter = m_dlssgPresenter.get(),
-      cPresentImage = presentImage->createView(viewInfo),
-      cAppBackBuffer = GetBackBufferView(),
-      cColorSpace = m_colorSpace
-    ] (DxvkContext* ctx) {
-      if (cAppBackBuffer->image()->info().colorSpace != cColorSpace) {
-        DxvkImageUsageInfo usage = { };
-        usage.colorSpace = cColorSpace;
-        ctx->ensureImageCompatibility(cAppBackBuffer->image(), usage);
-      }
-
-      if (cPresentImage->image()->info().colorSpace != cColorSpace) {
-        DxvkImageUsageInfo usage = { };
-        usage.colorSpace = cColorSpace;
-        ctx->ensureImageCompatibility(cPresentImage->image(), usage);
-      }
-
-      auto contextObjects = ctx->beginExternalRendering();
-      cBlitter->present(contextObjects,
-        cPresentImage, VkRect2D(),
-        cAppBackBuffer, VkRect2D());
-      cNativePresenter->recordFrameGenerationCopies(ctx);
-      ctx->flushCommandList(nullptr, nullptr);
-    });
-
-    if (m_backBuffers.size() > 1u)
-      RotateBackBuffers(immediateContext);
-
-    immediateContext->FlushCsChunk();
-    immediateContext->SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
-    if (m_device->waitForIdle() != VK_SUCCESS)
-      return E_FAIL;
-
-    const HRESULT hr = m_dlssgPresenter->present(SyncInterval);
-    if (FAILED(hr)) {
-      Logger::err(str::format("D3D11SwapChain: Native DXGI present failed: ", hr));
-      return hr;
-    }
-
-    m_frameLatencySignal->signal(m_frameId);
-
-    if (m_latency) {
-      m_latency->notifyCpuPresentEnd(m_frameId);
       if (m_latency->needsAutoMarkers()) {
         immediateContext->EmitCs([
           cLatency = m_latency,
@@ -732,50 +606,8 @@ namespace dxvk {
   }
 
 
-  // The WSI dispatch layer (dxvk::wsi::) keeps its driver pointer in a file-local
-  // static inside wsi_platform.cpp. wsi_lib is a *static* library that gets linked
-  // into dxvk_dxgi.dll and dxvk_d3d11.dll separately, so each DLL owns a private
-  // copy of that pointer. Only DxvkInstance calls wsi::init(), and the instance is
-  // constructed inside dxvk_dxgi.dll, so the d3d11 module's copy stays null for the
-  // entire process lifetime. Calling any dxvk::wsi:: entry point from here therefore
-  // dereferences a null driver and access-violates. Resolve the monitor with the
-  // Win32 API directly, mirroring Win32WsiDriver::getWindowMonitor().
-  static HMONITOR GetMonitorForWindow(HWND hWindow) {
-    if (!hWindow)
-      return nullptr;
-
-    RECT windowRect = { 0, 0, 0, 0 };
-
-    if (!::GetWindowRect(hWindow, &windowRect))
-      return ::MonitorFromWindow(hWindow, MONITOR_DEFAULTTOPRIMARY);
-
-    return ::MonitorFromPoint(
-      { (windowRect.left + windowRect.right) / 2,
-        (windowRect.top + windowRect.bottom) / 2 },
-      MONITOR_DEFAULTTOPRIMARY);
-  }
-
-
   void D3D11SwapChain::CreatePresenter() {
     PresenterDesc presenterDesc = { };
-    // Do not even query the monitor outside the dedicated crash-reproduction
-    // mode, so the diagnostic cannot perturb ordinary DXVK presentation.
-    if (const char* value = std::getenv("DXVK_APPLICATION_CONTROLLED_FSE"); value && value[0] == '1') {
-      HMONITOR monitor = GetMonitorForWindow(m_surfaceFactory->GetWindow());
-
-      if (!monitor) {
-        // VkSurfaceFullScreenExclusiveWin32InfoEXT::hmonitor must be a valid
-        // handle whenever APPLICATION_CONTROLLED is requested, so leaving this
-        // null would move the fault into the ICD instead. Stay on ALLOWED.
-        Logger::warn("D3D11SwapChain: Could not resolve a monitor for the swapchain window; "
-                     "leaving application-controlled FSE disabled");
-      } else {
-        Logger::info(str::format("D3D11SwapChain: Application-controlled FSE monitor resolved: 0x",
-          std::hex, reinterpret_cast<uintptr_t>(monitor)));
-      }
-
-      presenterDesc.fullScreenMonitor = reinterpret_cast<void*>(monitor);
-    }
     presenterDesc.deferSurfaceCreation = m_parent->GetOptions()->deferSurfaceCreation;
 
     m_presenter = new Presenter(m_device, m_frameLatencySignal, presenterDesc, [

@@ -132,8 +132,8 @@ namespace dxvk {
   void D3D11Buffer::deleteThis() {
     // Defer the real destruction: this wrapper may still be referenced by a
     // raw pointer in the non-owning binding state or an un-drained CS closure.
-    // m_parent (the D3D11Device) actually deletes it a few present boundaries
-    // later, by which point the CS thread has processed past any reference.
+    // m_parent (the D3D11Device) deletes it once the CS thread has executed past
+    // every chunk that could name it.
     m_parent->RetireResource([this] { delete this; });
   }
 

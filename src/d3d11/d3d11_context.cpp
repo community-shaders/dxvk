@@ -104,18 +104,22 @@ namespace dxvk {
       return;
 
     // Bump the generation FIRST so captures recorded after this point re-add
-    // their buffer, and move the list out before EmitCs so a chunk-overflow
-    // re-entry sees an empty list.
+    // their buffer.
     m_csKeepAliveSeq += 1u;
 
+    // Hand the list off into a local and leave the member definitively empty
+    // BEFORE EmitCs: EmitCs can overflow the chunk and re-enter FlushCsChunk ->
+    // FlushKeepAlive, and a moved-from std::vector is only valid-but-unspecified,
+    // not guaranteed empty. Clearing here makes the re-entrant early-out exact.
+    std::vector<D3D11Buffer*> list = std::move(m_csKeepAlive);
+    m_csKeepAlive.clear();
+
     EmitCs([
-      cList = std::move(m_csKeepAlive)
+      cList = std::move(list)
     ] (DxvkContext*) {
       for (auto* buffer : cList)
         buffer->ReleasePrivate();
     });
-
-    m_csKeepAlive.clear();
   }
 
 

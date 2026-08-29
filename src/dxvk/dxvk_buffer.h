@@ -277,28 +277,6 @@ namespace dxvk {
      * \returns The new buffer slice
      */
     Rc<DxvkResourceAllocation> allocateStorage(DxvkLocalAllocationCache* cache) {
-      if (unlikely(!m_storageInfoReady)) {
-        m_storageAllocInfo.resourceCookie = cookie();
-        m_storageAllocInfo.properties = m_properties;
-
-        m_storageBufferInfo.flags = m_info.flags;
-        m_storageBufferInfo.usage = m_info.usage;
-        m_storageBufferInfo.size = m_info.size;
-        m_sharingMode.fill(m_storageBufferInfo);
-
-        // Precompute the buffer-invariant part of the allocation-cache
-        // eligibility check (mirrors createBufferResource) so the per-DISCARD
-        // hot path below can pop the local cache without re-deriving it.
-        m_storageMemTypeBits = m_allocator->getGlobalBufferMemoryTypeMask(m_info.usage);
-        m_storageCacheable = !m_storageBufferInfo.flags
-          && m_storageAllocInfo.mode.isClear()
-          && m_storageBufferInfo.size <= DxvkLocalAllocationCache::MaxSize
-          && (m_storageAllocInfo.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-          && m_storageMemTypeBits;
-
-        m_storageInfoReady = true;
-      }
-
       // Fast path for per-draw dynamic-buffer discards: skip the whole
       // createBufferResource preamble and pop the context's local cache
       // directly. Falls through on a cache miss (roughly once per batch),
@@ -328,7 +306,7 @@ namespace dxvk {
      * \returns The new buffer slice
      */
     Rc<DxvkResourceAllocation> allocateStorageWithMapPtr(DxvkLocalAllocationCache* cache, void** mapPtr) {
-      if (likely(m_storageInfoReady && m_storageCacheable && cache)) {
+      if (likely(m_storageCacheable && cache)) {
         if (likely(cache->m_memoryTypes && !(cache->m_memoryTypes & ~m_storageMemTypeBits))) {
           DxvkLocalAllocationCache::Slot slot = cache->popSlot(m_storageBufferInfo.size);
 
@@ -479,7 +457,37 @@ namespace dxvk {
     DxvkAllocationInfo          m_storageAllocInfo  = { };
     uint32_t                    m_storageMemTypeBits = 0u;
     bool                        m_storageCacheable  = false;
-    bool                        m_storageInfoReady  = false;
+
+    /**
+     * \brief Precomputes the storage-allocation descriptors
+     *
+     * Called once from each constructor, after the final buffer usage flags are
+     * known. Everything derived here is immutable for the buffer's lifetime, so
+     * computing it eagerly keeps allocateStorage branch-free AND avoids a data
+     * race: allocateStorage runs on the app's render thread (D3D11 Map/DISCARD)
+     * and on the CS thread (DxvkContext::invalidateBuffer), and a lazily set
+     * flag with no release/acquire pairing could expose a half-built struct.
+     */
+    void initStorageInfo() {
+      m_storageAllocInfo.resourceCookie = cookie();
+      m_storageAllocInfo.properties = m_properties;
+
+      m_storageBufferInfo.flags = m_info.flags;
+      m_storageBufferInfo.usage = m_info.usage;
+      m_storageBufferInfo.size = m_info.size;
+      m_sharingMode.fill(m_storageBufferInfo);
+
+      // Buffer-invariant part of the allocation-cache eligibility check. This
+      // MIRRORS DxvkMemoryAllocator::createBufferResource -- if that predicate
+      // changes upstream, this copy must change with it or buffers will be
+      // served from the wrong pool. Check both on every upstream merge.
+      m_storageMemTypeBits = m_allocator->getGlobalBufferMemoryTypeMask(m_info.usage);
+      m_storageCacheable = !m_storageBufferInfo.flags
+        && m_storageAllocInfo.mode.isClear()
+        && m_storageBufferInfo.size <= DxvkLocalAllocationCache::MaxSize
+        && (m_storageAllocInfo.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        && m_storageMemTypeBits;
+    }
 
     dxvk::mutex                 m_viewMutex;
     std::unordered_map<DxvkBufferViewKey,

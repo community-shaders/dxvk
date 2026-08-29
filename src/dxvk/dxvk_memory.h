@@ -786,18 +786,13 @@ namespace dxvk {
     // index. This cap also bounds the recycling depth per size class, since the shared
     // cache free-list capacity is min(computePreferredAllocationCount, BatchCapacity).
     //
-    // Skyrim (and other heavy CPU/draw-call D3D11 titles) Map/DISCARD ~21k dynamic
-    // constant buffers per frame, virtually all in the smallest (256 B = MinSize) size
-    // class, whose preferred count is 1024. Live render-thread IP-sampling showed the
-    // per-draw DISCARD path bottoms out in the allocator (allocateStorageWithMapPtr ->
-    // refillAllocationCache -> allocateDedicatedMemory) because a 64-deep recycle buffer
-    // underflows against that traffic, forcing the locked global-alloc path hundreds of
-    // times per frame. Raising the cap deepens recycling for the small classes that need
-    // it; large classes are unaffected because min(preferredCount, BatchCapacity) already
-    // pins them low (e.g. the 128 KiB class keeps 2). LIFO pops still prefetch a few slots
-    // ahead of use, so a larger backing array does not hurt pop locality. Slot is 16 B, so
-    // even the 256-entry arrays are 4 KiB.
-    constexpr static uint32_t BatchCapacity = 256u;
+    // Kept at 64. It was raised to 256 to deepen recycling for the smallest size class
+    // under Skyrim's ~21k dynamic-CB discards per frame, but that was a fit to one
+    // workload on one driver, so it has been reverted to the conservative value. The
+    // slot-array representation -- which is the structural win here -- is unaffected.
+    // If the locked global-alloc path shows up in a profile again, this is the knob,
+    // but re-measure rather than assuming 256 is still right.
+    constexpr static uint32_t BatchCapacity = 64u;
 
     /**
      * \brief Cached allocation slot

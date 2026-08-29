@@ -744,11 +744,11 @@ namespace dxvk {
       }
     }
 
-    // Fake-fullscreen (default in this build): skip the real display mode change so the desktop keeps
-    // its native resolution and refresh rate. The window is then stretched to cover the monitor
-    // (modeSwitch forced off below) and the swapchain scales onto it. A real exclusive-fullscreen
-    // transition breaks external frame generation and causes an alt-tab freeze, so "fullscreen"
-    // stays borderless.
+    // Fake-fullscreen (default in this build): skip the real display mode change so the desktop
+    // keeps its native resolution and refresh rate. The window is then stretched to cover the
+    // monitor (modeSwitch forced off below) and the swapchain scales onto it. A real exclusive-
+    // fullscreen transition breaks external frame generation and causes an alt-tab freeze, so
+    // "fullscreen" stays borderless.
     const bool fakeFullscreen = m_factory->GetOptions()->fakeFullscreen;
 
     if (!fakeFullscreen) {
@@ -767,10 +767,10 @@ namespace dxvk {
         return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
       }
     }
-
+    
     // Update swap chain description
     m_descFs.Windowed = FALSE;
-
+    
     // Move the window so that it covers the entire output
     bool modeSwitch = !fakeFullscreen && (m_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) != 0u;
 
@@ -783,7 +783,7 @@ namespace dxvk {
       Logger::err("DXGI: EnterFullscreenMode: Failed to enter fullscreen mode");
       return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
     }
-
+    
     m_monitor = desc.Monitor;
     m_target  = std::move(output);
 
@@ -812,7 +812,7 @@ namespace dxvk {
     // Fake-fullscreen never touched the desktop mode (see EnterFullscreenMode), so skip the restore.
     if (!m_factory->GetOptions()->fakeFullscreen && FAILED(RestoreDisplayMode(m_monitor)))
       Logger::warn("DXGI: LeaveFullscreenMode: Failed to restore display mode");
-
+    
     // Reset gamma control and decouple swap chain from monitor
     DXGI_VK_MONITOR_DATA* monitorInfo = nullptr;
 
@@ -828,10 +828,10 @@ namespace dxvk {
     m_descFs.Windowed = TRUE;
     m_target  = nullptr;
     m_monitor = wsi::getWindowMonitor(m_window);
-
+    
     if (!wsi::isWindow(m_window))
       return S_OK;
-
+    
     if (!wsi::leaveFullscreenMode(m_window, &m_windowState)) {
       Logger::err("DXGI: LeaveFullscreenMode: Failed to exit fullscreen mode");
       return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
