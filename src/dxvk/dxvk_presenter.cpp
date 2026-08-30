@@ -84,6 +84,25 @@ namespace dxvk {
     g_dxvkFrameGenOwnsSwapchain.store(query, std::memory_order_release);
   }
 
+  bool Presenter::canSubmitHdrMetadata() const {
+    // No frame-generation interposer registered: m_swapchain is a real Vulkan swapchain and
+    // vkSetHdrMetadataEXT is the real entry point, so the call is safe.
+    if (!g_dxvkFrameGenOwnsSwapchain.load(std::memory_order_acquire))
+      return true;
+
+    // Otherwise an external frame-generation layer may have replaced m_swapchain with one of its
+    // own objects. FidelityFX hands back a FrameInterpolationSwapChainVK* cast to VkSwapchainKHR;
+    // it is only a valid Vulkan handle to the layer that created it. DXVK resolved
+    // vkSetHdrMetadataEXT from the real loader, so passing that proxy through would hand a driver
+    // a pointer it will happily dereference as its own swapchain. The corruption surfaces later,
+    // inside the layer's own present, as a loader abort:
+    //   [Vulkan Loader] ERROR: vkGetSemaphoreCounterValue: Invalid device
+    //   Security check failure or stack buffer overrun - code c0000409
+    // The layer owns HDR metadata for swapchains it owns and publishes it through its own
+    // replacement entry point, so skipping here loses nothing.
+    return !m_frameGenOwned.load(std::memory_order_acquire);
+  }
+
   using DxvkPresentCallbackInfo = CsDxvkPresentCallbackInfo;
 
   // Presenter-scoped callbacks. The payload prevents global Streamline state
@@ -438,7 +457,7 @@ namespace dxvk {
 
     // Update HDR metadata after a successful acquire. We know
     // that there won't be a present in flight at this point.
-    if (m_hdrMetadataDirty && m_hdrMetadata) {
+    if (m_hdrMetadataDirty && m_hdrMetadata && canSubmitHdrMetadata()) {
       m_hdrMetadataDirty = false;
 
       if (m_device->features().extHdrMetadata) {
