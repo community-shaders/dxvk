@@ -7811,7 +7811,7 @@ namespace dxvk {
 
       if (m_flags.test(DxvkContextFlag::GpRenderPassUnsynchronized)
        || m_state.vi.indexBuffer.buffer()->hasGfxStores()) {
-        accessBuffer(DxvkCmdBuffer::ExecBuffer, m_state.vi.indexBuffer,
+        accessBuffer(DxvkCmdBuffer::ExecBuffer, m_state.vi.indexBuffer.slice(),
           VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_INDEX_READ_BIT, DxvkAccessOp::None);
       }
 
@@ -7860,7 +7860,7 @@ namespace dxvk {
 
         if (m_flags.test(DxvkContextFlag::GpRenderPassUnsynchronized)
          || m_state.vi.vertexBuffers[binding].buffer()->hasGfxStores()) {
-          accessBuffer(DxvkCmdBuffer::ExecBuffer, m_state.vi.vertexBuffers[binding],
+          accessBuffer(DxvkCmdBuffer::ExecBuffer, m_state.vi.vertexBuffers[binding].slice(),
             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, DxvkAccessOp::None);
         }
 
@@ -8668,7 +8668,7 @@ namespace dxvk {
       const auto& indexBufferSlice = m_state.vi.indexBuffer;
 
       if (indexBufferSlice.length() && (unsynchronizedPass || indexBufferSlice.buffer()->hasGfxStores())) {
-        if (checkBufferBarrier<VK_PIPELINE_BIND_POINT_GRAPHICS>(indexBufferSlice,
+        if (checkBufferBarrier<VK_PIPELINE_BIND_POINT_GRAPHICS>(indexBufferSlice.slice(),
             VK_ACCESS_INDEX_READ_BIT, DxvkAccessOp::None))
           return true;
       }
@@ -8683,7 +8683,7 @@ namespace dxvk {
         const auto& vertexBufferSlice = m_state.vi.vertexBuffers[binding];
 
         if (vertexBufferSlice.length() && (unsynchronizedPass || vertexBufferSlice.buffer()->hasGfxStores())) {
-          if (checkBufferBarrier<VK_PIPELINE_BIND_POINT_GRAPHICS>(vertexBufferSlice,
+          if (checkBufferBarrier<VK_PIPELINE_BIND_POINT_GRAPHICS>(vertexBufferSlice.slice(),
               VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, DxvkAccessOp::None))
             return true;
         }

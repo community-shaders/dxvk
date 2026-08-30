@@ -83,6 +83,17 @@ namespace dxvk {
       return m_cookie;
     }
 
+    // Fork: non-owning slice for the hot vertex/index bind path (no refcount atomics).
+    DxvkBufferSliceRef GetBufferSliceRef() const {
+      return DxvkBufferSliceRef(m_buffer.ptr(), 0, m_desc.ByteWidth);
+    }
+
+    DxvkBufferSliceRef GetBufferSliceRef(VkDeviceSize offset) const {
+      VkDeviceSize size = m_desc.ByteWidth;
+      offset = std::min(offset, size);
+      return DxvkBufferSliceRef(m_buffer.ptr(), offset, size - offset);
+    }
+
     Rc<DxvkBuffer> GetBuffer() const {
       return m_buffer;
     }

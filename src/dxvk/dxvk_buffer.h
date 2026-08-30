@@ -711,6 +711,77 @@ namespace dxvk {
   };
 
 
+  /**
+   * \brief Vertex/index buffer binding reference
+   *
+   * Fork optimisation. Binding a vertex or index buffer is one of the hottest
+   * CS-thread costs in draw-call-bound workloads: an owning \ref DxvkBufferSlice
+   * pays an atomic increment when the slice is built and an atomic decrement when
+   * the previous binding is overwritten, both on cold buffer cache lines. Apps
+   * that bind thousands of distinct buffers once each per frame get no reuse out
+   * of those references, so the traffic is pure overhead.
+   *
+   * The raw pointer is always valid to read. \c m_keepAlive is populated only by
+   * deferred contexts, which need it because a command list can replay after the
+   * client has released the buffer, and unlike Map hazards a bound vertex buffer
+   * is not tracked in D3D11CommandList::m_resources.
+   *
+   * The immediate context leaves it null and pays no atomics at all: the client
+   * keeps a bound buffer alive for the frame (the same assumption the non-owning
+   * D3D11 state bindings already rely on), a release while bound is deferred
+   * behind a CS sequence barrier by D3D11Device::RetireResource, and the command
+   * list still takes its own reference via track() at draw time.
+   */
+  class DxvkBufferSliceRef {
+
+  public:
+
+    DxvkBufferSliceRef() { }
+
+    /** Non-owning: immediate context. */
+    DxvkBufferSliceRef(DxvkBuffer* buffer, VkDeviceSize offset, VkDeviceSize length)
+    : m_buffer(buffer), m_offset(offset), m_length(length) { }
+
+    /** Owning: deferred contexts, whose command lists may outlive the client's reference. */
+    DxvkBufferSliceRef(const DxvkBufferSlice& slice, bool keepAlive)
+    : m_buffer(slice.buffer().ptr()), m_offset(slice.offset()), m_length(slice.length()) {
+      if (keepAlive)
+        m_keepAlive = slice.buffer();
+    }
+
+    DxvkBuffer*  buffer() const { return m_buffer; }
+    VkDeviceSize offset() const { return m_offset; }
+    VkDeviceSize length() const { return m_length; }
+    bool         defined() const { return m_buffer != nullptr; }
+
+    void setRange(VkDeviceSize offset, VkDeviceSize length) {
+      m_offset = offset;
+      m_length = length;
+    }
+
+    DxvkResourceBufferInfo getSliceInfo() const {
+      return m_buffer
+        ? m_buffer->getSliceInfo(m_offset, m_length)
+        : DxvkResourceBufferInfo();
+    }
+
+    /** Materialises an owning slice for the rare barrier paths. */
+    DxvkBufferSlice slice() const {
+      return m_buffer
+        ? DxvkBufferSlice(Rc<DxvkBuffer>(m_buffer), m_offset, m_length)
+        : DxvkBufferSlice();
+    }
+
+  private:
+
+    DxvkBuffer*    m_buffer = nullptr;
+    VkDeviceSize   m_offset = 0;
+    VkDeviceSize   m_length = 0;
+    Rc<DxvkBuffer> m_keepAlive = nullptr;
+
+  };
+
+
 
   inline const DxvkDescriptor* DxvkBufferView::getDescriptor(bool raw) {
     if (unlikely(m_version < m_buffer->m_version))
