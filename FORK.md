@@ -244,8 +244,9 @@ Two mechanisms make this safe:
    reference per buffer per flush window, deduplicated through a generation stamp on the buffer
    (`m_csRefSeq`), instead of one atomic per bind. References are released by a closure appended
    to the CS stream itself, so it replays after every command that captured them. Vertex and
-   index buffers are deliberately *not* tracked — Skyrim binds thousands of distinct ones once
-   each per frame, so the stamp does not pay for itself there.
+   index buffers are not keep-alive tracked — Skyrim binds thousands of distinct ones once
+   each per frame, so the stamp does not pay for itself there; they use non-owning bindings instead
+     (see below).
 
 2. **Sequence-barriered destruction.** `D3D11Buffer` and `D3D11ShaderResourceView` override
    `ComObject::deleteThis()` to park in `D3D11Device`'s retirement list instead of deleting
@@ -267,6 +268,30 @@ the buffer dies.
 *Files: `src/d3d11/d3d11_context_state.h`, `src/d3d11/d3d11_context.{cpp,h}`,
 `src/d3d11/d3d11_device.h`, `src/d3d11/d3d11_buffer.{cpp,h}`, `src/d3d11/d3d11_view_srv.{cpp,h}`,
 `src/util/com/com_object.h`*
+
+### Non-owning vertex and index bindings
+
+`DxvkVertexInputState` stores `DxvkBufferSliceRef` — a raw `DxvkBuffer*` plus offset and length —
+rather than an owning `DxvkBufferSlice`. Binding a vertex or index buffer was the hottest single
+cost inside `dxvk_d3d11.dll` (3.25M + 1.14M samples, ~20% of the module), because the owning slice
+paid an atomic when it was built on the CS thread and another when the previous binding was
+overwritten, both on cold buffer cache lines, with no reuse across thousands of distinct
+per-frame buffers.
+
+The `Rc` inside `DxvkBufferSliceRef` is populated *only* by deferred contexts: a command list can
+replay after the client released the buffer, and a bound vertex buffer — unlike a Map hazard — is
+not recorded in `D3D11CommandList::m_resources`. The immediate context leaves it null and pays no
+atomics, resting on the same contract as the non-owning D3D11 state bindings above: the client
+keeps a bound buffer alive for the frame, a release while bound is deferred behind the CS sequence
+barrier, and `DxvkCommandList::track()` still takes the GPU-side reference at draw time. The rare
+barrier paths call `DxvkBufferSliceRef::slice()` to materialise an owning slice.
+
+Measured (Whiterun exterior, no upscaling or frame generation): 167.50 -> 174.20 fps (+4.0%);
+`dxvk_d3d11.dll` 21.03% -> 16.48% of process CPU; DXVK plus the Vulkan UMD 31.65% -> 23.60%.
+`bindVertexBuffer` and `bindIndexBuffer` no longer appear in the profile.
+
+*Files: `src/dxvk/dxvk_buffer.h`, `src/dxvk/dxvk_context_state.h`, `src/dxvk/dxvk_context.{h,cpp}`,
+`src/d3d11/d3d11_buffer.h`, `src/d3d11/d3d11_context.cpp`*
 
 ### Allocation cache representation
 
