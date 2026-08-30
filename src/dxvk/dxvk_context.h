@@ -185,7 +185,7 @@ namespace dxvk {
      * \param [in] indexType Index type
      */
     void bindIndexBuffer(
-            DxvkBufferSlice&&     buffer,
+            DxvkBufferSliceRef&&  buffer,
             VkIndexType           indexType) {
       m_state.vi.indexBuffer = std::move(buffer);
       m_state.vi.indexType   = indexType;
@@ -361,7 +361,7 @@ namespace dxvk {
      */
     void bindVertexBuffer(
             uint32_t              binding,
-            DxvkBufferSlice&&     buffer,
+            DxvkBufferSliceRef&&  buffer,
             uint32_t              stride) {
       m_state.vi.vertexBuffers[binding] = std::move(buffer);
       m_state.vi.vertexStrides[binding] = stride;

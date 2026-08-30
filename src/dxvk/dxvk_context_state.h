@@ -133,10 +133,10 @@ namespace dxvk {
   
   
   struct DxvkVertexInputState {
-    DxvkBufferSlice indexBuffer;
+    DxvkBufferSliceRef indexBuffer;
     VkIndexType     indexType   = VK_INDEX_TYPE_UINT32;
     
-    std::array<DxvkBufferSlice, DxvkLimits::MaxNumVertexBindings> vertexBuffers = { };
+    std::array<DxvkBufferSliceRef, DxvkLimits::MaxNumVertexBindings> vertexBuffers = { };
     std::array<uint32_t,        DxvkLimits::MaxNumVertexBindings> vertexStrides = { };
     std::array<uint32_t,        DxvkLimits::MaxNumVertexBindings> vertexExtents = { };
   };

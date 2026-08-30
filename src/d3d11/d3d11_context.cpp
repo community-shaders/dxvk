@@ -3809,7 +3809,7 @@ namespace dxvk {
           cStride       = Stride
         ] (DxvkContext* ctx) mutable {
           ctx->bindVertexBuffer(cSlotId,
-            cBuffer->GetBufferSlice(cOffset),
+            cBuffer->GetBufferSliceRef(cOffset),
             cStride);
         });
       } else {
@@ -3819,7 +3819,7 @@ namespace dxvk {
           cStride       = Stride
         ] (DxvkContext* ctx) mutable {
           ctx->bindVertexBuffer(cSlotId,
-            Forwarder::move(cBufferSlice),
+            DxvkBufferSliceRef(cBufferSlice, true),
             cStride);
         });
       }
@@ -3827,7 +3827,7 @@ namespace dxvk {
       EmitCs([
         cSlotId       = Slot
       ] (DxvkContext* ctx) {
-        ctx->bindVertexBuffer(cSlotId, DxvkBufferSlice(), 0);
+        ctx->bindVertexBuffer(cSlotId, DxvkBufferSliceRef(), 0);
       });
     }
   }
@@ -3876,7 +3876,7 @@ namespace dxvk {
           cIndexType    = indexType
         ] (DxvkContext* ctx) mutable {
           ctx->bindIndexBuffer(
-            cBuffer->GetBufferSlice(cOffset),
+            cBuffer->GetBufferSliceRef(cOffset),
             cIndexType);
         });
       } else {
@@ -3885,7 +3885,7 @@ namespace dxvk {
           cIndexType    = indexType
         ] (DxvkContext* ctx) mutable {
           ctx->bindIndexBuffer(
-            Forwarder::move(cBufferSlice),
+            DxvkBufferSliceRef(cBufferSlice, true),
             cIndexType);
         });
       }
@@ -3893,7 +3893,7 @@ namespace dxvk {
       EmitCs([
         cIndexType    = indexType
       ] (DxvkContext* ctx) {
-        ctx->bindIndexBuffer(DxvkBufferSlice(), cIndexType);
+        ctx->bindIndexBuffer(DxvkBufferSliceRef(), cIndexType);
       });
     }
   }
@@ -4995,10 +4995,10 @@ namespace dxvk {
       ctx->bindDrawBuffers(DxvkBufferSlice(), DxvkBufferSlice());
 
       // Unbind index and vertex buffers
-      ctx->bindIndexBuffer(DxvkBufferSlice(), VK_INDEX_TYPE_UINT32);
+      ctx->bindIndexBuffer(DxvkBufferSliceRef(), VK_INDEX_TYPE_UINT32);
 
       for (uint32_t i = 0; i < cUsedBindings.vbCount; i++)
-        ctx->bindVertexBuffer(i, DxvkBufferSlice(), 0);
+        ctx->bindVertexBuffer(i, DxvkBufferSliceRef(), 0);
 
       // Unbind transform feedback buffers
       for (uint32_t i = 0; i < cUsedBindings.soCount; i++)
