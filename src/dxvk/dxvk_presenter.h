@@ -184,6 +184,19 @@ namespace dxvk {
     }
 
     /**
+     * \brief Whether it is safe to call vkSetHdrMetadataEXT on this swapchain
+     *
+     * False once an external frame-generation layer owns m_swapchain. FidelityFX hands back a
+     * FrameInterpolationSwapChainVK* cast to VkSwapchainKHR, which is only a meaningful handle to
+     * the layer that created it, while DXVK resolved vkSetHdrMetadataEXT from the real loader.
+     * Passing that proxy on to the driver corrupts memory, and the damage surfaces later inside
+     * the layer's own present as a loader abort ("vkGetSemaphoreCounterValue: Invalid device",
+     * c0000409). The layer publishes metadata for the swapchains it owns through its own
+     * replacement entry point, so skipping here loses nothing.
+     */
+    bool canSubmitHdrMetadata() const;
+
+    /**
      * \brief Changes sync interval
      *
      * Changes the Vulkan present mode as necessary.
