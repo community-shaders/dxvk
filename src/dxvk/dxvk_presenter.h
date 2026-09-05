@@ -153,35 +153,7 @@ namespace dxvk {
             uint64_t                frameId,
       const Rc<DxvkLatencyTracker>& tracker);
 
-    /**
-     * \brief Marks this swapchain as owned by an external frame-generation layer (FFX FSR3)
-     *
-     * When set, the Presenter acts as a thin submit + hand-off: it does NOT run its own
-     * present-wait worker, does NOT acquire the next image after presenting, and signals the
-     * frame-latency event immediately on the submit thread. This leaves the external frame-gen
-     * swapchain (FFX) as the single owner of the present loop — matching the official FSR3
-     * frame-interpolation-swapchain model and avoiding a stacked-present-loop deadlock. Set
-     * automatically at swapchain creation via the dxvkSetFrameGenOwnershipQuery predicate.
-     */
-    void setFrameGenOwner(uint32_t owner) {
-      m_frameGenOwned.store(owner != 0u, std::memory_order_release);
-      m_dlssgOwned.store(owner == 2u, std::memory_order_release);
-    }
 
-    /**
-     * \brief Whether a DLSS-G proxy currently owns this swapchain
-     *
-     * True when the ownership predicate classified the swapchain as owner type 2.
-     * The D3D11 swapchain uses this to skip its frame-latency throttle: Streamline
-     * DLSS-G in eBlockPresentingClientQueue paces the application by blocking inside
-     * the present itself, and DXVK's latency wait then deadlocks the pipeline — the
-     * signal that would release it fires on the submit thread, which is parked inside
-     * Streamline's blocking present, so the render thread starves and can never
-     * deliver the frame that block is waiting for. See D3D11SwapChain::SyncFrameLatency.
-     */
-    bool isDlssgOwned() const {
-      return m_dlssgOwned.load(std::memory_order_acquire);
-    }
 
     /**
      * \brief Whether it is safe to call vkSetHdrMetadataEXT on this swapchain
@@ -389,9 +361,6 @@ namespace dxvk {
     std::queue<PresenterFrame>  m_frameQueue;
 
     // True when an external FFX frame-generation swapchain owns the real present/acquire/pacing for
-    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwner.
-    std::atomic<bool>           m_frameGenOwned = { false };
-    std::atomic<bool>           m_dlssgOwned = { false };
 
     uint64_t                    m_lastSignaled = 0u;
     uint64_t                    m_lastCompleted = 0u;

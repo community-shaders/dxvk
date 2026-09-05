@@ -809,14 +809,12 @@ namespace dxvk {
 
 
   void D3D11SwapChain::SyncFrameLatency() {
-    // Skip the throttle while a DLSS-G proxy owns the swapchain. Streamline in
-    // eBlockPresentingClientQueue paces the application by blocking inside the present,
-    // and this wait then deadlocks the pipeline: the signal that releases it fires on
-    // the submit thread, which is parked inside that blocking present, so the render
-    // thread starves and can never deliver the frame the block is waiting for.
-    // Streamline's own block is the intended (and sufficient) pacing there.
-    if (m_presenter->isDlssgOwned())
-      return;
+    // DXVK no longer runs its own present-wait worker, and an interposing presenter may
+    // pace the application by blocking inside the present itself. Waiting here would then
+    // deadlock: the signal that releases this wait fires on the submit thread, which is
+    // parked inside that blocking present, so the render thread can never deliver the
+    // frame the block is waiting for. Whoever owns the present loop owns the pacing.
+    return;
 
     // Wait for the sync event so that we respect the maximum frame latency
     m_frameLatencySignal->wait(m_frameId - GetActualFrameLatency());
