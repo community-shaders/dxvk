@@ -75,32 +75,11 @@ namespace dxvk {
   }
 
   // External FFX frame-generation ownership predicate, set by the CS WSI hook. Returns true for the
-  // external FFX frame-interpolation swapchain; when owned, the Presenter becomes a thin submit +
-  // hand-off and lets FFX own the present loop. Null => never owned.
-  // 0 = normal swapchain, 1 = FSR replacement swapchain, 2 = DLSS-G proxy.
-  std::atomic<uint32_t (*)(VkSwapchainKHR)> g_dxvkFrameGenOwnsSwapchain = { nullptr };
-
-  extern "C" void dxvkSetFrameGenOwnershipQuery(uint32_t (*query)(VkSwapchainKHR)) {
-    g_dxvkFrameGenOwnsSwapchain.store(query, std::memory_order_release);
-  }
-
   bool Presenter::canSubmitHdrMetadata() const {
-    // No frame-generation interposer registered: m_swapchain is a real Vulkan swapchain and
-    // vkSetHdrMetadataEXT is the real entry point, so the call is safe.
-    if (!g_dxvkFrameGenOwnsSwapchain.load(std::memory_order_acquire))
-      return true;
-
-    // Otherwise an external frame-generation layer may have replaced m_swapchain with one of its
-    // own objects. FidelityFX hands back a FrameInterpolationSwapChainVK* cast to VkSwapchainKHR;
-    // it is only a valid Vulkan handle to the layer that created it. DXVK resolved
-    // vkSetHdrMetadataEXT from the real loader, so passing that proxy through would hand a driver
-    // a pointer it will happily dereference as its own swapchain. The corruption surfaces later,
-    // inside the layer's own present, as a loader abort:
-    //   [Vulkan Loader] ERROR: vkGetSemaphoreCounterValue: Invalid device
-    //   Security check failure or stack buffer overrun - code c0000409
-    // The layer owns HDR metadata for swapchains it owns and publishes it through its own
-    // replacement entry point, so skipping here loses nothing.
-    return !m_frameGenOwned.load(std::memory_order_acquire);
+    // m_swapchain is only ever published after getSwapImages() succeeded on it through this same
+    // device dispatch, so whatever created it answers to the entry points we resolved. There is no
+    // frame-generation-specific case left to special-case here.
+    return true;
   }
 
   using DxvkPresentCallbackInfo = CsDxvkPresentCallbackInfo;
@@ -545,14 +524,9 @@ namespace dxvk {
 
     uint64_t extraWaitGeneration = 0;
     uint32_t pendingPresentWaitCount = 0;
-    bool dlssgOwned = m_dlssgOwned.load(std::memory_order_acquire);
 
-    // Attach a pending wait regardless of who owns the present. Gating this on
-    // dlssgOwned leaves any semaphore registered during a method TRANSITION unattached
-    // -- ownership is only established once the swapchain has been recreated -- and the
-    // host then sees a registered-but-unpresented generation, quarantines it, and faults
-    // its command ring every frame. Attaching it is correct in every case: it only
-    // queue-orders this present after work the host already submitted.
+    // Attach a pending wait unconditionally. It only queue-orders this present after work the
+    // host already submitted, which is correct whether or not anything interposed the present.
     {
       std::lock_guard lock(g_dxvkPresentWaitMutex);
       PresentWaitSnapshot* oldestPending = nullptr;
@@ -589,49 +563,34 @@ namespace dxvk {
     info.pSwapchains        = &m_swapchain;
     info.pImageIndices      = &m_imageIndex;
 
-    // FFX's replacement vkQueuePresentKHR does not handle DXVK's extension pNext structs
-    // (present-ID, present-fence, present-mode from swapchain_maintenance1). Passing them
-    // causes the present fence to never be signaled, hanging the 4th acquire when DXVK's
-    // waitForSwapchainFence blocks on the unsignaled fence. Pass a clean VkPresentInfoKHR.
-    bool fgOwned = m_frameGenOwned.load();
-
-    // FSR's replacement swapchain rejects these pNext structures, but DLSS-G's
-    // pacer requires the present ID for real-frame completion tracking.
-    if ((!fgOwned || dlssgOwned) && frameId && m_hasPresentId) {
-      if (m_device->features().khrPresentId2.presentId2)
-        presentId2.pNext = const_cast<void*>(std::exchange(info.pNext, &presentId2));
-      else
-        presentId.pNext = const_cast<void*>(std::exchange(info.pNext, &presentId));
-    }
-
-    if (!fgOwned && m_hasSwapchainMaintenance1) {
+    // Chain only what is safe to ignore. DXVK cannot know whether something interposed
+    // vkCreateSwapchainKHR, so it splits its pNext structures by failure mode rather than by
+    // asking who owns the swapchain:
+    //
+    //   * The maintenance1 present-MODE struct is chained. It is how setSyncInterval(0) leaves
+    //     FIFO, and a presenter that drops it merely costs us the mode change -- never a hang.
+    //   * The present FENCE and present-ID are NOT chained. A replacement vkQueuePresentKHR that
+    //     ignores them leaves the fence unsignalled forever, and waitForSwapchainFence then
+    //     blocks the next acquire permanently. Losing a feature is acceptable; deadlocking is
+    //     not, and DXVK cannot verify in advance that anything downstream honours them.
+    //   * Incremental present is likewise skipped: the rectangles are meaningless to a presenter
+    //     that composes its own frames.
+    if (m_hasSwapchainMaintenance1)
       modeInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &modeInfo));
-      fenceInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &fenceInfo));
-    }
-
-    // Incremental present is another pNext struct on VkPresentInfoKHR, so it is
-    // gated on !fgOwned for the same reason as present-ID and maintenance1 above:
-    // an external frame-generation layer's replacement vkQueuePresentKHR does not
-    // handle DXVK's chained structs.
-    if (!fgOwned && m_hasIncrementalPresent && !m_presentRepaint
-     && m_acquireStatus == VK_SUCCESS && rectCount)
-      regionInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &regionInfo));
 
     // DLSS-G's input tags and the intercepted present must share one queue order with
     // graphics submissions; DXVK's submission thread externally synchronizes this call
     // against them.
     VkQueue presentQueue = m_device->queues().graphics.queueHandle;
     DxvkPresentCallbackInfo callbackInfo = {
-      sizeof(DxvkPresentCallbackInfo), 1u, dlssgOwned ? 2u : (fgOwned ? 1u : 0u), m_imageIndex,
+      sizeof(DxvkPresentCallbackInfo), 1u, 1u, m_imageIndex,
       frameId, uint64_t(reinterpret_cast<uintptr_t>(m_swapchain)), m_presentWaitSwapchainSerial,
       uint64_t(reinterpret_cast<uintptr_t>(this)),
       uint64_t(reinterpret_cast<uintptr_t>(presentQueue)), extraWaitGeneration,
       pendingPresentWaitCount, int32_t(VK_NOT_READY)
     };
-    if (dlssgOwned) {
-      if (auto callback = g_dxvkPresentBeginCallback.load(std::memory_order_acquire))
-        callback(&callbackInfo);
-    }
+    if (auto callback = g_dxvkPresentBeginCallback.load(std::memory_order_acquire))
+      callback(&callbackInfo);
 
     VkResult status = m_vkd->vkQueuePresentKHR(presentQueue, &info);
 
@@ -639,11 +598,9 @@ namespace dxvk {
     // Community Shaders associates the returned input-completion timeline with
     // the corresponding resource slot and polls it before reuse. No GPU queue
     // wait is injected here, avoiding a wait-before-signal cycle.
-    if (dlssgOwned) {
-      callbackInfo.presentResult = int32_t(status);
-      if (auto callback = g_dxvkPresentCompletedCallback.load(std::memory_order_acquire))
-        callback(&callbackInfo);
-    }
+    callbackInfo.presentResult = int32_t(status);
+    if (auto callback = g_dxvkPresentCompletedCallback.load(std::memory_order_acquire))
+      callback(&callbackInfo);
 
     if (extraWaitGeneration) {
       PresentWaitState waitState = PresentWaitState::Uncertain;
@@ -674,7 +631,9 @@ namespace dxvk {
     // recreate the swapchain. Spec says that 'queue' operations, i.e. the
     // semaphore and fence signals, still happen if present fails with
     // normal swapchain errors, such as OUT_OF_DATE or SURFACE_LOST.
-    if (!fgOwned && m_hasSwapchainMaintenance1) {
+    // No present fence was chained, so nothing will ever signal one: leave fenceSignaled clear
+    // so waitForSwapchainFence stays a no-op instead of blocking the next acquire forever.
+    if (false) {
       currSync.fenceSignaled = status != VK_ERROR_OUT_OF_DEVICE_MEMORY
                             && status != VK_ERROR_OUT_OF_HOST_MEMORY
                             && status != VK_ERROR_DEVICE_LOST;
@@ -690,10 +649,9 @@ namespace dxvk {
       m_frameIndex %= m_semaphores.size();
     }
 
-    // Add frame to waiter queue with current properties. Skipped for an FFX frame-generation-owned
-    // swapchain: its present-wait worker is disabled (FFX does the display pacing) and signalFrame
-    // releases the frame-latency signal directly on this thread instead.
-    if (m_hasPresentWait && !m_frameGenOwned.load()) {
+    // DXVK no longer runs a present-wait worker (see createSwapChain), so nothing consumes this
+    // queue and signalFrame releases the frame-latency signal on the submit thread instead.
+    if constexpr (false) {
       std::lock_guard lock(m_frameMutex);
 
       auto& frame = m_frameQueue.emplace();
@@ -713,7 +671,10 @@ namespace dxvk {
     // thread (concurrently with FFX's present thread) deadlocks — the present hands off to FFX and
     // never returns. With this skipped, the per-frame acquire always happens in acquireNextImage()
     // (one acquire per frame), matching the official "app acquires once, FFX owns the rest" model.
-    if (status == VK_SUCCESS && !m_frameGenOwned.load()) {
+    // No speculative pre-acquire. An interposing presenter drives acquire on the same handle from
+    // its own thread, and re-entering it here from the submit thread deadlocks. One acquire per
+    // frame happens in acquireNextImage(), which is what the reference Streamline integration does.
+    if constexpr (false) {
       PresenterSync& nextSync = m_semaphores.at(m_frameIndex);
       waitForSwapchainFence(nextSync);
 
@@ -746,14 +707,11 @@ namespace dxvk {
     if (m_signal == nullptr || !frameId)
       return;
 
-    // FFX frame-generation-owned swapchain: FFX owns presentation + display pacing and DXVK's
-    // present-wait worker is disabled, so nothing else will ever complete this frame. Release the
-    // frame-latency signal immediately on the submit thread (no DXVK fps limiter — FFX paces).
-    if (m_frameGenOwned.load()) {
-      // Under full interposition every swapchain reports frame-gen-owned, so this is the ONLY present
-      // path that runs and the two delay() sites below are dead. Apply the external frame-rate cap here
-      // so CS can limit present rate when nothing else paces it — notably FSR frame generation, which
-      // forces Reflex off and so has no Reflex limiter. No-op unless CS set a cap via dxvkSetTargetFrameRate.
+    // DXVK's present-wait worker is gone, so nothing else will ever complete this frame: release
+    // the frame-latency signal on the submit thread. Any external presenter paces display itself.
+    {
+      // Apply the external frame-rate cap here so a host can limit present rate when nothing else
+      // paces it. No-op unless one was set via dxvkSetTargetFrameRate.
       applyExternalFrameRateLimit();
       m_fpsLimiter.delay();
 
@@ -1329,11 +1287,6 @@ namespace dxvk {
     // An external FFX frame-generation layer may have replaced this swapchain with its own wrapped
     // handle (vkCreateSwapchainKHR is intercepted). When it owns the swapchain, DXVK must act as a
     // thin submit + hand-off (no second present loop) — query the registered predicate now.
-    {
-      auto query = g_dxvkFrameGenOwnsSwapchain.load(std::memory_order_acquire);
-      setFrameGenOwner(query && m_swapchain ? query(m_swapchain) : 0u);
-    }
-
     // Import actual swap chain images
     std::vector<VkImage> images;
 
@@ -1426,13 +1379,10 @@ namespace dxvk {
     if (m_device->features().khrIncrementalPresent)
       m_hasIncrementalPresent = caps.surfaceCapabilities.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 
-    // Do not launch the present-wait worker for an FFX frame-generation-owned swapchain: it would
-    // call vkWaitForPresentKHR on FFX's wrapped swapchain (which FFX, not DXVK, paces), racing
-    // FFX's own present thread. signalFrame releases the frame-latency signal directly instead.
-    // If ownership is later handed back, a recreate re-evaluates this and starts the worker then;
-    // an already-running worker is left alone and simply idles (see runFrameThread).
-    if (m_signal && m_hasPresentWait && !m_frameGenOwned.load() && !m_frameThread.joinable())
-      m_frameThread = dxvk::thread([this] { runFrameThread(); });
+    // The present-wait worker is not started. It would call vkWaitForPresentKHR on a handle DXVK
+    // may not own, racing whichever presenter actually paces it, and DXVK no longer chains the
+    // present-ID that vkWaitForPresentKHR needs anyway. signalFrame releases the frame-latency
+    // signal on the submit thread instead.
 
     {
       std::lock_guard lock(g_dxvkPresentWaitMutex);
@@ -1796,11 +1746,9 @@ namespace dxvk {
 
 
   void Presenter::destroySwapchain() {
-    // Without usable present fences, waiting for the queue or device to go idle
-    // is the only way to properly synchronize swapchain teardown. Frame-generation
-    // owned presents do not chain DXVK's maintenance1 fence.
-    const bool usePresentFences = m_hasSwapchainMaintenance1 &&
-      !m_hasGamescopeFenceSignalBug && !m_frameGenOwned.load();
+    // DXVK does not chain the maintenance1 present fence (see presentImage), so device idle is
+    // the only way to prove presentation finished before tearing the swapchain down.
+    const bool usePresentFences = false;
     bool presentCompletionProven = usePresentFences || m_device->waitForIdle() == VK_SUCCESS;
 
     // Wait for the presentWait worker to finish using
