@@ -203,8 +203,19 @@ recreation attempt.
 
 `dxvkSetPresentQueueDepth` bounds outstanding intercepted present calls (0 completes each
 present before returning, `UINT32_MAX` is unrestricted, otherwise capped at 7).
-`dxvkSetSyncPresent` is the 0-or-unrestricted shorthand. CS uses zero for ownership and option
-transitions and for FSR-G, and two for steady-state DLSS-G.
+`dxvkSetSyncPresent` is the 0-or-unrestricted shorthand. Both write the same value, so within a
+frame the last caller wins.
+
+CS uses zero for ownership and option transitions, and **two for steady-state FSR-G — not for
+DLSS-G**, which paces by blocking inside its own present. A second waiting gate on top of that
+deadlocks the pipeline, and only a process restart clears it.
+
+The two are applied from different places on purpose, and the asymmetry is load-bearing.
+`FrameGen::Controller::StepLoadState` re-asserts zero on every reconcile; the steady-state depth
+is raised back to two per present in `Upscaling::PresentWithFrameGeneration`, guarded on FSR-G
+owning the swapchain. That per-frame reset is what stops DLSS-G inheriting FSR-G's non-zero depth
+across a method switch. Do not collapse it into a single call at switch-settle time: the reset
+runs after it, so the depth never reaches a present.
 
 `dxvkSetTargetFrameRate` provides an external FPS cap, reconciled into the limiter on every
 present. FSR frame generation forces Reflex off, so without this nothing paces the presents.
