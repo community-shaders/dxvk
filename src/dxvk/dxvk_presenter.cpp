@@ -8,15 +8,9 @@
 #include "dxvk_device.h"
 #include "dxvk_presenter.h"
 
-#include "../../include/cs_dxvk_api.h"
-
 #include "../wsi/wsi_window.h"
 
 namespace dxvk {
-
-  extern "C" uint32_t dxvkGetCsApiVersion() {
-    return CS_DXVK_API_VERSION;
-  }
 
   static std::atomic<int32_t> g_dxvkTearingPreference = { -1 };
 
@@ -82,26 +76,6 @@ namespace dxvk {
     return true;
   }
 
-  using DxvkPresentCallbackInfo = CsDxvkPresentCallbackInfo;
-
-  // Presenter-scoped callbacks. The payload prevents global Streamline state
-  // from consuming options, markers, or semaphore generations for an unrelated
-  // swapchain when more than one DXVK presenter exists.
-  std::atomic<void (*)(const DxvkPresentCallbackInfo*)> g_dxvkPresentCompletedCallback = { nullptr };
-
-  extern "C" void dxvkSetPresentCompletedCallback(void (*callback)(const DxvkPresentCallbackInfo*)) {
-    g_dxvkPresentCompletedCallback.store(callback, std::memory_order_release);
-  }
-
-  // Runs immediately before vkQueuePresentKHR on the same thread. Streamline
-  // requires DLSS-G option changes to be ordered with the Present that consumes
-  // them; issuing SetOptions from the D3D render thread races DXVK's async
-  // presenter and can wedge the plugin pacer during a mode transition.
-  std::atomic<void (*)(const DxvkPresentCallbackInfo*)> g_dxvkPresentBeginCallback = { nullptr };
-
-  extern "C" void dxvkSetPresentBeginCallback(void (*callback)(const DxvkPresentCallbackInfo*)) {
-    g_dxvkPresentBeginCallback.store(callback, std::memory_order_release);
-  }
 
   // One-shot request to recreate the Vulkan swapchain on the next acquire. CS uses this on a DLSS-G ->
   // FSR frame-gen switch: sl.dlss_g's sticky present proxy bypasses the Vulkan present hooks, so FSR
@@ -295,12 +269,6 @@ namespace dxvk {
   // FSR-FG runs fine on. 1 = force chain (copy), 0 = force no-chain (flips), -1 = default.
   // Note the asymmetry if ever forcing: the driver flip-locks a window at its first flip
   // present, so copy is only reachable before any flip has occurred.
-  std::atomic<int32_t> g_dxvkFsePNextChainOverride = { -1 };
-
-  extern "C" void dxvkSetFsePNextChain(int32_t mode) {
-    g_dxvkFsePNextChainOverride.store(mode, std::memory_order_release);
-  }
-
   const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> Presenter::s_colorSpaceFallbacks = {{
     { VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, VK_COLOR_SPACE_HDR10_ST2084_EXT },
 
@@ -582,15 +550,6 @@ namespace dxvk {
     // graphics submissions; DXVK's submission thread externally synchronizes this call
     // against them.
     VkQueue presentQueue = m_device->queues().graphics.queueHandle;
-    DxvkPresentCallbackInfo callbackInfo = {
-      sizeof(DxvkPresentCallbackInfo), 1u, 1u, m_imageIndex,
-      frameId, uint64_t(reinterpret_cast<uintptr_t>(m_swapchain)), m_presentWaitSwapchainSerial,
-      uint64_t(reinterpret_cast<uintptr_t>(this)),
-      uint64_t(reinterpret_cast<uintptr_t>(presentQueue)), extraWaitGeneration,
-      pendingPresentWaitCount, int32_t(VK_NOT_READY)
-    };
-    if (auto callback = g_dxvkPresentBeginCallback.load(std::memory_order_acquire))
-      callback(&callbackInfo);
 
     VkResult status = m_vkd->vkQueuePresentKHR(presentQueue, &info);
 
@@ -598,10 +557,6 @@ namespace dxvk {
     // Community Shaders associates the returned input-completion timeline with
     // the corresponding resource slot and polls it before reuse. No GPU queue
     // wait is injected here, avoiding a wait-before-signal cycle.
-    callbackInfo.presentResult = int32_t(status);
-    if (auto callback = g_dxvkPresentCompletedCallback.load(std::memory_order_acquire))
-      callback(&callbackInfo);
-
     if (extraWaitGeneration) {
       PresentWaitState waitState = PresentWaitState::Uncertain;
       switch (status) {
@@ -1052,12 +1007,8 @@ namespace dxvk {
 
   void Presenter::updateFsePNextChainMode() {
     // Default: chain only when FSE is actually opted into — chaining an explicit DISALLOWED
-    // costs the hardware-flip present path (see g_dxvkFsePNextChainOverride).
+    // costs the hardware-flip present path.
     bool chain = m_device->config().allowFse;
-
-    int32_t forced = g_dxvkFsePNextChainOverride.load(std::memory_order_acquire);
-    if (forced >= 0)
-      chain = forced != 0;
 
     if (chain != m_chainFseInfo)
       Logger::info(str::format("Presenter: FSE pNext ", chain ? "chained (copy-path presents)"
