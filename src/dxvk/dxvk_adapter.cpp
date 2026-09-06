@@ -280,6 +280,28 @@ namespace dxvk {
     // Create the actual Vulkan device
     VkDeviceCreateInfo deviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     deviceInfo.pNext = features->pNext;
+
+    // Ask the driver for the detail Nsight Aftermath decodes: which shader faulted, which
+    // resources it touched, and where the GPU had got to. The extension alone does nothing -- the
+    // flags are what turn each of those on -- and it is only enabled under DXVK_DEBUG=aftermath, so
+    // this costs nothing in an ordinary run.
+    //
+    // VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV is deliberately absent.
+    // Measured on an RTX 4080 (driver 582.66): with it set the device is lost partway through the
+    // first load, every time, and the game never renders a frame. The other three are stable across
+    // repeated loads. Aftermath still resolves the faulting shader from the debug-info bit, so the
+    // one that costs us the device buys nothing we do not already have.
+    VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfig = { VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV };
+
+    if (caps.getFeatures().nvDeviceDiagnosticsConfig.diagnosticsConfig) {
+      diagnosticsConfig.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV
+                              | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV
+                              | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
+
+      diagnosticsConfig.pNext = std::exchange(deviceInfo.pNext, &diagnosticsConfig);
+
+      Logger::warn("Nsight Aftermath: device diagnostics enabled. May affect performance.");
+    }
     deviceInfo.queueCreateInfoCount = queues.size();
     deviceInfo.pQueueCreateInfos = queues.data();
     deviceInfo.enabledExtensionCount = extensionNames.size();

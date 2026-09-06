@@ -72,6 +72,7 @@ namespace dxvk {
     HANDLE_EXT(khrWin32KeyedMutex);                \
     HANDLE_EXT(amdBufferMarker);                   \
     HANDLE_EXT(nvDeviceDiagnosticCheckpoints);     \
+    HANDLE_EXT(nvDeviceDiagnosticsConfig);     \
     HANDLE_EXT(nvLowLatency2);                     \
     HANDLE_EXT(nvRawAccessChains);                 \
     HANDLE_EXT(nvxBinaryImport);                   \
@@ -622,7 +623,15 @@ namespace dxvk {
      && !m_featuresSupported.khrPresentId2.presentId2)
       m_featuresSupported.nvLowLatency2 = VK_FALSE;
 
-    // Disable debug extensions if hang debugging is disabled
+    // Disable debug extensions if hang debugging is disabled.
+    //
+    // Aftermath deliberately does NOT re-enable VK_NV_device_diagnostic_checkpoints here. DXVK's
+    // DxvkCheckpointBuffer only allocates under DxvkDebugFlag::Hang, so turning the feature on
+    // without that flag leaves the checkpoint paths half-initialised, and the device is lost
+    // partway through the first load. Aftermath does not need it either: the automatic-checkpoints
+    // bit below has the driver record them itself, with no involvement from DXVK.
+    const bool aftermath = instance.debugFlags().test(DxvkDebugFlag::Aftermath);
+
     if (!instance.debugFlags().test(DxvkDebugFlag::Hang)) {
       m_featuresSupported.khrDeviceFault.deviceFault = VK_FALSE;
       m_featuresSupported.khrDeviceFault.deviceFaultVendorBinary = VK_FALSE;
@@ -630,6 +639,9 @@ namespace dxvk {
       m_featuresSupported.amdBufferMarker = VK_FALSE;
       m_featuresSupported.nvDeviceDiagnosticCheckpoints = VK_FALSE;
     }
+
+    if (!aftermath)
+      m_featuresSupported.nvDeviceDiagnosticsConfig.diagnosticsConfig = VK_FALSE;
   }
 
 
@@ -1082,6 +1094,9 @@ namespace dxvk {
 
       /* Hang debugging on Nvidia */
       ENABLE_EXT(nvDeviceDiagnosticCheckpoints, false),
+
+      /* Nsight Aftermath crash dump detail */
+      ENABLE_EXT_FEATURE(nvDeviceDiagnosticsConfig, diagnosticsConfig, false),
 
       /* Reflex support */
       ENABLE_EXT(nvLowLatency2, false),
