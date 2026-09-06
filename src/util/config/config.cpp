@@ -620,10 +620,20 @@ namespace dxvk {
     { R"(\\TESV\.exe$)", {{
       { "d3d9.hideNvidiaGpu",               "True" },
     }} },
-    /* Skyrim Special Edition: heavily CPU/draw-call *
-     * bound. Caching its many dynamic Map/DISCARD   *
-     * constant & vertex buffers in system memory    *
-     * avoids GPU stalls on that traffic.            */
+    /* Skyrim Special Edition: heavily CPU/draw-call  *
+     * bound. Caching its many dynamic Map/DISCARD    *
+     * constant & vertex buffers in system memory     *
+     * avoids GPU stalls on that traffic.             *
+     * Measured in one Whiterun scene, frame gen off, *
+     * uncapped, against the alternatives -- keep 'a': *
+     *   "a"  180.3 fps, PCIe rx avg 2610 MB/s        *
+     *   "c"  160.4 fps, rx avg 1984 MB/s            *
+     *   ""   147.4 fps, rx avg 2598 MB/s            *
+     * Note the PCIe traffic is ~the same either way,  *
+     * so this setting is NOT what makes the Vulkan    *
+     * path draw ~7x the PCIe bandwidth of native      *
+     * D3D11 (310 MB/s avg in the same scene). That    *
+     * remains unexplained; do not blame this option.  */
     { R"(\\SkyrimSE\.exe$)", {{
       { "d3d11.cachedDynamicResources",     "a" },
       /* Does not rely on DXVK's implicit WAR/WAW barriers *
