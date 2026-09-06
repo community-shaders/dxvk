@@ -620,20 +620,33 @@ namespace dxvk {
     { R"(\\TESV\.exe$)", {{
       { "d3d9.hideNvidiaGpu",               "True" },
     }} },
-    /* Skyrim Special Edition: heavily CPU/draw-call  *
-     * bound. Caching its many dynamic Map/DISCARD    *
-     * constant & vertex buffers in system memory     *
-     * avoids GPU stalls on that traffic.             *
-     * Measured in one Whiterun scene, frame gen off, *
-     * uncapped, against the alternatives -- keep 'a': *
-     *   "a"  180.3 fps, PCIe rx avg 2610 MB/s        *
-     *   "c"  160.4 fps, rx avg 1984 MB/s            *
-     *   ""   147.4 fps, rx avg 2598 MB/s            *
-     * Note the PCIe traffic is ~the same either way,  *
-     * so this setting is NOT what makes the Vulkan    *
-     * path draw ~7x the PCIe bandwidth of native      *
-     * D3D11 (310 MB/s avg in the same scene). That    *
-     * remains unexplained; do not blame this option.  */
+    /* Skyrim Special Edition: heavily CPU/draw-call    *
+     * bound, with an enormous number of per-draw       *
+     * Map/DISCARD constant buffer updates.             *
+     *                                                  *
+     * Measured in one Whiterun scene, frame gen off,   *
+     * uncapped, with the effective config verified in  *
+     * the dxgi log for every run:                      *
+     *   "a"  179.8 fps, PCIe rx 2960 avg / 11358 max   *
+     *   "c"  156.9 fps,          2506 /  8220         *
+     *   "vi" 133.1 fps,          1607 /  2927         *
+     *   ""   130.9 fps,          3531 / 10854         *
+     *                                                  *
+     * The gap between "a" and "vi" is the constant     *
+     * buffers, and it is where this game's PCIe traffic *
+     * comes from: keeping them in cached system memory  *
+     * lets the CPU write them without stalling, at the  *
+     * cost of the GPU reading them across the bus every *
+     * draw. That is the reason the Vulkan path pulls    *
+     * several times the PCIe bandwidth of native D3D11  *
+     * (310 MB/s avg in the same scene) -- it is a       *
+     * deliberate trade, not a leak.                     *
+     *                                                  *
+     * Keep "a": it is the fastest by 15-37%, and the    *
+     * bandwidth it spends is otherwise idle (3 GB/s of  *
+     * a 31.5 GB/s PCIe 4.0 x16 link). Anyone genuinely  *
+     * bandwidth-starved can set "vi" in dxvk.conf and   *
+     * trade 26% of the frame rate for 46% less traffic. */
     { R"(\\SkyrimSE\.exe$)", {{
       { "d3d11.cachedDynamicResources",     "a" },
       /* Does not rely on DXVK's implicit WAR/WAW barriers *
