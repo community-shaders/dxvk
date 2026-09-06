@@ -2,6 +2,32 @@
 #include "dxvk_queue.h"
 
 namespace dxvk {
+
+  // Reports a lost device through VK_EXT_device_fault. printHangInfo covers this under Hang, but
+  // that path needs breadcrumb storage crash analysis deliberately does not allocate, so call the
+  // fault reporters directly instead. This is the only post-mortem artifact an ordinary user can
+  // produce on AMD, where Radeon GPU Detective needs a developer running the Radeon Developer Panel.
+  static void reportDeviceLoss(DxvkDevice* device) {
+    if (!device->debugFlags().test(DxvkDebugFlag::CrashAnalysis))
+      return;
+
+    static dxvk::mutex s_mutex;
+    static bool s_reported = false;
+
+    std::lock_guard lock(s_mutex);
+
+    if (std::exchange(s_reported, true))
+      return;
+
+    Logger::err("DXVK: Device lost:");
+
+    if (device->features().khrDeviceFault.deviceFault)
+      logDeviceFaults(device);
+
+    if (device->features().khrDeviceFault.deviceFaultVendorBinary)
+      dumpDeviceFaultInfo(device);
+  }
+
   
   DxvkSubmissionQueue::DxvkSubmissionQueue(DxvkDevice* device, const DxvkQueueCallback& callback)
   : m_device        (device),
@@ -221,8 +247,11 @@ namespace dxvk {
       if (entry.status)
         entry.status->result = entry.result;
       
-      if (entry.result == VK_ERROR_DEVICE_LOST && m_checkpoints)
-        m_checkpoints->printHangInfo();
+      if (entry.result == VK_ERROR_DEVICE_LOST) {
+        if (m_checkpoints)
+          m_checkpoints->printHangInfo();
+        reportDeviceLoss(m_device);
+      }
 
       // On success, pass it on to the queue thread
       { std::unique_lock<dxvk::mutex> lock(m_mutex);
@@ -300,8 +329,11 @@ namespace dxvk {
             entry.latency.tracker->notifyGpuExecutionEnd(entry.latency.frameId);
         }
 
-        if (status == VK_ERROR_DEVICE_LOST && m_checkpoints)
-          m_checkpoints->printHangInfo();
+        if (status == VK_ERROR_DEVICE_LOST) {
+          if (m_checkpoints)
+            m_checkpoints->printHangInfo();
+          reportDeviceLoss(m_device);
+        }
 
         if (status != VK_SUCCESS) {
           m_lastError = status;

@@ -141,6 +141,11 @@ namespace dxvk {
      * \returns Checkpoint buffer, or \c nullptr.
      */
     DxvkCheckpointBuffer* getCheckpointBuffer() {
+      // Hang only. The command list records a breadcrumb through this whenever it is non-null, and
+      // the storage those indices address is allocated under Hang alone -- handing it out in any
+      // other mode indexes an empty vector on the first submission. Device-fault reporting, which
+      // crash analysis does want, goes through logDeviceFaults/dumpDeviceFaultInfo instead; neither
+      // touches the breadcrumb buffer.
       return m_debugFlags.test(DxvkDebugFlag::Hang) ? &m_checkpoints : nullptr;
     }
 

@@ -625,22 +625,30 @@ namespace dxvk {
 
     // Disable debug extensions if hang debugging is disabled.
     //
-    // Aftermath deliberately does NOT re-enable VK_NV_device_diagnostic_checkpoints here. DXVK's
-    // DxvkCheckpointBuffer only allocates under DxvkDebugFlag::Hang, so turning the feature on
-    // without that flag leaves the checkpoint paths half-initialised, and the device is lost
-    // partway through the first load. Aftermath does not need it either: the automatic-checkpoints
-    // bit below has the driver record them itself, with no involvement from DXVK.
-    const bool aftermath = instance.debugFlags().test(DxvkDebugFlag::Aftermath);
+    // Crash analysis deliberately does NOT re-enable VK_NV_device_diagnostic_checkpoints or
+    // VK_AMD_buffer_marker here. Both are consumed only by DxvkCheckpointBuffer, which allocates
+    // under DxvkDebugFlag::Hang alone, so turning either feature on without that flag leaves the
+    // checkpoint paths half-initialised and the device is lost partway through the first load.
+    // Neither vendor's crash analysis needs them: on Nvidia the automatic-checkpoints bit below
+    // has the driver record markers itself, and on AMD the driver writes the execution marker tree
+    // into the .rgd dump without any help from us.
+    const bool crashAnalysis = instance.debugFlags().test(DxvkDebugFlag::CrashAnalysis);
 
     if (!instance.debugFlags().test(DxvkDebugFlag::Hang)) {
-      m_featuresSupported.khrDeviceFault.deviceFault = VK_FALSE;
-      m_featuresSupported.khrDeviceFault.deviceFaultVendorBinary = VK_FALSE;
+      // VK_EXT_device_fault survives crash analysis: it reports the faulting address and, where the
+      // driver provides one, a vendor binary blob. That is the only post-mortem artifact an ordinary
+      // user can produce on AMD, where Radeon GPU Detective needs a developer running the Radeon
+      // Developer Panel and is therefore useless for reports from the wild.
+      if (!crashAnalysis) {
+        m_featuresSupported.khrDeviceFault.deviceFault = VK_FALSE;
+        m_featuresSupported.khrDeviceFault.deviceFaultVendorBinary = VK_FALSE;
+      }
 
       m_featuresSupported.amdBufferMarker = VK_FALSE;
       m_featuresSupported.nvDeviceDiagnosticCheckpoints = VK_FALSE;
     }
 
-    if (!aftermath)
+    if (!crashAnalysis)
       m_featuresSupported.nvDeviceDiagnosticsConfig.diagnosticsConfig = VK_FALSE;
   }
 

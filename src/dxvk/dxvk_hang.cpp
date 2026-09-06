@@ -8,6 +8,8 @@
 
 namespace dxvk {
 
+  static std::string faultAddressToString(const VkDeviceFaultAddressInfoKHR& address);
+
   DxvkCheckpointBuffer::DxvkCheckpointBuffer(DxvkDevice* device)
   : m_device(device) {
     if (m_device->debugFlags().test(DxvkDebugFlag::Hang))
@@ -108,7 +110,7 @@ namespace dxvk {
     Logger::err("DXVK: Hang detected:");
 
     if (m_device->features().khrDeviceFault.deviceFault)
-      logDeviceFaults();
+      logDeviceFaults(m_device);
 
     if (m_device->features().nvDeviceDiagnosticCheckpoints) {
       auto vk = m_device->vkd();
@@ -142,12 +144,14 @@ namespace dxvk {
         if (*hangTop != *hangBottom)
           logHangCommands(q, *hangTop, *hangBottom);
       }
+    } else if (m_device->debugFlags().test(DxvkDebugFlag::CrashAnalysis)) {
+      Logger::err("Hang location not tracked by DXVK; see the vendor crash dump.");
     } else {
       Logger::err("Cannot determine hang location.");
     }
 
     if (m_device->features().khrDeviceFault.deviceFaultVendorBinary)
-      dumpDeviceFaultInfo();
+      dumpDeviceFaultInfo(m_device);
   }
 
 
@@ -271,8 +275,8 @@ namespace dxvk {
   }
 
 
-  void DxvkCheckpointBuffer::logDeviceFaults() {
-    auto vk = m_device->vkd();
+  void logDeviceFaults(DxvkDevice* device) {
+    auto vk = device->vkd();
 
     uint32_t faultCount = 0u;
     VkResult vr = vk->vkGetDeviceFaultReportsKHR(vk->device(), 0u, &faultCount, nullptr);
@@ -321,8 +325,8 @@ namespace dxvk {
   }
 
 
-  void DxvkCheckpointBuffer::dumpDeviceFaultInfo() {
-    auto vk = m_device->vkd();
+  void dumpDeviceFaultInfo(DxvkDevice* device) {
+    auto vk = device->vkd();
 
     VkDeviceFaultDebugInfoKHR debugInfo = { VK_STRUCTURE_TYPE_DEVICE_FAULT_DEBUG_INFO_KHR };
     VkResult vr = vk->vkGetDeviceFaultDebugInfoKHR(vk->device(), &debugInfo);
@@ -383,7 +387,7 @@ namespace dxvk {
   }
 
 
-  std::string DxvkCheckpointBuffer::faultAddressToString(const VkDeviceFaultAddressInfoKHR& address) {
+  static std::string faultAddressToString(const VkDeviceFaultAddressInfoKHR& address) {
     VkDeviceAddress mask = VkDeviceAddress(1u) << address.addressPrecision;
 
     VkDeviceAddress lo = address.reportedAddress & -mask;

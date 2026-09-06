@@ -179,8 +179,8 @@ namespace dxvk {
       m_debugFlags.set(DxvkDebugFlag::Capture);
     else if (debugEnv == "hang")
       m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Hang);
-    else if (debugEnv == "aftermath")
-      m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Aftermath);
+    else if (debugEnv == "crashanalysis")
+      m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Markers, DxvkDebugFlag::CrashAnalysis);
 
     if (m_debugFlags.isClear()) {
       // Disable any usage of the extension altogether

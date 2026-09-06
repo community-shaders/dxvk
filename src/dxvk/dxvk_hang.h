@@ -27,6 +27,20 @@ namespace dxvk {
   /**
    * \brief Checkpoint buffer for
    */
+  /**
+   * \brief Logs VK_EXT_device_fault reports for a lost device
+   *
+   * Independent of any hang instrumentation, so crash analysis can call it without allocating
+   * breadcrumb storage.
+   */
+  void logDeviceFaults(DxvkDevice* device);
+
+  /**
+   * \brief Writes the vendor binary blob from a device fault, when the driver provides one
+   */
+  void dumpDeviceFaultInfo(DxvkDevice* device);
+
+
   class DxvkCheckpointBuffer {
     // Allocate ring buffer of 256k entries, should suffice
     static constexpr size_t NumCheckpoints = 1u << 18u;
@@ -112,13 +126,10 @@ namespace dxvk {
             int32_t                 lastBegun,
             int32_t                 lastComplete);
 
-    void logDeviceFaults();
 
-    void dumpDeviceFaultInfo();
 
     std::pair<int32_t, int32_t> getCommandList(int32_t command) const;
 
-    static std::string faultAddressToString(const VkDeviceFaultAddressInfoKHR& address);
 
   };
 

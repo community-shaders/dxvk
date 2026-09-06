@@ -283,7 +283,8 @@ namespace dxvk {
 
     // Ask the driver for the detail Nsight Aftermath decodes: which shader faulted, which
     // resources it touched, and where the GPU had got to. The extension alone does nothing -- the
-    // flags are what turn each of those on -- and it is only enabled under DXVK_DEBUG=aftermath, so
+    // flags are what turn each of those on -- and it is only enabled under DXVK_DEBUG=crashanalysis,
+    // so
     // this costs nothing in an ordinary run.
     //
     // VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV is deliberately absent.
