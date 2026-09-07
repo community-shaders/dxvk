@@ -1,3 +1,5 @@
+#include "../dxvk/dxvk_vkprof.h"
+
 #include "d3d11_cmdlist.h"
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
@@ -1132,6 +1134,8 @@ namespace dxvk {
     });
 
     FlushCsChunk();
+
+    VkProfFlushStats::recordFlush(uint32_t(FlushType));
 
     // Notify flush tracker about the flush
     m_flushSeqNum = m_csSeqNum;

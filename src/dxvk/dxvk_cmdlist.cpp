@@ -784,6 +784,8 @@ namespace dxvk {
                 : descriptorInfo.data.pUniformBuffer) = &bufferInfo;
             }
 
+            VkProfDescStats::recordBufferDescriptor(i, bufferInfo.address, bufferInfo.range);
+
             DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(), &descriptorInfo,
               m_device->getDescriptorProperties().getDescriptorTypeInfo(info.descriptorType).size,
               descriptor.descriptor.data()));

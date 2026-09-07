@@ -385,6 +385,8 @@ namespace dxvk {
 
       if (!((vkProfFrames.fetch_add(1u, std::memory_order_relaxed) + 1u) % VkProfInterval))
         VkProf::dumpAndReset("steady state", VkProfInterval);
+        VkProfDescStats::report();
+        VkProfFlushStats::report();
     }
 
     // Keep option delivery, markers, and state queries on the real present thread.

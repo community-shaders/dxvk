@@ -126,3 +126,38 @@ namespace dxvk {
  */
 #define DXVK_VKPROF_EXPR(id, expr) \
   (::dxvk::VkProfScope(::dxvk::VkProfId::id), (expr))
+
+namespace dxvk {
+
+  /**
+   * \brief Descriptor-write redundancy counters
+   *
+   * Buffer descriptors are re-encoded through vkGetDescriptorEXT on every draw
+   * because each carries a fresh GPU address, while image and sampler
+   * descriptors are encoded once at view creation and reused. This counts how
+   * many of those buffer re-encodes actually write a different (address, range)
+   * than the previous write to the same binding slot, which bounds what a
+   * redundancy check at this level could remove.
+   */
+  struct VkProfDescStats {
+    static void recordBufferDescriptor(uint32_t slot, uint64_t address, uint64_t range);
+    static void report();
+  };
+
+}
+
+namespace dxvk {
+
+  /**
+   * \brief Command-list submission attribution
+   *
+   * vkQueueSubmit2 is the most expensive entry point measured (18.8 us per
+   * call, 24 calls per frame). This records which flush reason produced each
+   * submission, so the count can be attacked at its source rather than guessed at.
+   */
+  struct VkProfFlushStats {
+    static void recordFlush(uint32_t flushType);
+    static void report();
+  };
+
+}

@@ -197,6 +197,8 @@ namespace dxvk {
 
       VkDeviceSize descriptorSize = worker->m_device->getDescriptorProperties().getDescriptorTypeInfo(descriptorInfo.type).size;
 
+      VkProfDescStats::recordBufferDescriptor(i, bufferInfo.address, bufferInfo.range);
+
       DXVK_VKPROF_EXPR(GetDescriptor, worker->m_vkd->vkGetDescriptorEXT(worker->m_vkd->device(),
         &descriptorInfo, descriptorSize, descriptor.descriptor.data()));
     }

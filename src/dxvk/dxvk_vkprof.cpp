@@ -161,3 +161,114 @@ namespace dxvk {
   }
 
 }
+
+namespace dxvk {
+
+  namespace {
+
+    struct DescSlotState {
+      uint64_t address = 0u;
+      uint64_t range   = ~0ull;
+    };
+
+    constexpr size_t VkProfDescSlots = 32u;
+
+    thread_local std::array<DescSlotState, VkProfDescSlots> tl_descSlots = { };
+
+    std::atomic<uint64_t> g_descTotal    = { 0u };
+    std::atomic<uint64_t> g_descChanged  = { 0u };
+
+  }
+
+
+  void VkProfDescStats::recordBufferDescriptor(uint32_t slot, uint64_t address, uint64_t range) {
+    if (likely(!g_vkProfEnabled))
+      return;
+
+    auto& state = tl_descSlots[slot % VkProfDescSlots];
+
+    g_descTotal.fetch_add(1u, std::memory_order_relaxed);
+
+    if (state.address != address || state.range != range) {
+      g_descChanged.fetch_add(1u, std::memory_order_relaxed);
+      state.address = address;
+      state.range   = range;
+    }
+  }
+
+
+  void VkProfDescStats::report() {
+    const uint64_t total   = g_descTotal.exchange(0u, std::memory_order_relaxed);
+    const uint64_t changed = g_descChanged.exchange(0u, std::memory_order_relaxed);
+
+    if (!total)
+      return;
+
+    char line[256];
+    std::snprintf(line, sizeof(line),
+      "VkProf   buffer descriptors: %llu written, %llu changed (%.1f%%), %llu redundant (%.1f%%)",
+      (unsigned long long) total, (unsigned long long) changed,
+      100.0 * double(changed) / double(total),
+      (unsigned long long) (total - changed),
+      100.0 * double(total - changed) / double(total));
+    Logger::info(line);
+  }
+
+}
+
+namespace dxvk {
+
+  namespace {
+
+    // Indices match GpuFlushType; the last slot catches anything unrecognised.
+    constexpr size_t VkProfFlushKinds = 5u;
+
+    const char* g_flushNames[VkProfFlushKinds] = {
+      "ExplicitFlush",
+      "ImplicitSynchronization",
+      "ImplicitStrongHint",
+      "ImplicitWeakHint",
+      "other",
+    };
+
+    std::array<std::atomic<uint64_t>, VkProfFlushKinds> g_flushCounts = { };
+
+  }
+
+
+  void VkProfFlushStats::recordFlush(uint32_t flushType) {
+    if (likely(!g_vkProfEnabled))
+      return;
+
+    g_flushCounts[std::min<size_t>(flushType, VkProfFlushKinds - 1u)]
+      .fetch_add(1u, std::memory_order_relaxed);
+  }
+
+
+  void VkProfFlushStats::report() {
+    uint64_t total = 0u;
+    uint64_t counts[VkProfFlushKinds];
+
+    for (size_t i = 0; i < VkProfFlushKinds; i++) {
+      counts[i] = g_flushCounts[i].exchange(0u, std::memory_order_relaxed);
+      total += counts[i];
+    }
+
+    if (!total)
+      return;
+
+    char line[256];
+
+    for (size_t i = 0; i < VkProfFlushKinds; i++) {
+      if (!counts[i])
+        continue;
+
+      std::snprintf(line, sizeof(line),
+        "VkProf   flush %-26s %8llu  (%.1f%% of submissions)",
+        g_flushNames[i], (unsigned long long) counts[i],
+        100.0 * double(counts[i]) / double(total));
+      Logger::info(line);
+    }
+  }
+
+}
