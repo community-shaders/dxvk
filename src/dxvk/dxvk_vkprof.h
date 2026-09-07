@@ -1,0 +1,128 @@
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+
+#include "../util/util_likely.h"
+#include "../util/util_time.h"
+
+namespace dxvk {
+
+  /**
+   * \brief Vulkan entry point identifiers tracked by the profiler
+   *
+   * Diagnostic instrumentation for measuring how much CPU time the Vulkan
+   * driver consumes per entry point. Opt-in via DXVK_VKPROF=1; when it is off
+   * every scope compiles down to a single predictable branch on a global bool.
+   */
+  enum class VkProfId : uint32_t {
+    CmdDraw,
+    CmdDrawIndexed,
+    CmdDrawIndirect,
+    CmdDrawIndexedIndirect,
+    CmdBindPipeline,
+    CmdBindDescriptorSets,
+    CmdSetDescriptorBufferOffsets,
+    CmdBindVertexBuffers,
+    CmdBindIndexBuffer,
+    CmdPushConstants,
+    CmdBeginRendering,
+    CmdEndRendering,
+    CmdPipelineBarrier,
+    CmdSetViewport,
+    CmdSetScissor,
+    QueueSubmit,
+    QueuePresent,
+    AcquireNextImage,
+    CreateGraphicsPipelines,
+    CreateComputePipelines,
+    AllocateMemory,
+    CreateImage,
+    CreateBuffer,
+    CreateImageView,
+    GetDescriptor,
+    UpdateDescriptorSets,
+    BeginCommandBuffer,
+    EndCommandBuffer,
+    ResetCommandPool,
+    /// Not a Vulkan call. Used to measure what the instrumentation itself costs, so
+    /// entry points whose per-call time approaches the timer resolution can be read
+    /// honestly rather than reported as if the timer were free.
+    Calibration,
+    Count
+  };
+
+  extern bool g_vkProfEnabled;
+
+  struct VkProfCounter {
+    std::atomic<uint64_t> calls    = { 0u };
+    std::atomic<uint64_t> ticks    = { 0u };
+    std::atomic<uint64_t> maxTicks = { 0u };
+  };
+
+  /**
+   * \brief Per-entry-point Vulkan CPU time accumulator
+   */
+  class VkProf {
+
+  public:
+
+    static void init();
+
+    static void record(VkProfId id, uint64_t ticks);
+
+    /// Dumps accumulated counters to the log and clears them. \c frames is the
+    /// number of presents the interval covered, used to derive per-frame cost.
+    static void dumpAndReset(const char* tag, uint64_t frames);
+
+    static uint64_t presentCount();
+
+  private:
+
+    static std::array<VkProfCounter, size_t(VkProfId::Count)> s_counters;
+
+  };
+
+  /**
+   * \brief Scoped timer around a single Vulkan driver call
+   */
+  class VkProfScope {
+
+  public:
+
+    explicit VkProfScope(VkProfId id)
+    : m_id(id) {
+      if (unlikely(g_vkProfEnabled))
+        m_t0 = dxvk::high_resolution_clock::get_counter();
+    }
+
+    ~VkProfScope() {
+      if (unlikely(g_vkProfEnabled))
+        VkProf::record(m_id, uint64_t(dxvk::high_resolution_clock::get_counter() - m_t0));
+    }
+
+    VkProfScope             (const VkProfScope&) = delete;
+    VkProfScope& operator = (const VkProfScope&) = delete;
+
+  private:
+
+    VkProfId m_id;
+    int64_t  m_t0 = 0;
+
+  };
+
+}
+
+#define DXVK_VKPROF(id) ::dxvk::VkProfScope _dxvkVkProfScope(::dxvk::VkProfId::id)
+
+/**
+ * \brief Times a Vulkan call in any expression position
+ *
+ * The temporary VkProfScope lives until the end of the enclosing full
+ * expression, so this measures the call correctly even inside an if condition
+ * or an initialiser, where a plain scoped object would not be destroyed until
+ * the end of the surrounding block.
+ */
+#define DXVK_VKPROF_EXPR(id, expr) \
+  (::dxvk::VkProfScope(::dxvk::VkProfId::id), (expr))

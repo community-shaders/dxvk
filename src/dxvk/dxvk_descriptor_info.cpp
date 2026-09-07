@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <algorithm>
 
 #include "dxvk_descriptor_info.h"
@@ -412,8 +414,8 @@ namespace dxvk {
         VkDescriptorGetInfoEXT nullInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT };
         nullInfo.type = s.first;
 
-        vk->vkGetDescriptorEXT(vk->device(),
-          &nullInfo, s.second, m_nullDescriptors[type].descriptor.data());
+        DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(),
+          &nullInfo, s.second, m_nullDescriptors[type].descriptor.data()));
       }
     }
 

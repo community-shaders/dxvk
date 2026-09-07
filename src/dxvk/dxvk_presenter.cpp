@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -219,9 +221,9 @@ namespace dxvk {
 
       waitForSwapchainFence(sync);
 
-      m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+      m_acquireStatus = DXVK_VKPROF_EXPR(AcquireNextImage, m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
         m_swapchain, std::numeric_limits<uint64_t>::max(),
-        sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+        sync.acquire, VK_NULL_HANDLE, &m_imageIndex));
     }
 
     // This is a normal occurence, but may be useful for
@@ -243,9 +245,9 @@ namespace dxvk {
 
       PresenterSync sync = m_semaphores.at(m_frameIndex);
 
-      m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+      m_acquireStatus = DXVK_VKPROF_EXPR(AcquireNextImage, m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
         m_swapchain, std::numeric_limits<uint64_t>::max(),
-        sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+        sync.acquire, VK_NULL_HANDLE, &m_imageIndex));
 
       if (m_acquireStatus < 0) {
         Logger::info(str::format("Presenter: Got ", m_acquireStatus, " from fresh swapchain"));
@@ -374,7 +376,16 @@ namespace dxvk {
     // against them.
     VkQueue presentQueue = m_device->queues().graphics.queueHandle;
 
-    VkResult status = m_vkd->vkQueuePresentKHR(presentQueue, &info);
+    VkResult status = DXVK_VKPROF_EXPR(QueuePresent, m_vkd->vkQueuePresentKHR(presentQueue, &info));
+
+    if (unlikely(g_vkProfEnabled)) {
+      // Report over a fixed frame count so the numbers are directly per-frame.
+      constexpr uint64_t VkProfInterval = 600u;
+      static std::atomic<uint64_t> vkProfFrames = { 0u };
+
+      if (!((vkProfFrames.fetch_add(1u, std::memory_order_relaxed) + 1u) % VkProfInterval))
+        VkProf::dumpAndReset("steady state", VkProfInterval);
+    }
 
     // Keep option delivery, markers, and state queries on the real present thread.
     // Community Shaders associates the returned input-completion timeline with
@@ -431,9 +442,9 @@ namespace dxvk {
       PresenterSync& nextSync = m_semaphores.at(m_frameIndex);
       waitForSwapchainFence(nextSync);
 
-      m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+      m_acquireStatus = DXVK_VKPROF_EXPR(AcquireNextImage, m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
         m_swapchain, std::numeric_limits<uint64_t>::max(),
-        nextSync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+        nextSync.acquire, VK_NULL_HANDLE, &m_imageIndex));
     }
 
     // Recreate the swapchain on the next acquire, even if we get suboptimal.

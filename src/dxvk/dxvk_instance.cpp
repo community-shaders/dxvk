@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <version.h>
 #include <buildenv.h>
 
@@ -165,6 +167,8 @@ namespace dxvk {
 
     // Hide debug mode behind an environment variable since it adds
     // significant overhead, and some games will not work with it enabled.
+    VkProf::init();
+
     std::string debugEnv = env::getEnvVar("DXVK_DEBUG");
 
     bool capture = debugEnv.empty() && (

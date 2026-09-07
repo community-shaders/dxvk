@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dxvk_vkprof.h"
+
 #include <limits>
 
 #include "dxvk_bind_mask.h"
@@ -557,6 +559,7 @@ namespace dxvk {
     void updateDescriptorSets(
             uint32_t                      descriptorWriteCount,
       const VkWriteDescriptorSet*         pDescriptorWrites) {
+      DXVK_VKPROF(UpdateDescriptorSets);
       m_vkd->vkUpdateDescriptorSets(m_vkd->device(),
         descriptorWriteCount, pDescriptorWrites,
         0, nullptr);
@@ -602,6 +605,7 @@ namespace dxvk {
 
       m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
 
+      DXVK_VKPROF(CmdBeginRendering);
       m_vkd->vkCmdBeginRendering(getCmdBuffer(cmdBuffer), pRenderingInfo);
     }
 
@@ -622,6 +626,7 @@ namespace dxvk {
     void cmdBindDescriptorSets(
             DxvkCmdBuffer             cmdBuffer,
       const VkBindDescriptorSetsInfo* info) {
+      DXVK_VKPROF(CmdBindDescriptorSets);
       m_vkd->vkCmdBindDescriptorSets2KHR(getCmdBuffer(cmdBuffer), info);
     }
 
@@ -629,6 +634,7 @@ namespace dxvk {
     void cmdSetDescriptorBufferOffsetsEXT(
             DxvkCmdBuffer             cmdBuffer,
       const VkSetDescriptorBufferOffsetsInfoEXT* info) {
+      DXVK_VKPROF(CmdSetDescriptorBufferOffsets);
       m_vkd->vkCmdSetDescriptorBufferOffsets2EXT(getCmdBuffer(cmdBuffer), info);
     }
 
@@ -638,6 +644,7 @@ namespace dxvk {
             VkDeviceSize            offset,
             VkDeviceSize            size,
             VkIndexType             indexType) {
+      DXVK_VKPROF(CmdBindIndexBuffer);
       m_vkd->vkCmdBindIndexBuffer2KHR(getCmdBuffer(),
         buffer, offset, size, indexType);
     }
@@ -647,6 +654,7 @@ namespace dxvk {
             DxvkCmdBuffer           cmdBuffer,
             VkPipelineBindPoint     pipelineBindPoint,
             VkPipeline              pipeline) {
+      DXVK_VKPROF(CmdBindPipeline);
       m_vkd->vkCmdBindPipeline(getCmdBuffer(cmdBuffer),
         pipelineBindPoint, pipeline);
     }
@@ -670,6 +678,7 @@ namespace dxvk {
       const VkDeviceSize*           pOffsets,
       const VkDeviceSize*           pSizes,
       const VkDeviceSize*           pStrides) {
+      DXVK_VKPROF(CmdBindVertexBuffers);
       m_vkd->vkCmdBindVertexBuffers2(getCmdBuffer(),
         firstBinding, bindingCount, pBuffers, pOffsets,
         pSizes, pStrides);
@@ -837,6 +846,7 @@ namespace dxvk {
       if (unlikely(m_checkpoints))
         debugDraw(DxvkCmdBuffer::ExecBuffer, "Draw", vertexCount, instanceCount);
 
+      DXVK_VKPROF(CmdDraw);
       m_vkd->vkCmdDraw(getCmdBuffer(),
         vertexCount, instanceCount,
         firstVertex, firstInstance);
@@ -864,6 +874,7 @@ namespace dxvk {
       if (unlikely(m_checkpoints))
         debugDrawIndirect(DxvkCmdBuffer::ExecBuffer, "DrawIndirect", drawCount, stride);
 
+      DXVK_VKPROF(CmdDrawIndirect);
       m_vkd->vkCmdDrawIndirect(getCmdBuffer(),
         buffer, offset, drawCount, stride);
     }
@@ -893,6 +904,7 @@ namespace dxvk {
       if (unlikely(m_checkpoints))
         debugDraw(DxvkCmdBuffer::ExecBuffer, "DrawIndexed", indexCount, instanceCount);
 
+      DXVK_VKPROF(CmdDrawIndexed);
       m_vkd->vkCmdDrawIndexed(getCmdBuffer(),
         indexCount, instanceCount,
         firstIndex, vertexOffset,
@@ -921,6 +933,7 @@ namespace dxvk {
       if (unlikely(m_checkpoints))
         debugDrawIndirect(DxvkCmdBuffer::ExecBuffer, "DrawIndexedIndirect", drawCount, stride);
 
+      DXVK_VKPROF(CmdDrawIndexedIndirect);
       m_vkd->vkCmdDrawIndexedIndirect(getCmdBuffer(),
         buffer, offset, drawCount, stride);
     }
@@ -978,6 +991,7 @@ namespace dxvk {
       if (unlikely(m_checkpoints))
         debugMarker(cmdBuffer, "EndRendering");
 
+      DXVK_VKPROF(CmdEndRendering);
       m_vkd->vkCmdEndRendering(getCmdBuffer(cmdBuffer));
     }
 
@@ -1020,6 +1034,7 @@ namespace dxvk {
       m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
       m_statCounters.addCtr(DxvkStatCounter::CmdBarrierCount, 1);
 
+      DXVK_VKPROF(CmdPipelineBarrier);
       m_vkd->vkCmdPipelineBarrier2(getCmdBuffer(cmdBuffer), dependencyInfo);
     }
 
@@ -1027,6 +1042,7 @@ namespace dxvk {
     void cmdPushConstants(
             DxvkCmdBuffer           cmdBuffer,
       const VkPushConstantsInfo*    info) {
+      DXVK_VKPROF(CmdPushConstants);
       m_vkd->vkCmdPushConstants2KHR(getCmdBuffer(cmdBuffer), info);
     }
 
@@ -1197,6 +1213,7 @@ namespace dxvk {
     void cmdSetScissor(
             uint32_t                scissorCount,
       const VkRect2D*               scissors) {
+      DXVK_VKPROF(CmdSetScissor);
       m_vkd->vkCmdSetScissorWithCount(getCmdBuffer(), scissorCount, scissors);
     }
 
@@ -1240,6 +1257,7 @@ namespace dxvk {
     void cmdSetViewport(
             uint32_t                viewportCount,
       const VkViewport*             viewports) {
+      DXVK_VKPROF(CmdSetViewport);
       m_vkd->vkCmdSetViewportWithCount(getCmdBuffer(), viewportCount, viewports);
     }
 

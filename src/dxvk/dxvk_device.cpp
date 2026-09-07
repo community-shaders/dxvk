@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include "dxvk_device.h"
 #include "dxvk_instance.h"
 #include "dxvk_latency_builtin.h"
@@ -318,8 +320,8 @@ namespace dxvk {
 
     VkPipeline pipeline = VK_NULL_HANDLE;
 
-    VkResult vr = m_vkd->vkCreateComputePipelines(m_vkd->device(),
-      VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateComputePipelines, m_vkd->vkCreateComputePipelines(m_vkd->device(),
+      VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
 
     if (vr)
       throw DxvkError(str::format("Failed to create built-in compute pipeline: ", vr));
@@ -491,8 +493,8 @@ namespace dxvk {
 
     VkPipeline pipeline = VK_NULL_HANDLE;
 
-    VkResult vr = m_vkd->vkCreateGraphicsPipelines(m_vkd->device(),
-      VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, m_vkd->vkCreateGraphicsPipelines(m_vkd->device(),
+      VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
 
     if (vr)
       throw DxvkError(str::format("Failed to create built-in graphics pipeline: ", vr));

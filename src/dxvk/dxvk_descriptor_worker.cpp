@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include "dxvk_descriptor_worker.h"
 #include "dxvk_device.h"
 
@@ -195,8 +197,8 @@ namespace dxvk {
 
       VkDeviceSize descriptorSize = worker->m_device->getDescriptorProperties().getDescriptorTypeInfo(descriptorInfo.type).size;
 
-      worker->m_vkd->vkGetDescriptorEXT(worker->m_vkd->device(),
-        &descriptorInfo, descriptorSize, descriptor.descriptor.data());
+      DXVK_VKPROF_EXPR(GetDescriptor, worker->m_vkd->vkGetDescriptorEXT(worker->m_vkd->device(),
+        &descriptorInfo, descriptorSize, descriptor.descriptor.data()));
     }
   }
 

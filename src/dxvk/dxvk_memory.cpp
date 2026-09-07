@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -105,9 +107,9 @@ namespace dxvk {
           info.data.pUniformTexelBuffer = &bufferInfo;
         }
 
-        vk->vkGetDescriptorEXT(vk->device(), &info,
+        DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(), &info,
           m_device->getDescriptorProperties().getDescriptorTypeInfo(info.type).size,
-          descriptor.descriptor.data());
+          descriptor.descriptor.data()));
       } else {
         VkBufferUsageFlags2CreateInfoKHR flags = { VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR };
         flags.usage = key.usage;
@@ -159,9 +161,9 @@ namespace dxvk {
         info.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         info.data.pStorageBuffer = &bufferInfo;
 
-        vk->vkGetDescriptorEXT(vk->device(), &info,
+        DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(), &info,
           m_device->getDescriptorProperties().getDescriptorTypeInfo(info.type).size,
-          descriptor.descriptor.data());
+          descriptor.descriptor.data()));
       }
     }
 
@@ -221,8 +223,8 @@ namespace dxvk {
     if (renderTargetUsage || !m_device->canUseDescriptorHeap() || m_device->hasCudaInterop()) {
       descriptor.legacy.image.imageLayout = key.layout;
 
-      VkResult vr = vk->vkCreateImageView(
-        vk->device(), &viewInfo, nullptr, &descriptor.legacy.image.imageView);
+      VkResult vr = DXVK_VKPROF_EXPR(CreateImageView, vk->vkCreateImageView(
+        vk->device(), &viewInfo, nullptr, &descriptor.legacy.image.imageView));
 
       // Not fatal on descriptor heap path
       if (vr && (renderTargetUsage || !m_device->canUseDescriptorHeap()))
@@ -267,9 +269,9 @@ namespace dxvk {
         info.data.pSampledImage = &descriptor.legacy.image;
       }
 
-      vk->vkGetDescriptorEXT(vk->device(), &info,
+      DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(), &info,
         m_device->getDescriptorProperties().getDescriptorTypeInfo(info.type).size,
-        descriptor.descriptor.data());
+        descriptor.descriptor.data()));
     }
 
     return &descriptor;
@@ -1023,8 +1025,8 @@ namespace dxvk {
     auto vk = m_device->vkd();
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateBuffer(vk->device(),
-      &createInfo, nullptr, &buffer);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateBuffer, vk->vkCreateBuffer(vk->device(),
+      &createInfo, nullptr, &buffer));
 
     if (vr != VK_SUCCESS) {
       throw DxvkError(str::format("Failed to create buffer: ", vr,
@@ -1119,7 +1121,7 @@ namespace dxvk {
     auto vk = m_device->vkd();
 
     VkImage image = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateImage(vk->device(), &createInfo, nullptr, &image);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateImage, vk->vkCreateImage(vk->device(), &createInfo, nullptr, &image));
 
     if (vr != VK_SUCCESS) {
       throw DxvkError(str::format("Failed to create image: ", vr,
@@ -1394,10 +1396,10 @@ namespace dxvk {
     DxvkDeviceMemory result = { };
     result.size = size;
 
-    if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory)) {
+    if (DXVK_VKPROF_EXPR(AllocateMemory, vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory))) {
       freeEmptyChunksInHeap(*type.heap, VkDeviceSize(-1), high_resolution_clock::time_point());
 
-      if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory))
+      if (DXVK_VKPROF_EXPR(AllocateMemory, vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory)))
         return DxvkDeviceMemory();
     }
 
@@ -1414,7 +1416,7 @@ namespace dxvk {
       bufferInfo.usage = type.bufferUsage;
       m_sharingModeInfo.fill(bufferInfo);
 
-      VkResult status = vk->vkCreateBuffer(vk->device(), &bufferInfo, nullptr, &buffer);
+      VkResult status = DXVK_VKPROF_EXPR(CreateBuffer, vk->vkCreateBuffer(vk->device(), &bufferInfo, nullptr, &buffer));
 
       if (status == VK_SUCCESS) {
         VkBufferMemoryRequirementsInfo2 memInfo = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2 };

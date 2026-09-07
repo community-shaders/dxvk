@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <iomanip>
 
 #include "../util/util_time.h"
@@ -251,8 +253,8 @@ namespace dxvk {
     info.pDynamicState        = &dyInfo;
     info.basePipelineIndex    = -1;
 
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(),
-      VK_NULL_HANDLE, 1, &info, nullptr, &m_pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(),
+      VK_NULL_HANDLE, 1, &info, nullptr, &m_pipeline));
 
     if (vr)
       throw DxvkError("Failed to create vertex input pipeline library");
@@ -535,8 +537,8 @@ namespace dxvk {
     info.pDynamicState        = &dyInfo;
     info.basePipelineIndex    = -1;
 
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(),
-      VK_NULL_HANDLE, 1, &info, nullptr, &m_pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(),
+      VK_NULL_HANDLE, 1, &info, nullptr, &m_pipeline));
 
     if (vr)
       throw DxvkError("Failed to create vertex input pipeline library");
@@ -1392,7 +1394,7 @@ namespace dxvk {
       flags.pNext = std::exchange(info.pNext, &flags);
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr && vr != VK_PIPELINE_COMPILE_REQUIRED_EXT)
       Logger::err(str::format("DxvkGraphicsPipeline: Failed to create base pipeline: ", vr));
@@ -1497,7 +1499,7 @@ namespace dxvk {
       flags.pNext = std::exchange(info.pNext, &flags);
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr != VK_SUCCESS) {
       Logger::err(str::format("DxvkGraphicsPipeline: Failed to compile pipeline: ", vr));

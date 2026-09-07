@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -120,8 +122,8 @@ namespace dxvk {
       flags.pNext = std::exchange(info.pNext, &flags);
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateComputePipelines(vk->device(),
-          VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateComputePipelines, vk->vkCreateComputePipelines(vk->device(),
+          VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr != VK_SUCCESS) {
       Logger::err(str::format("DxvkComputePipeline: Failed to compile pipeline: ", vr));

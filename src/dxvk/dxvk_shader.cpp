@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include "dxvk_device.h"
 #include "dxvk_pipemanager.h"
 #include "dxvk_shader.h"
@@ -432,7 +434,7 @@ namespace dxvk {
     info.basePipelineIndex    = -1;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr && vr != VK_PIPELINE_COMPILE_REQUIRED_EXT)
       Logger::err(str::format("DxvkShaderPipelineLibrary: Failed to create vertex shader pipeline: ", vr));
@@ -536,7 +538,7 @@ namespace dxvk {
       info.pMultisampleState  = &msInfo;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateGraphicsPipelines, vk->vkCreateGraphicsPipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr && !(flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT))
       Logger::err(str::format("DxvkShaderPipelineLibrary: Failed to create fragment shader pipeline: ", vr));
@@ -569,7 +571,7 @@ namespace dxvk {
       flagsInfo.pNext = std::exchange(info.pNext, &flagsInfo);
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult vr = vk->vkCreateComputePipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    VkResult vr = DXVK_VKPROF_EXPR(CreateComputePipelines, vk->vkCreateComputePipelines(vk->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
 
     if (vr && vr != VK_PIPELINE_COMPILE_REQUIRED_EXT)
       Logger::err(str::format("DxvkShaderPipelineLibrary: Failed to create compute shader pipeline: ", vr));

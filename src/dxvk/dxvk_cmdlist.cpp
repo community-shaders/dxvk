@@ -1,3 +1,5 @@
+#include "dxvk_vkprof.h"
+
 #include <algorithm>
 
 #include "dxvk_cmdlist.h"
@@ -89,7 +91,7 @@ namespace dxvk {
     VkResult vr = VK_SUCCESS;
 
     if (!this->isEmpty())
-      vr = vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
+      vr = DXVK_VKPROF_EXPR(QueueSubmit, vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE));
 
     this->reset();
     return vr;
@@ -156,7 +158,7 @@ namespace dxvk {
     VkCommandBufferBeginInfo info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    if (vk->vkBeginCommandBuffer(commandBuffer, &info))
+    if (DXVK_VKPROF_EXPR(BeginCommandBuffer, vk->vkBeginCommandBuffer(commandBuffer, &info)))
       throw DxvkError("DxvkCommandPool: Failed to begin command buffer");
 
     if (m_device->debugFlags().test(DxvkDebugFlag::Capture)) {
@@ -208,7 +210,7 @@ namespace dxvk {
                | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
     info.pInheritanceInfo = &inheritanceInfo;
 
-    if (vk->vkBeginCommandBuffer(commandBuffer, &info))
+    if (DXVK_VKPROF_EXPR(BeginCommandBuffer, vk->vkBeginCommandBuffer(commandBuffer, &info)))
       throw DxvkError("DxvkCommandPool: Failed to begin secondary command buffer");
 
     return commandBuffer;
@@ -219,7 +221,7 @@ namespace dxvk {
     auto vk = m_device->vkd();
 
     if (m_nextPrimary || m_nextSecondary) {
-      if (vk->vkResetCommandPool(vk->device(), m_commandPool, 0))
+      if (DXVK_VKPROF_EXPR(ResetCommandPool, vk->vkResetCommandPool(vk->device(), m_commandPool, 0)))
         throw DxvkError("DxvkCommandPool: Failed to reset command pool");
 
       m_nextPrimary = 0;
@@ -782,9 +784,9 @@ namespace dxvk {
                 : descriptorInfo.data.pUniformBuffer) = &bufferInfo;
             }
 
-            vk->vkGetDescriptorEXT(vk->device(), &descriptorInfo,
+            DXVK_VKPROF_EXPR(GetDescriptor, vk->vkGetDescriptorEXT(vk->device(), &descriptorInfo,
               m_device->getDescriptorProperties().getDescriptorTypeInfo(info.descriptorType).size,
-              descriptor.descriptor.data());
+              descriptor.descriptor.data()));
 
             descriptors.push_back(&descriptor);
           } break;
@@ -918,7 +920,7 @@ namespace dxvk {
   VkCommandBuffer DxvkCommandList::endSecondaryCommandBuffer() {
     VkCommandBuffer cmd = getCmdBuffer();
 
-    if (m_vkd->vkEndCommandBuffer(cmd))
+    if (DXVK_VKPROF_EXPR(EndCommandBuffer, m_vkd->vkEndCommandBuffer(cmd)))
       throw DxvkError("DxvkCommandList: Failed to end secondary command buffer");
 
     m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)] = m_execBuffer;
@@ -1034,7 +1036,7 @@ namespace dxvk {
     if (m_device->debugFlags().test(DxvkDebugFlag::Capture))
       m_vki->vkCmdEndDebugUtilsLabelEXT(cmdBuffer);
 
-    if (vk->vkEndCommandBuffer(cmdBuffer))
+    if (DXVK_VKPROF_EXPR(EndCommandBuffer, vk->vkEndCommandBuffer(cmdBuffer)))
       throw DxvkError("DxvkCommandList: Failed to end command buffer");
   }
 
