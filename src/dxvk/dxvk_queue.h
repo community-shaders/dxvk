@@ -36,14 +36,6 @@ namespace dxvk {
     Rc<DxvkCommandList> cmdList;
   };
 
-  struct DxvkInteropSubmitInfo {
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VkSemaphore signalSemaphore = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    uint64_t presentWaitGeneration = 0;
-  };
-  
-  
   /**
    * \brief Present info
    *
@@ -76,7 +68,6 @@ namespace dxvk {
     VkResult            result;
     DxvkSubmitStatus*   status;
     DxvkSubmitInfo      submit;
-    DxvkInteropSubmitInfo interop;
     DxvkPresentInfo     present;
     DxvkLatencyInfo     latency;
     DxvkTimelineSemaphoreValues timelines;
@@ -134,10 +125,6 @@ namespace dxvk {
             DxvkLatencyInfo     latencyInfo,
             DxvkSubmitStatus*   status);
 
-    void submitInterop(
-            DxvkInteropSubmitInfo submitInfo,
-            DxvkSubmitStatus*     status);
-    
     /**
      * \brief Presents an image synchronously
      *

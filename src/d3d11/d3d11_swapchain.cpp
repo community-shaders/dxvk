@@ -34,15 +34,6 @@ namespace dxvk {
       std::memory_order_release);
   }
 
-  extern "C" uint64_t dxvkEnqueueInteropCommandBuffer(
-          VkCommandBuffer commandBuffer,
-          VkSemaphore     signalSemaphore,
-          VkFence         fence) {
-    if (auto swapchain = g_dxvkActiveSwapchain.load(std::memory_order_acquire))
-      return swapchain->enqueueInteropCommandBuffer(commandBuffer, signalSemaphore, fence);
-    return 0;
-  }
-
   static uint16_t MapGammaControlPoint(float x) {
     if (x < 0.0f) x = 0.0f;
     if (x > 1.0f) x = 1.0f;
@@ -130,22 +121,6 @@ namespace dxvk {
     DestroyFrameLatencyEvent();
     DestroyLatencyTracker();
   }
-
-  uint64_t D3D11SwapChain::enqueueInteropCommandBuffer(
-          VkCommandBuffer commandBuffer,
-          VkSemaphore     signalSemaphore,
-          VkFence         fence) {
-    if (commandBuffer == VK_NULL_HANDLE || fence == VK_NULL_HANDLE)
-      return 0;
-    const uint64_t generation = signalSemaphore != VK_NULL_HANDLE
-      ? reservePresentWaitSemaphore(signalSemaphore)
-      : 0;
-    if (signalSemaphore != VK_NULL_HANDLE && !generation)
-      return 0;
-    m_device->submitInteropCommandBuffer(commandBuffer, signalSemaphore, fence, generation);
-    return signalSemaphore != VK_NULL_HANDLE ? generation : 1;
-  }
-
 
   HRESULT STDMETHODCALLTYPE D3D11SwapChain::QueryInterface(
           REFIID                  riid,

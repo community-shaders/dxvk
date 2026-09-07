@@ -9,10 +9,5 @@ EXPORTS
     dxvkSetTargetFrameRate @103
     dxvkGetPresenterSurfaceState @109
     dxvkSetSyncPresent @110
-    dxvkGetPresentWaitSemaphoreState @111
-    dxvkClearPresentWaitSemaphore @112
-    dxvkCancelPresentWaitSemaphore @113
-    dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle @114
     dxvkSetPresentQueueDepth @118
-    dxvkEnqueueInteropCommandBuffer @120
     dxvkSetTearingPreference @121

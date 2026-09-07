@@ -96,8 +96,6 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE SetRotation(
             DXGI_MODE_ROTATION        Rotation);
 
-    uint64_t enqueueInteropCommandBuffer(VkCommandBuffer commandBuffer,
-      VkSemaphore signalSemaphore, VkFence fence);
 
   private:
 

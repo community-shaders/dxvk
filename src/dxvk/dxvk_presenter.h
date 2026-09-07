@@ -22,10 +22,6 @@
 
 namespace dxvk {
 
-  uint64_t reservePresentWaitSemaphore(VkSemaphore semaphore);
-  void activatePresentWaitSemaphore(uint64_t generation);
-  void failPresentWaitSemaphore(uint64_t generation);
-
   using PresenterSurfaceProc = std::function<VkResult (VkSurfaceKHR*)>;
 
   class DxvkDevice;
@@ -305,7 +301,6 @@ namespace dxvk {
 
     VkSurfaceKHR                m_surface     = VK_NULL_HANDLE;
     VkSwapchainKHR              m_swapchain   = VK_NULL_HANDLE;
-    uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
 

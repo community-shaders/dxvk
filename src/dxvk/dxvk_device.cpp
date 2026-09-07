@@ -644,20 +644,6 @@ namespace dxvk {
     m_statCounters.merge(commandList->statCounters());
   }
 
-  void DxvkDevice::submitInteropCommandBuffer(
-          VkCommandBuffer commandBuffer,
-          VkSemaphore     signalSemaphore,
-          VkFence         fence,
-          uint64_t        presentWaitGeneration) {
-    DxvkInteropSubmitInfo submitInfo;
-    submitInfo.commandBuffer = commandBuffer;
-    submitInfo.signalSemaphore = signalSemaphore;
-    submitInfo.fence = fence;
-    submitInfo.presentWaitGeneration = presentWaitGeneration;
-    m_submissionQueue.submitInterop(submitInfo, nullptr);
-  }
-  
-  
   VkResult DxvkDevice::waitForSubmission(DxvkSubmitStatus* status) {
     VkResult result = status->result.load();
 

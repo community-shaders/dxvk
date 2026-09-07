@@ -113,155 +113,6 @@ namespace dxvk {
     g_dxvkExternalFrameRate.store(fps < 0.0 ? 0.0 : fps, std::memory_order_release);
   }
 
-  enum class PresentWaitState : uint32_t {
-    None = 0,
-    Pending = 1,
-    Queued = 2,
-    Uncertain = 3,
-    Released = 4,
-  };
-
-  struct PresentWaitSnapshot {
-    VkSemaphore semaphore = VK_NULL_HANDLE;
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    uint64_t swapchainSerial = 0;
-    uint64_t generation = 0;
-    uint32_t imageIndex = 0;
-    PresentWaitState state = PresentWaitState::None;
-    bool attached = false;
-    bool eligible = false;
-  };
-
-  static constexpr uint32_t MaxPresentWaitSnapshots = 64;
-  static std::mutex g_dxvkPresentWaitMutex;
-  static std::array<PresentWaitSnapshot, MaxPresentWaitSnapshots> g_dxvkPresentWaits;
-  static uint64_t g_dxvkNextPresentWaitGeneration = 0;
-  static uint64_t g_dxvkNextPresentWaitSwapchainSerial = 0;
-
-  // Pending records form a generation-ordered FIFO. DXVK's D3D11 present path
-  // is asynchronous, so the app may register several frames before the Vulkan
-  // presenter consumes them. Queued records remain keyed until reacquire proof.
-  static uint64_t createPresentWaitSemaphore(VkSemaphore sem) {
-    if (sem == VK_NULL_HANDLE)
-      return 0;
-
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    PresentWaitSnapshot* freeSnapshot = nullptr;
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (!freeSnapshot && snapshot.state == PresentWaitState::None)
-        freeSnapshot = &snapshot;
-    }
-    if (!freeSnapshot)
-      return 0;
-
-    uint64_t generation = ++g_dxvkNextPresentWaitGeneration;
-    if (!generation)
-      generation = ++g_dxvkNextPresentWaitGeneration;
-    *freeSnapshot = { sem, VK_NULL_HANDLE, 0, generation, 0, PresentWaitState::Pending, false, false };
-    return generation;
-  }
-
-  uint64_t reservePresentWaitSemaphore(VkSemaphore sem) {
-    return createPresentWaitSemaphore(sem);
-  }
-
-  void activatePresentWaitSemaphore(uint64_t generation) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.generation == generation && snapshot.state == PresentWaitState::Pending) {
-        snapshot.eligible = true;
-        return;
-      }
-    }
-  }
-
-  void failPresentWaitSemaphore(uint64_t generation) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.generation == generation && snapshot.state == PresentWaitState::Pending) {
-        snapshot.state = PresentWaitState::Uncertain;
-        return;
-      }
-    }
-  }
-
-  // Cancellation is valid only while the exact registered handle is still pending.
-  extern "C" uint32_t dxvkCancelPresentWaitSemaphore(VkSemaphore sem) {
-    if (sem == VK_NULL_HANDLE)
-      return 0;
-
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Pending && !snapshot.attached &&
-          snapshot.semaphore == sem) {
-        snapshot = { };
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  extern "C" uint32_t dxvkGetPresentWaitSemaphoreState(uint64_t generation) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    if (generation) {
-      for (const auto& snapshot : g_dxvkPresentWaits) {
-        if (snapshot.generation == generation)
-          return uint32_t(snapshot.state);
-      }
-    }
-    return uint32_t(PresentWaitState::None);
-  }
-
-  // Only a reacquire-proven generation may be removed from the ownership table.
-  extern "C" uint32_t dxvkClearPresentWaitSemaphore(uint64_t generation) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    if (generation) {
-      for (auto& snapshot : g_dxvkPresentWaits) {
-        if (snapshot.generation == generation && snapshot.state == PresentWaitState::Released) {
-          snapshot = { };
-          return 1;
-        }
-      }
-    }
-    return 0;
-  }
-
-  // The caller must prove the Vulkan device idle before releasing registered
-  // waits. Pending entries were never attached to a present; queued entries may
-  // have been consumed. Device idle makes both safe to retire.
-  extern "C" uint32_t dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle() {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    uint32_t released = 0;
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Pending ||
-          snapshot.state == PresentWaitState::Queued) {
-        snapshot.state = PresentWaitState::Released;
-        released += 1;
-      }
-    }
-    return released;
-  }
-
-  void releasePresentWaitsForImage(
-      VkSwapchainKHR swapchain, uint64_t swapchainSerial, uint32_t imageIndex) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Queued && snapshot.swapchain == swapchain &&
-          snapshot.swapchainSerial == swapchainSerial && snapshot.imageIndex == imageIndex)
-        snapshot.state = PresentWaitState::Released;
-    }
-  }
-
-  void releasePresentWaitsForSwapchain(
-      VkSwapchainKHR swapchain, uint64_t swapchainSerial) {
-    std::lock_guard lock(g_dxvkPresentWaitMutex);
-    for (auto& snapshot : g_dxvkPresentWaits) {
-      if (snapshot.state == PresentWaitState::Queued && snapshot.swapchain == swapchain &&
-          snapshot.swapchainSerial == swapchainSerial)
-        snapshot.state = PresentWaitState::Released;
-    }
-  }
-
   // Present-path override. Chaining VkSurfaceFullScreenExclusiveInfoEXT with DISALLOWED makes
   // the NVIDIA ICD route presents through the compositor GDI-copy path; not chaining it (the
   // spec default, and the dxvk default here via allowFse=false) yields hardware flips, which
@@ -465,8 +316,6 @@ namespace dxvk {
     const VkRectLayerKHR*         rects) {
     PresenterSync& currSync = m_semaphores.at(m_frameIndex);
 
-    releasePresentWaitsForImage(m_swapchain, m_presentWaitSwapchainSerial, m_imageIndex);
-
     VkPresentIdKHR presentId = { VK_STRUCTURE_TYPE_PRESENT_ID_KHR };
     presentId.swapchainCount = 1;
     presentId.pPresentIds   = &frameId;
@@ -489,32 +338,6 @@ namespace dxvk {
     // that reads them (pure queue sync, no CPU stall; the generated frames flash without it).
     std::array<VkSemaphore, 2> waitSemaphores = { currSync.present, VK_NULL_HANDLE };
     uint32_t waitSemaphoreCount = 1;
-
-    uint64_t extraWaitGeneration = 0;
-    uint32_t pendingPresentWaitCount = 0;
-
-    // Attach a pending wait unconditionally. It only queue-orders this present after work the
-    // host already submitted, which is correct whether or not anything interposed the present.
-    {
-      std::lock_guard lock(g_dxvkPresentWaitMutex);
-      PresentWaitSnapshot* oldestPending = nullptr;
-      for (auto& snapshot : g_dxvkPresentWaits) {
-        if (snapshot.state == PresentWaitState::Pending && snapshot.eligible && !snapshot.attached &&
-            snapshot.semaphore != VK_NULL_HANDLE) {
-          pendingPresentWaitCount += 1;
-          if (!oldestPending || snapshot.generation < oldestPending->generation)
-            oldestPending = &snapshot;
-        }
-      }
-      if (oldestPending) {
-        waitSemaphores[waitSemaphoreCount++] = oldestPending->semaphore;
-        extraWaitGeneration = oldestPending->generation;
-        oldestPending->swapchain = m_swapchain;
-        oldestPending->swapchainSerial = m_presentWaitSwapchainSerial;
-        oldestPending->imageIndex = m_imageIndex;
-        oldestPending->attached = true;
-      }
-    }
 
     VkPresentRegionKHR region = {};
     region.rectangleCount = rectCount;
@@ -557,31 +380,6 @@ namespace dxvk {
     // Community Shaders associates the returned input-completion timeline with
     // the corresponding resource slot and polls it before reuse. No GPU queue
     // wait is injected here, avoiding a wait-before-signal cycle.
-    if (extraWaitGeneration) {
-      PresentWaitState waitState = PresentWaitState::Uncertain;
-      switch (status) {
-        case VK_SUCCESS:
-        case VK_SUBOPTIMAL_KHR:
-        case VK_ERROR_OUT_OF_DATE_KHR:
-        case VK_ERROR_SURFACE_LOST_KHR:
-        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
-        case VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT:
-          waitState = PresentWaitState::Queued;
-          break;
-        default:
-          break;
-      }
-
-      std::lock_guard lock(g_dxvkPresentWaitMutex);
-      for (auto& snapshot : g_dxvkPresentWaits) {
-        if (snapshot.generation == extraWaitGeneration &&
-            snapshot.state == PresentWaitState::Pending && snapshot.attached) {
-          snapshot.state = waitState;
-          break;
-        }
-      }
-    }
-
     // Maintain valid state if presentation succeeded, even if we want to
     // recreate the swapchain. Spec says that 'queue' operations, i.e. the
     // semaphore and fence signals, still happen if present fails with
@@ -1335,13 +1133,6 @@ namespace dxvk {
     // present-ID that vkWaitForPresentKHR needs anyway. signalFrame releases the frame-latency
     // signal on the submit thread instead.
 
-    {
-      std::lock_guard lock(g_dxvkPresentWaitMutex);
-      m_presentWaitSwapchainSerial = ++g_dxvkNextPresentWaitSwapchainSerial;
-      if (!m_presentWaitSwapchainSerial)
-        m_presentWaitSwapchainSerial = ++g_dxvkNextPresentWaitSwapchainSerial;
-    }
-
     publishPresenterSurfaceState(
       surfaceFormat.format,
       m_preferredFormat.colorSpace,
@@ -1699,8 +1490,7 @@ namespace dxvk {
   void Presenter::destroySwapchain() {
     // DXVK does not chain the maintenance1 present fence (see presentImage), so device idle is
     // the only way to prove presentation finished before tearing the swapchain down.
-    const bool usePresentFences = false;
-    bool presentCompletionProven = usePresentFences || m_device->waitForIdle() == VK_SUCCESS;
+    m_device->waitForIdle();
 
     // Wait for the presentWait worker to finish using
     // the swapchain before destroying it.
@@ -1709,14 +1499,6 @@ namespace dxvk {
     m_frameDrain.wait(lock, [this] {
       return m_frameQueue.empty();
     });
-
-    if (usePresentFences) {
-      for (auto& sem : m_semaphores)
-        presentCompletionProven &= waitForSwapchainFence(sem);
-    }
-
-    if (presentCompletionProven)
-      releasePresentWaitsForSwapchain(m_swapchain, m_presentWaitSwapchainSerial);
 
     for (const auto& sem : m_semaphores) {
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.acquire, nullptr);
@@ -1733,7 +1515,6 @@ namespace dxvk {
     m_dynamicModes.clear();
 
     m_swapchain = VK_NULL_HANDLE;
-    m_presentWaitSwapchainSerial = 0;
     m_acquireStatus = VK_NOT_READY;
 
     m_presentPending = false;
