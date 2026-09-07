@@ -492,7 +492,7 @@ namespace dxvk {
     if (status == VK_NOT_READY)
       return DXGI_STATUS_OCCLUDED;
 
-    VkExtent2D dstSize = { backBuffer->info().extent.width, backBuffer->info().extent.height };
+    VkExtent2D dstSize = { presentImage->info().extent.width, presentImage->info().extent.height };
 
     VkRect2D srcRect = ComputeSrcPresentRect();
     VkRect2D dstRect = ComputeDstPresentRect(dstSize, srcRect.extent);
@@ -604,7 +604,7 @@ namespace dxvk {
       auto contextObjects = ctx->beginExternalRendering();
 
       cBlitter->present(contextObjects, cClearColor,
-        cBackBuffer, cDstRect, cSwapImage, cSrcRect);
+        cAppBackBuffer, cDstRect, cPresentImage, cSrcRect);
 
       // Submit current command list and present
       ctx->synchronizeWsi(cSync);
