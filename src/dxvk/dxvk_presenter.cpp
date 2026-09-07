@@ -332,13 +332,6 @@ namespace dxvk {
     modeInfo.swapchainCount = 1;
     modeInfo.pPresentModes  = &m_presentMode;
 
-    // App-provided extra present-wait semaphore: queue-orders
-    // the present after external work the app submitted outside DXVK's own timeline — used by
-    // Streamline DLSS-G so its evaluate/tag submissions are GPU-ordered ahead of the present
-    // that reads them (pure queue sync, no CPU stall; the generated frames flash without it).
-    std::array<VkSemaphore, 2> waitSemaphores = { currSync.present, VK_NULL_HANDLE };
-    uint32_t waitSemaphoreCount = 1;
-
     VkPresentRegionKHR region = {};
     region.rectangleCount = rectCount;
     region.pRectangles = rects;
@@ -348,8 +341,8 @@ namespace dxvk {
     regionInfo.pRegions = &region;
 
     VkPresentInfoKHR info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    info.waitSemaphoreCount = waitSemaphoreCount;
-    info.pWaitSemaphores    = waitSemaphores.data();
+    info.waitSemaphoreCount = 1;
+    info.pWaitSemaphores    = &currSync.present;
     info.swapchainCount     = 1;
     info.pSwapchains        = &m_swapchain;
     info.pImageIndices      = &m_imageIndex;
