@@ -652,6 +652,14 @@ namespace dxvk {
     if (m_device->canUseDescriptorBuffer())
       flagsInfo.flags |= VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT;
 
+    // Compute shaders reach the driver through here rather than through DxvkComputePipeline
+    // whenever pipeline libraries are in use, which is the default. Capturing statistics only in
+    // DxvkComputePipeline reported every vertex and fragment shader and not a single compute one.
+    const bool captureStats = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStats)
+      flagsInfo.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     VkComputePipelineCreateInfo info = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
     info.stage        = *stageInfo.getStageInfos();
     info.layout       = getPipelineLibraryLayout()->getPipelineLayout();
@@ -665,6 +673,10 @@ namespace dxvk {
 
     if (vr && vr != VK_PIPELINE_COMPILE_REQUIRED_EXT)
       Logger::err(str::format("DxvkShaderPipelineLibrary: Failed to create compute shader pipeline: ", vr));
+
+    if (!vr && captureStats)
+      logPipelineStatistics(m_device, pipeline,
+        m_shaders.getShaderCount() ? m_shaders.getShader(0)->debugName() : "compute");
 
     return vr ? VK_NULL_HANDLE : pipeline;
   }
