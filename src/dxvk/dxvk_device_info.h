@@ -116,6 +116,7 @@ namespace dxvk {
     VkBool32                                                  amdBufferMarker                 = VK_FALSE;
     VkBool32                                                  nvDeviceDiagnosticCheckpoints   = VK_FALSE;
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV               nvDeviceDiagnosticsConfig       = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR   khrPipelineExecutableProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR };
     VkBool32                                                  nvLowLatency2                   = VK_FALSE;
     VkPhysicalDeviceRawAccessChainsFeaturesNV                 nvRawAccessChains               = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAW_ACCESS_CHAINS_FEATURES_NV };
     VkBool32                                                  nvxBinaryImport                 = VK_FALSE;
@@ -193,6 +194,7 @@ namespace dxvk {
     VkExtensionProperties amdBufferMarker                   = vk::makeExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
     VkExtensionProperties nvDeviceDiagnosticCheckpoints     = vk::makeExtension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
     VkExtensionProperties nvDeviceDiagnosticsConfig         = vk::makeExtension(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+    VkExtensionProperties khrPipelineExecutableProperties   = vk::makeExtension(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     VkExtensionProperties nvLowLatency2                     = vk::makeExtension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
     VkExtensionProperties nvRawAccessChains                 = vk::makeExtension(VK_NV_RAW_ACCESS_CHAINS_EXTENSION_NAME);
     VkExtensionProperties nvxBinaryImport                   = vk::makeExtension(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);

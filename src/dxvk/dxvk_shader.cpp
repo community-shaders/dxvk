@@ -6,10 +6,102 @@
 #include <dxvk_dummy_frag.h>
 
 #include <algorithm>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace dxvk {
+
+  void logPipelineStatistics(
+          DxvkDevice*           device,
+          VkPipeline            pipeline,
+    const std::string&          name) {
+    auto vk = device->vkd();
+
+    VkPipelineInfoKHR pipelineInfo = { VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR };
+    pipelineInfo.pipeline = pipeline;
+
+    uint32_t executableCount = 0u;
+
+    if (vk->vkGetPipelineExecutablePropertiesKHR(vk->device(),
+          &pipelineInfo, &executableCount, nullptr) || !executableCount)
+      return;
+
+    std::vector<VkPipelineExecutablePropertiesKHR> executables(executableCount,
+      VkPipelineExecutablePropertiesKHR { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR });
+
+    if (vk->vkGetPipelineExecutablePropertiesKHR(vk->device(),
+          &pipelineInfo, &executableCount, executables.data()))
+      return;
+
+    for (uint32_t i = 0; i < executableCount; i++) {
+      VkPipelineExecutableInfoKHR executableInfo = { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR };
+      executableInfo.pipeline = pipeline;
+      executableInfo.executableIndex = i;
+
+      uint32_t statCount = 0u;
+
+      if (vk->vkGetPipelineExecutableStatisticsKHR(vk->device(),
+            &executableInfo, &statCount, nullptr) || !statCount)
+        continue;
+
+      std::vector<VkPipelineExecutableStatisticKHR> stats(statCount,
+        VkPipelineExecutableStatisticKHR { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR });
+
+      if (vk->vkGetPipelineExecutableStatisticsKHR(vk->device(),
+            &executableInfo, &statCount, stats.data()))
+        continue;
+
+      // Drivers name their statistics differently, so rather than look for known keys, report every
+      // numeric one on a single line per executable. What matters is that it is greppable: a run
+      // produces hundreds of these and they are read in aggregate, not one at a time.
+      std::stringstream line;
+
+      for (uint32_t j = 0; j < statCount; j++) {
+        const auto& stat = stats[j];
+
+        // Drivers report a fixed address-space size for statistics that do not apply to the
+        // pipeline rather than omitting them, and those constants are large enough to look like a
+        // catastrophic result when skimming. Report what is actually measured.
+        if (stat.format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR
+         && stat.value.u64 >= (uint64_t(1u) << 32))
+          continue;
+
+        line << " " << stat.name << "=";
+
+        switch (stat.format) {
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+            line << (stat.value.b32 ? "1" : "0"); break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+            line << stat.value.i64; break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+            line << stat.value.u64; break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR:
+            line << stat.value.f64; break;
+          default:
+            line << "?"; break;
+        }
+      }
+
+      // One line per distinct result. The same fragment shader gets compiled against many vertex
+      // shaders and produces identical statistics every time, so the key deliberately excludes the
+      // pipeline name: keying on the whole line still logged one entry per pairing and buried the
+      // outliers that are the reason to collect this at all.
+      const std::string stats_text = line.str();
+      const std::string key = std::string(executables[i].name) + stats_text;
+
+      static dxvk::mutex s_mutex;
+      static std::unordered_set<std::string> s_reported;
+
+      { std::lock_guard lock(s_mutex);
+
+        if (!s_reported.insert(key).second)
+          continue;
+      }
+
+      Logger::info(str::format("PipelineStats: ", name, " [", executables[i].name, "]", stats_text));
+    }
+  }
 
   std::atomic<uint32_t> DxvkShader::s_cookie = { 0u };
 

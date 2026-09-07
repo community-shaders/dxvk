@@ -111,6 +111,12 @@ namespace dxvk {
     if (m_device->canUseDescriptorBuffer())
       flags.flags |= VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT;
 
+    // Ask the driver to keep this pipeline's compiler statistics queryable.
+    const bool captureStats = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStats)
+      flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     VkComputePipelineCreateInfo info = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
     info.stage                = *stageInfo.getStageInfos();
     info.layout               = layout->getPipelineLayout();
@@ -128,6 +134,9 @@ namespace dxvk {
       this->logPipelineState(LogLevel::Error, state);
       return VK_NULL_HANDLE;
     }
+
+    if (captureStats)
+      logPipelineStatistics(m_device, pipeline, m_shaders.cs->debugName());
 
     return pipeline;
   }

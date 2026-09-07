@@ -1472,6 +1472,14 @@ namespace dxvk {
     if (m_device->canUseDescriptorBuffer())
       flags.flags |= VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT;
 
+    // Keep this pipeline's compiler statistics queryable. Applied to the optimized pipeline
+    // only -- the graphics-pipeline-library halves each report their own fragment of the
+    // shader, which is not comparable with anything.
+    const bool captureStats = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStats)
+      flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
     info.stageCount               = stageInfo.getStageCount();
     info.pStages                  = stageInfo.getStageInfos();
@@ -1503,6 +1511,9 @@ namespace dxvk {
       Logger::err(str::format("DxvkGraphicsPipeline: Failed to compile pipeline: ", vr));
       return std::make_pair(vr, VK_NULL_HANDLE);
     }
+
+    if (captureStats)
+      logPipelineStatistics(m_device, pipeline, debugName());
 
     return std::make_pair(vr, pipeline);
   }

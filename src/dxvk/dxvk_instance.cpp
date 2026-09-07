@@ -179,6 +179,8 @@ namespace dxvk {
       m_debugFlags.set(DxvkDebugFlag::Capture);
     else if (debugEnv == "hang")
       m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Hang);
+    else if (debugEnv == "pipestats")
+      m_debugFlags.set(DxvkDebugFlag::PipelineStats);
     else if (debugEnv == "crashanalysis")
       m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Markers, DxvkDebugFlag::CrashAnalysis);
 

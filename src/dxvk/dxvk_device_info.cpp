@@ -73,6 +73,7 @@ namespace dxvk {
     HANDLE_EXT(amdBufferMarker);                   \
     HANDLE_EXT(nvDeviceDiagnosticCheckpoints);     \
     HANDLE_EXT(nvDeviceDiagnosticsConfig);     \
+    HANDLE_EXT(khrPipelineExecutableProperties);     \
     HANDLE_EXT(nvLowLatency2);                     \
     HANDLE_EXT(nvRawAccessChains);                 \
     HANDLE_EXT(nvxBinaryImport);                   \
@@ -650,6 +651,12 @@ namespace dxvk {
 
     if (!crashAnalysis)
       m_featuresSupported.nvDeviceDiagnosticsConfig.diagnosticsConfig = VK_FALSE;
+
+    // Pipeline statistics are opt-in. Capturing them makes the driver keep each pipeline's
+    // compiler output alive so it can be queried, which costs memory and compile time --
+    // reasonable for a diagnostic run, not for shipping.
+    if (!instance.debugFlags().test(DxvkDebugFlag::PipelineStats))
+      m_featuresSupported.khrPipelineExecutableProperties.pipelineExecutableInfo = VK_FALSE;
   }
 
 
@@ -1102,6 +1109,9 @@ namespace dxvk {
 
       /* Hang debugging on Nvidia */
       ENABLE_EXT(nvDeviceDiagnosticCheckpoints, false),
+
+      /* Per-pipeline register and spill statistics */
+      ENABLE_EXT_FEATURE(khrPipelineExecutableProperties, pipelineExecutableInfo, false),
 
       /* Nsight Aftermath crash dump detail */
       ENABLE_EXT_FEATURE(nvDeviceDiagnosticsConfig, diagnosticsConfig, false),

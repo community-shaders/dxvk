@@ -43,6 +43,7 @@ namespace dxvk {
     Markers           = 2,
     Hang              = 3,
     CrashAnalysis     = 4,
+    PipelineStats     = 5,
   };
 
   using DxvkDebugFlags = Flags<DxvkDebugFlag>;

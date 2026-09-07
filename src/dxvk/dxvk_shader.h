@@ -11,6 +11,23 @@
 #include "../spirv/spirv_code_buffer.h"
 
 namespace dxvk {
+
+  class DxvkDevice;
+
+  /**
+   * rief Logs a pipeline's register usage and spill counts
+   *
+   * Reads back what the driver's compiler produced for an already-created pipeline via
+   * VK_KHR_pipeline_executable_properties. This is the only way to get register counts and
+   * spill information on hardware whose vendor ships no offline compiler, and it reports on
+   * the shaders the application actually compiled rather than on a reconstruction of them.
+   *
+   * Only called when statistics capture was requested at pipeline creation.
+   */
+  void logPipelineStatistics(
+          DxvkDevice*           device,
+          VkPipeline            pipeline,
+    const std::string&          name);
   
   class DxvkShader;
   class DxvkShaderModule;
