@@ -379,14 +379,19 @@ namespace dxvk {
     VkResult status = DXVK_VKPROF_EXPR(QueuePresent, m_vkd->vkQueuePresentKHR(presentQueue, &info));
 
     if (unlikely(g_vkProfEnabled)) {
-      // Report over a fixed frame count so the numbers are directly per-frame.
+      // Report over a fixed frame count so the numbers are directly per-frame. The braces
+      // matter: without them only the dump was conditional and the three reports below ran
+      // on every present, which reset their windows to a single frame and logged 6000 lines
+      // a minute. Their ratios and per-call averages survived that; their window labels did not.
       constexpr uint64_t VkProfInterval = 600u;
       static std::atomic<uint64_t> vkProfFrames = { 0u };
 
-      if (!((vkProfFrames.fetch_add(1u, std::memory_order_relaxed) + 1u) % VkProfInterval))
+      if (!((vkProfFrames.fetch_add(1u, std::memory_order_relaxed) + 1u) % VkProfInterval)) {
         VkProf::dumpAndReset("steady state", VkProfInterval);
         VkProfDescStats::report();
         VkProfFlushStats::report();
+        VkProfSubmitStats::report();
+      }
     }
 
     // Keep option delivery, markers, and state queries on the real present thread.

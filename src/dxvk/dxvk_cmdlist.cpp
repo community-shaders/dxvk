@@ -90,8 +90,13 @@ namespace dxvk {
 
     VkResult vr = VK_SUCCESS;
 
-    if (!this->isEmpty())
+    if (!this->isEmpty()) {
+      const int64_t submitT0 = dxvk::high_resolution_clock::get_counter();
       vr = DXVK_VKPROF_EXPR(QueueSubmit, vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE));
+      VkProfSubmitStats::record(submitInfo.commandBufferInfoCount,
+        submitInfo.waitSemaphoreInfoCount, submitInfo.signalSemaphoreInfoCount,
+        uint64_t(dxvk::high_resolution_clock::get_counter() - submitT0));
+    }
 
     this->reset();
     return vr;

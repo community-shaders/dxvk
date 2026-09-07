@@ -272,3 +272,73 @@ namespace dxvk {
   }
 
 }
+
+namespace dxvk {
+
+  namespace {
+
+    // Bucketed by command-buffer count; the last bucket catches everything larger.
+    constexpr size_t VkProfSubmitBuckets = 6u;
+
+    struct SubmitBucket {
+      std::atomic<uint64_t> calls   = { 0u };
+      std::atomic<uint64_t> ticks   = { 0u };
+      std::atomic<uint64_t> waits   = { 0u };
+      std::atomic<uint64_t> signals = { 0u };
+    };
+
+    std::array<SubmitBucket, VkProfSubmitBuckets> g_submitBuckets = { };
+
+  }
+
+
+  void VkProfSubmitStats::record(uint32_t cmdBuffers, uint32_t waits, uint32_t signals, uint64_t ticks) {
+    if (likely(!g_vkProfEnabled))
+      return;
+
+    auto& bucket = g_submitBuckets[std::min<size_t>(cmdBuffers, VkProfSubmitBuckets - 1u)];
+    bucket.calls.fetch_add(1u, std::memory_order_relaxed);
+    bucket.ticks.fetch_add(ticks, std::memory_order_relaxed);
+    bucket.waits.fetch_add(waits, std::memory_order_relaxed);
+    bucket.signals.fetch_add(signals, std::memory_order_relaxed);
+  }
+
+
+  void VkProfSubmitStats::report() {
+    const double toUs = 1.0e6 / double(dxvk::high_resolution_clock::get_frequency());
+
+    uint64_t total = 0u;
+
+    for (size_t i = 0; i < VkProfSubmitBuckets; i++)
+      total += g_submitBuckets[i].calls.load(std::memory_order_relaxed);
+
+    if (!total)
+      return;
+
+    Logger::info("VkProf   submit cost by command-buffer count:");
+    Logger::info("VkProf     cmdBufs      calls   share    avg us   avg waits  avg signals");
+
+    char line[256];
+
+    for (size_t i = 0; i < VkProfSubmitBuckets; i++) {
+      auto& bucket = g_submitBuckets[i];
+
+      const uint64_t calls   = bucket.calls.exchange(0u, std::memory_order_relaxed);
+      const uint64_t ticks   = bucket.ticks.exchange(0u, std::memory_order_relaxed);
+      const uint64_t waits   = bucket.waits.exchange(0u, std::memory_order_relaxed);
+      const uint64_t signals = bucket.signals.exchange(0u, std::memory_order_relaxed);
+
+      if (!calls)
+        continue;
+
+      std::snprintf(line, sizeof(line),
+        "VkProf     %s%-6zu %10llu  %5.1f%%  %8.2f  %10.2f  %11.2f",
+        i == VkProfSubmitBuckets - 1u ? ">=" : "  ", i,
+        (unsigned long long) calls, 100.0 * double(calls) / double(total),
+        double(ticks) * toUs / double(calls),
+        double(waits) / double(calls), double(signals) / double(calls));
+      Logger::info(line);
+    }
+  }
+
+}

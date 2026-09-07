@@ -161,3 +161,21 @@ namespace dxvk {
   };
 
 }
+
+namespace dxvk {
+
+  /**
+   * \brief Submission cost against submission size
+   *
+   * Decides whether batching submissions is worth implementing. If the ~18.8 us
+   * a vkQueueSubmit2 costs is a fixed per-call overhead, coalescing N submissions
+   * into one call with N VkSubmitInfo2 entries removes N-1 of them. If instead it
+   * scales with the command buffers and semaphores in the call, batching saves
+   * almost nothing and the count is not the thing to attack.
+   */
+  struct VkProfSubmitStats {
+    static void record(uint32_t cmdBuffers, uint32_t waits, uint32_t signals, uint64_t ticks);
+    static void report();
+  };
+
+}
