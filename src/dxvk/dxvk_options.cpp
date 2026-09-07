@@ -23,6 +23,10 @@ namespace dxvk {
     disableNvLowLatency2  = config.getOption<Tristate>("dxvk.disableNvLowLatency2",   Tristate::Auto);
     hideIntegratedGraphics = config.getOption<bool>   ("dxvk.hideIntegratedGraphics", false);
     zeroMappedMemory      = config.getOption<bool>    ("dxvk.zeroMappedMemory",       false);
+    // Fork: FSE default off. The FFX frame-gen wrap's inner swapchain never gets
+    // FSE, so an FSE-acquired plain swapchain would present with different semantics, and
+    // every FG toggle would pay an FSE re-acquisition recreate. Disallowing FSE everywhere
+    // keeps all swapchains on identical presentation. Opt back in via dxvk.conf.
     allowFse              = config.getOption<bool>    ("dxvk.allowFse",               false);
     deviceFilter          = config.getOption<std::string>("dxvk.deviceFilter",        "");
     lowerSinCos           = config.getOption<Tristate>("dxvk.lowerSinCos",            Tristate::Auto);

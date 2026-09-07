@@ -22,6 +22,10 @@
 
 namespace dxvk {
 
+  uint64_t reservePresentWaitSemaphore(VkSemaphore semaphore);
+  void activatePresentWaitSemaphore(uint64_t generation);
+  void failPresentWaitSemaphore(uint64_t generation);
+
   using PresenterSurfaceProc = std::function<VkResult (VkSurfaceKHR*)>;
 
   class DxvkDevice;
@@ -150,6 +154,36 @@ namespace dxvk {
       const Rc<DxvkLatencyTracker>& tracker);
 
     /**
+     * \brief Marks this swapchain as owned by an external frame-generation layer (FFX FSR3)
+     *
+     * When set, the Presenter acts as a thin submit + hand-off: it does NOT run its own
+     * present-wait worker, does NOT acquire the next image after presenting, and signals the
+     * frame-latency event immediately on the submit thread. This leaves the external frame-gen
+     * swapchain (FFX) as the single owner of the present loop — matching the official FSR3
+     * frame-interpolation-swapchain model and avoiding a stacked-present-loop deadlock. Set
+     * automatically at swapchain creation via the dxvkSetFrameGenOwnershipQuery predicate.
+     */
+    void setFrameGenOwner(uint32_t owner) {
+      m_frameGenOwned.store(owner != 0u, std::memory_order_release);
+      m_dlssgOwned.store(owner == 2u, std::memory_order_release);
+    }
+
+    /**
+     * \brief Whether a DLSS-G proxy currently owns this swapchain
+     *
+     * True when the ownership predicate classified the swapchain as owner type 2.
+     * The D3D11 swapchain uses this to skip its frame-latency throttle: Streamline
+     * DLSS-G in eBlockPresentingClientQueue paces the application by blocking inside
+     * the present itself, and DXVK's latency wait then deadlocks the pipeline — the
+     * signal that would release it fires on the submit thread, which is parked inside
+     * Streamline's blocking present, so the render thread starves and can never
+     * deliver the frame that block is waiting for. See D3D11SwapChain::SyncFrameLatency.
+     */
+    bool isDlssgOwned() const {
+      return m_dlssgOwned.load(std::memory_order_acquire);
+    }
+
+    /**
      * \brief Changes sync interval
      *
      * Changes the Vulkan present mode as necessary.
@@ -164,6 +198,14 @@ namespace dxvk {
      *    to 0 in order to disable the limiter.
      */
     void setFrameRateLimit(double frameRate, uint32_t maxLatency);
+
+    /**
+     * \brief Reconciles the limiter to the external CS frame-rate override, if set
+     *
+     * Called once per present (before FpsLimiter::delay) so a cap set via the exported
+     * dxvkSetTargetFrameRate takes effect even though the swapchain never re-pushes it.
+     */
+    void applyExternalFrameRateLimit();
 
     /**
      * \brief Sets preferred color space and format
@@ -278,8 +320,17 @@ namespace dxvk {
 
     VkSurfaceKHR                m_surface     = VK_NULL_HANDLE;
     VkSwapchainKHR              m_swapchain   = VK_NULL_HANDLE;
+    uint64_t                    m_presentWaitSwapchainSerial = 0;
 
     VkFullScreenExclusiveEXT    m_fullscreenMode = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+
+    // Chain VkSurfaceFullScreenExclusiveInfoEXT into surface/swapchain queries. An explicit
+    // DISALLOWED chain routes the NVIDIA ICD onto the GDI-copy present path; omitting it (the
+    // spec default) yields hardware flips. Selected per frame-generation method via
+    // dxvkSetFsePNextChain and refreshed on every swapchain (re)create.
+    bool                        m_chainFseInfo = true;
+
+    void updateFsePNextChainMode();
 
     std::vector<Rc<DxvkImage>>  m_images;
     std::vector<PresenterSync>  m_semaphores;
@@ -324,17 +375,30 @@ namespace dxvk {
     dxvk::thread                m_frameThread;
     std::queue<PresenterFrame>  m_frameQueue;
 
+    // True when an external FFX frame-generation swapchain owns the real present/acquire/pacing for
+    // m_swapchain. DXVK then submits + hands off only (no second present loop). See setFrameGenOwner.
+    std::atomic<bool>           m_frameGenOwned = { false };
+    std::atomic<bool>           m_dlssgOwned = { false };
+
     uint64_t                    m_lastSignaled = 0u;
     uint64_t                    m_lastCompleted = 0u;
 
     alignas(CACHE_LINE_SIZE)
     FpsLimiter                  m_fpsLimiter;
 
+    // Last maxLatency the swapchain pushed via setFrameRateLimit; reused when an external frame-rate
+    // override (dxvkSetTargetFrameRate) reconciles the limiter per-present. See applyExternalFrameRateLimit.
+    uint32_t                    m_frameRateLimitLatency = 1u;
+
     bool                        m_hasGamescopeFenceSignalBug = false;
+
+    // Latch for the HDR10-unsupported diagnostic. Guarded by m_surfaceMutex, which
+    // supportsColorSpace already holds.
+    bool                        m_loggedHdr10Unsupported = false;
 
     static const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> s_colorSpaceFallbacks;
 
-    void updateSwapChain();
+    bool updateSwapChain();
 
     VkResult recreateSwapChain();
 
@@ -388,7 +452,7 @@ namespace dxvk {
 
     void destroyLatencySemaphore();
 
-    void waitForSwapchainFence(
+    bool waitForSwapchainFence(
             PresenterSync&            sync);
 
     void runFrameThread();

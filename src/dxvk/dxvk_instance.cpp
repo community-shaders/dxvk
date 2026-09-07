@@ -241,10 +241,43 @@ namespace dxvk {
       for (const auto& ext : extensionsEnabled)
         extensionNames.push_back(ext.extensionName);
 
+      // The NVIDIA Windows driver matches an application profile on the exact,
+      // case-sensitive engine name "DXVK", and that profile forces swapchain
+      // composition into SDR: scRGB output clamps at the SDR white level, so HDR
+      // never reaches the display no matter which colour space the swapchain was
+      // created with. Measured on driver 610.88 against a native Vulkan app --
+      // a byte-identical swapchain presents correct HDR as soon as the engine name
+      // differs by any character ("dxvk", "DXVK2" and "vkd3d" all work). Report a
+      // non-matching name only when HDR is actually in use, so SDR titles keep
+      // whatever else that profile does for them.
+
+      // Matches the DxgiOptions default for enableHDR (config key, falling back to the
+      // DXVK_HDR env var).
+      //
+      // KNOWN GAP: DxgiOptions can subsequently force enableHDR off for UE4 DX11 titles
+      // (see isHDRDisallowed), and this cannot see that. Such a title would report
+      // "DXVK_HDR" while HDR is actually disabled, losing whatever else the NVIDIA
+      // profile does for it. Not replicated here deliberately: the suppression keys off
+      // whether d3d12.dll is loaded, which is not yet settled at instance-creation time,
+      // so a copy of that heuristic would be unreliable rather than merely duplicated.
+      // Use DXVK_ENGINE_NAME=DXVK to force the profile back on if a UE4 title needs it.
+      const bool hdrEnabled = m_config.getOption<bool>("dxgi.enableHDR",
+        env::getEnvVar("DXVK_HDR") == "1");
+
+      // DXVK_ENGINE_NAME overrides this outright, so the profile can be opted back
+      // into (or any other name tested) without a rebuild.
+      std::string engineName = env::getEnvVar("DXVK_ENGINE_NAME");
+
+      if (engineName.empty())
+        engineName = hdrEnabled ? "DXVK_HDR" : "DXVK";
+
+      Logger::info(str::format("DxvkInstance: Reporting engine name '", engineName,
+        "' (HDR ", hdrEnabled ? "enabled" : "disabled", ")"));
+
       VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
       appInfo.pApplicationName      = appName.c_str();
       appInfo.applicationVersion    = flags.raw();
-      appInfo.pEngineName           = "DXVK";
+      appInfo.pEngineName           = engineName.c_str();
       appInfo.engineVersion         = VK_MAKE_API_VERSION(0, 3, 1, 0);
       appInfo.apiVersion            = DxvkVulkanApiVersion;
 

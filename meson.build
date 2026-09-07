@@ -125,7 +125,12 @@ if platform == 'windows'
     )
   endif
 
-  dxvk_name_prefix = ''
+  # Emit d3d11/dxgi under unique base names, for hosts that ship them alongside an application rather than
+  # in System32, so they don't alias the System32 copies. Use a 'dxvk_' prefix natively (dxvk_d3d11.dll /
+  # dxvk_dxgi.dll) so d3d11 links against dxvk_dxgi.dll directly, with no post-build import-name byte-patch.
+  # The matching .def LIBRARY directives are updated to DXVK_D3D11.DLL / DXVK_DXGI.DLL so the generated
+  # import library carries the new name.
+  dxvk_name_prefix = 'dxvk_'
   compiler_args += ['-DDXVK_WSI_WIN32']
 else
   dxvk_abi_version = '0'

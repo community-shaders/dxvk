@@ -25,7 +25,7 @@ namespace dxvk {
   static int32_t parsePciId(const std::string& str) {
     if (str.size() != 4)
       return -1;
-
+    
     int32_t id = 0;
 
     for (size_t i = 0; i < str.size(); i++) {
@@ -158,13 +158,13 @@ namespace dxvk {
     return false;
   }
 
-
+  
   DxgiOptions::DxgiOptions(const Config& config) {
     // Fetch these as a string representing a hexadecimal number and parse it.
     this->customVendorId = parsePciId(config.getOption<std::string>("dxgi.customVendorId"));
     this->customDeviceId = parsePciId(config.getOption<std::string>("dxgi.customDeviceId"));
     this->customDeviceDesc = config.getOption<std::string>("dxgi.customDeviceDesc", "");
-
+    
     // Interpret the memory limits as Megabytes
     this->maxDeviceMemory = VkDeviceSize(config.getOption<int32_t>("dxgi.maxDeviceMemory", 0)) << 20;
     this->maxSharedMemory = VkDeviceSize(config.getOption<int32_t>("dxgi.maxSharedMemory", 0)) << 20;
@@ -173,6 +173,12 @@ namespace dxvk {
                              config.getOption<int32_t>("dxgi.maxFrameRate", 0));
     this->syncInterval     = config.getOption<int32_t>("dxgi.syncInterval", -1);
     this->forceRefreshRate = config.getOption<int32_t>("dxgi.forceRefreshRate", 0u);
+
+    // Force fullscreen to a borderless window with no display mode-set. A real exclusive mode-set is
+    // revoked by Windows on minimize/alt-tab, which recreates the swapchain and tears down the FFX
+    // frame-generation swapchain, deadlocking (root cause of the alt-tab/minimize freeze). Defaults
+    // ON in this fork -- unlike upstream, where exclusive fullscreen is the normal path.
+    this->fakeFullscreen = config.getOption<bool>("dxgi.fakeFullscreen", true);
 
     // We don't support dcomp swapchains and some games may rely on them failing on creation
     this->enableDummyCompositionSwapchain = config.getOption<bool>("dxgi.enableDummyCompositionSwapchain", false);
@@ -206,5 +212,5 @@ namespace dxvk {
       this->enableHDR = false;
     }
   }
-
+  
 }

@@ -12,6 +12,37 @@
 
 namespace dxvk {
 
+  // Interop target for dxvkEnqueueInteropCommandBuffer. PRECONDITION: one D3D11
+  // swapchain per process. With several, the most recently constructed one wins and
+  // the others are unreachable for interop; destroying the active one clears this
+  // rather than falling back to a surviving swapchain. That matches how the host
+  // drives DXVK today -- revisit if multi-swapchain support is ever needed.
+  std::atomic<D3D11SwapChain*> g_dxvkActiveSwapchain = { nullptr };
+
+  // Live CPU-side bound for intercepted Vulkan present calls. UINT32_MAX is
+  // unrestricted, zero completes each present before returning, and positive
+  // values cap outstanding calls. CS uses zero for ownership/options
+  // transitions and FSR-G, and two for steady-state DLSS-G.
+  std::atomic<uint32_t> g_dxvkPresentQueueDepth = { UINT32_MAX };
+
+  extern "C" void dxvkSetSyncPresent(uint32_t on) {
+    g_dxvkPresentQueueDepth.store(on ? 0u : UINT32_MAX, std::memory_order_release);
+  }
+
+  extern "C" void dxvkSetPresentQueueDepth(uint32_t depth) {
+    g_dxvkPresentQueueDepth.store(depth == UINT32_MAX ? depth : std::min(depth, 7u),
+      std::memory_order_release);
+  }
+
+  extern "C" uint64_t dxvkEnqueueInteropCommandBuffer(
+          VkCommandBuffer commandBuffer,
+          VkSemaphore     signalSemaphore,
+          VkFence         fence) {
+    if (auto swapchain = g_dxvkActiveSwapchain.load(std::memory_order_acquire))
+      return swapchain->enqueueInteropCommandBuffer(commandBuffer, signalSemaphore, fence);
+    return 0;
+  }
+
   static uint16_t MapGammaControlPoint(float x) {
     if (x < 0.0f) x = 0.0f;
     if (x > 1.0f) x = 1.0f;
@@ -70,23 +101,49 @@ namespace dxvk {
     m_desc(*pDesc),
     m_device(pDevice->GetDXVKDevice()),
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
+    // DXVK_SYNC_PRESENT env forces synchronous present for the swapchain's whole lifetime.
+    // The dxvkSetSyncPresent export is deliberately NOT baked here — PresentImage reads
+    // g_dxvkPresentQueueDepth per-present so the host toggles it live with the FG state.
+    const char* envSync = std::getenv("DXVK_SYNC_PRESENT");
+    if (envSync && envSync[0] == '1') {
+      m_syncPresent = true;
+      Logger::info("D3D11SwapChain: synchronous present forced (DXVK_SYNC_PRESENT)");
+    }
     CreateFrameLatencyEvent();
     CreatePresenter();
     CreateBackBuffers();
     CreateBlitter();
+    g_dxvkActiveSwapchain.store(this, std::memory_order_release);
   }
 
 
   D3D11SwapChain::~D3D11SwapChain() {
+    D3D11SwapChain* expected = this;
+    g_dxvkActiveSwapchain.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     // Avoids hanging when in this state, see comment
     // in DxvkDevice::~DxvkDevice.
     if (this_thread::isInModuleDetachment())
       return;
 
     m_presenter->destroyResources();
-    
+
     DestroyFrameLatencyEvent();
     DestroyLatencyTracker();
+  }
+
+  uint64_t D3D11SwapChain::enqueueInteropCommandBuffer(
+          VkCommandBuffer commandBuffer,
+          VkSemaphore     signalSemaphore,
+          VkFence         fence) {
+    if (commandBuffer == VK_NULL_HANDLE || fence == VK_NULL_HANDLE)
+      return 0;
+    const uint64_t generation = signalSemaphore != VK_NULL_HANDLE
+      ? reservePresentWaitSemaphore(signalSemaphore)
+      : 0;
+    if (signalSemaphore != VK_NULL_HANDLE && !generation)
+      return 0;
+    m_device->submitInteropCommandBuffer(commandBuffer, signalSemaphore, fence, generation);
+    return signalSemaphore != VK_NULL_HANDLE ? generation : 1;
   }
 
 
@@ -188,6 +245,7 @@ namespace dxvk {
 
     m_desc = *pDesc;
     CreateBackBuffers();
+
     return S_OK;
   }
 
@@ -326,6 +384,7 @@ namespace dxvk {
     m_colorSpace = colorSpace;
 
     m_presenter->setSurfaceFormat(GetSurfaceFormat(m_desc.Format));
+
     return S_OK;
   }
 
@@ -420,9 +479,9 @@ namespace dxvk {
       m_latency->notifyCpuPresentBegin(m_frameId + 1u);
 
     PresenterSync sync;
-    Rc<DxvkImage> backBuffer;
+    Rc<DxvkImage> presentImage;
 
-    VkResult status = m_presenter->acquireNextImage(sync, backBuffer);
+    VkResult status = m_presenter->acquireNextImage(sync, presentImage);
 
     if (status != VK_SUCCESS && m_latency)
       m_latency->discardTimings();
@@ -479,34 +538,65 @@ namespace dxvk {
     DxvkImageViewKey viewInfo = { };
     viewInfo.viewType   = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.usage      = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    viewInfo.format     = backBuffer->info().format;
+    viewInfo.format     = presentImage->info().format;
     viewInfo.aspects    = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.mipIndex   = 0u;
     viewInfo.mipCount   = 1u;
     viewInfo.layerIndex = 0u;
     viewInfo.layerCount = 1u;
 
+    // Arm status storage before queuing the CS chunk. The submission thread
+    // completes it after the intercepted vkQueuePresentKHR returns.
+    const uint32_t presentQueueDepth = m_syncPresent
+      ? 0u
+      : g_dxvkPresentQueueDepth.load(std::memory_order_acquire);
+    DxvkSubmitStatus* presentStatus = nullptr;
+    if (presentQueueDepth != UINT32_MAX) {
+      // Retire the oldest call only when the configured overlap bound is full.
+      while (presentQueueDepth && m_pendingPresentStatuses.size() >= presentQueueDepth) {
+        const uint32_t statusIndex = m_pendingPresentStatuses.front();
+        const auto waitStart = std::chrono::steady_clock::now();
+        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
+        const auto waitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - waitStart).count();
+        if (waitUs >= 500)
+          Logger::info(str::format("D3D11SwapChain: bounded present gate waited ", waitUs, " us"));
+        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
+        if (presentResult < 0)
+          return E_FAIL;
+      }
+      const uint32_t statusIndex = m_nextPresentStatus++ % m_presentStatuses.size();
+      presentStatus = &m_presentStatuses[statusIndex];
+      presentStatus->result.store(VK_NOT_READY);
+      m_pendingPresentStatuses.push_back(statusIndex);
+    }
+
     immediateContext->EmitCs([
       cDevice         = m_device,
       cBlitter        = m_blitter,
-      cBackBuffer     = backBuffer->createView(viewInfo),
-      cSwapImage      = GetBackBufferView(),
+      cPresentImage   = presentImage->createView(viewInfo),
+      cAppBackBuffer  = GetBackBufferView(),
       cSync           = sync,
       cPresenter      = m_presenter,
       cLatency        = m_latency,
       cColorSpace     = m_colorSpace,
       cFrameId        = m_frameId,
+      cPresentStatus  = presentStatus,
       cDirtyRects     = std::move(dirtyRects),
       cClearColor     = m_clearColor,
       cSrcRect        = srcRect,
       cDstRect        = dstRect
     ] (DxvkContext* ctx) {
-      // Update back buffer color space as necessary
-      if (cSwapImage->image()->info().colorSpace != cColorSpace) {
+      // SetColorSpace1 can change the presentation color space after the D3D11
+      // back buffer has already been created. Tag the application's image with
+      // the color space its pixels use. The present image deliberately retains
+      // the actual WSI color space selected by the presenter, so the blitter can
+      // convert when the requested and effective color spaces differ.
+      if (cAppBackBuffer->image()->info().colorSpace != cColorSpace) {
         DxvkImageUsageInfo usage = { };
         usage.colorSpace = cColorSpace;
 
-        ctx->ensureImageCompatibility(cSwapImage->image(), usage);
+        ctx->ensureImageCompatibility(cAppBackBuffer->image(), usage);
       }
 
       // Blit the D3D back buffer onto the actual Vulkan
@@ -521,13 +611,27 @@ namespace dxvk {
       ctx->flushCommandList(nullptr, nullptr);
 
       cDevice->presentImage(cPresenter, cLatency, cFrameId,
-        cDirtyRects.size(), cDirtyRects.data(), nullptr);
+        cDirtyRects.size(), cDirtyRects.data(), cPresentStatus);
     });
 
     if (m_backBuffers.size() > 1u)
       RotateBackBuffers(immediateContext);
 
     immediateContext->FlushCsChunk();
+
+    // Depth zero drains this frame's own status: it is a CPU-side transition barrier
+    // only, not a GPU fence wait. Returning to unrestricted mode drains nothing of its
+    // own, but must still retire statuses armed by a preceding bounded mode before
+    // those slots can be reused.
+    if (presentQueueDepth == 0u || presentQueueDepth == UINT32_MAX) {
+      while (!m_pendingPresentStatuses.empty()) {
+        const uint32_t statusIndex = m_pendingPresentStatuses.front();
+        VkResult presentResult = m_device->waitForSubmission(&m_presentStatuses[statusIndex]);
+        m_pendingPresentStatuses.erase(m_pendingPresentStatuses.begin());
+        if (presentResult < 0)
+          return E_FAIL;
+      }
+    }
 
     if (m_latency) {
       m_latency->notifyCpuPresentEnd(m_frameId);
@@ -705,6 +809,15 @@ namespace dxvk {
 
 
   void D3D11SwapChain::SyncFrameLatency() {
+    // Skip the throttle while a DLSS-G proxy owns the swapchain. Streamline in
+    // eBlockPresentingClientQueue paces the application by blocking inside the present,
+    // and this wait then deadlocks the pipeline: the signal that releases it fires on
+    // the submit thread, which is parked inside that blocking present, so the render
+    // thread starves and can never deliver the frame the block is waiting for.
+    // Streamline's own block is the intended (and sufficient) pacing there.
+    if (m_presenter->isDlssgOwned())
+      return;
+
     // Wait for the sync event so that we respect the maximum frame latency
     m_frameLatencySignal->wait(m_frameId - GetActualFrameLatency());
 

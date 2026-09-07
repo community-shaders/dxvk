@@ -518,7 +518,9 @@ namespace dxvk {
       if (uint32_t(bounds.right - bounds.left) != width || uint32_t(bounds.bottom - bounds.top) != height)
         wsi::saveWindowState(m_window, &m_windowState, false);
 
-      ChangeDisplayMode(output.ptr(), &newDisplayMode);
+      // Fake-fullscreen: never change the real desktop mode (see EnterFullscreenMode).
+      if (!m_factory->GetOptions()->fakeFullscreen)
+        ChangeDisplayMode(output.ptr(), &newDisplayMode);
       wsi::updateFullscreenWindow(m_monitor, m_window, false);
     }
 
@@ -758,26 +760,35 @@ namespace dxvk {
       }
     }
 
-    DXGI_MODE_DESC1 displayMode = { };
-    displayMode.Width            = m_desc.Width;
-    displayMode.Height           = m_desc.Height;
-    displayMode.RefreshRate      = m_descFs.RefreshRate;
-    displayMode.Format           = m_desc.Format;
-    // Ignore these two, games usually use them wrong and we don't
-    // support any scaling modes except UNSPECIFIED anyway.
-    displayMode.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
-    displayMode.Scaling          = DXGI_MODE_SCALING_UNSPECIFIED;
-    
-    if (FAILED(ChangeDisplayMode(output.ptr(), &displayMode))) {
-      Logger::err("DXGI: EnterFullscreenMode: Failed to change display mode");
-      return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+    // Fake-fullscreen (default in this build): skip the real display mode change so the desktop
+    // keeps its native resolution and refresh rate. The window is then stretched to cover the
+    // monitor (modeSwitch forced off below) and the swapchain scales onto it. A real exclusive-
+    // fullscreen transition breaks external frame generation and causes an alt-tab freeze, so
+    // "fullscreen" stays borderless.
+    const bool fakeFullscreen = m_factory->GetOptions()->fakeFullscreen;
+
+    if (!fakeFullscreen) {
+      DXGI_MODE_DESC1 displayMode = { };
+      displayMode.Width            = m_desc.Width;
+      displayMode.Height           = m_desc.Height;
+      displayMode.RefreshRate      = m_descFs.RefreshRate;
+      displayMode.Format           = m_desc.Format;
+      // Ignore these two, games usually use them wrong and we don't
+      // support any scaling modes except UNSPECIFIED anyway.
+      displayMode.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+      displayMode.Scaling          = DXGI_MODE_SCALING_UNSPECIFIED;
+
+      if (FAILED(ChangeDisplayMode(output.ptr(), &displayMode))) {
+        Logger::err("DXGI: EnterFullscreenMode: Failed to change display mode");
+        return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+      }
     }
     
     // Update swap chain description
     m_descFs.Windowed = FALSE;
     
     // Move the window so that it covers the entire output
-    bool modeSwitch = (m_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) != 0u;
+    bool modeSwitch = !fakeFullscreen && (m_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) != 0u;
 
     DXGI_OUTPUT_DESC desc;
     output->GetDesc(&desc);
@@ -814,7 +825,8 @@ namespace dxvk {
     }
     scoped_bool in_progress(m_ModeChangeInProgress);
 
-    if (FAILED(RestoreDisplayMode(m_monitor)))
+    // Fake-fullscreen never touched the desktop mode (see EnterFullscreenMode), so skip the restore.
+    if (!m_factory->GetOptions()->fakeFullscreen && FAILED(RestoreDisplayMode(m_monitor)))
       Logger::warn("DXGI: LeaveFullscreenMode: Failed to restore display mode");
     
     // Reset gamma control and decouple swap chain from monitor

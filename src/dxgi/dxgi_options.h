@@ -68,6 +68,13 @@ namespace dxvk {
     /// Forced refresh rate, disable other modes
     uint32_t forceRefreshRate;
 
+    /// Fake exclusive fullscreen as borderless: on a fullscreen transition, do not change the real
+    /// display mode — keep the desktop resolution/refresh and cover the monitor with the window,
+    /// letting the swapchain scale. Avoids the exclusive-fullscreen transition that breaks external
+    /// frame generation and freezes on alt-tab. Defaults on; set dxgi.fakeFullscreen = False for
+    /// upstream exclusive-fullscreen behaviour.
+    bool fakeFullscreen;
+
   private:
 
     std::atomic<uint32_t> m_useCount = { 0u };

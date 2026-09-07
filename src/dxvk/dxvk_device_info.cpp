@@ -502,7 +502,10 @@ namespace dxvk {
 
       // Heap regresses performance on the initial NV driver releases.
       if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        enableDescriptorHeap = m_properties.driverVersion >= Version(595u, 84u, 0u);
+        // NGX 310.7 writes a combined D24S8 descriptor through the experimental heap path,
+        // violating VUID-VkImageDescriptorInfoEXT-pView-11430 and recording no DLSS output.
+        // Keep Streamline interop on the established descriptor-set implementation.
+        enableDescriptorHeap = false;
 
       applyTristate(enableDescriptorHeap, instance.options().enableDescriptorHeap);
 

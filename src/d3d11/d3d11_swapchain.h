@@ -96,6 +96,9 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE SetRotation(
             DXGI_MODE_ROTATION        Rotation);
 
+    uint64_t enqueueInteropCommandBuffer(VkCommandBuffer commandBuffer,
+      VkSemaphore signalSemaphore, VkFence fence);
+
   private:
 
     using DirtyRectList = small_vector<VkRectLayerKHR, 4>;
@@ -134,6 +137,15 @@ namespace dxvk {
     Rc<DxvkShader>            m_compositionFs;
 
     uint64_t                  m_frameId      = DXGI_MAX_SWAP_CHAIN_BUFFERS;
+
+    // Environment override that forces depth zero for every present.
+    bool                      m_syncPresent  = false;
+    // Status objects for bounded asynchronous present. Entries remain owned by
+    // the app thread until waitForSubmission has retired them.
+    std::array<DxvkSubmitStatus, 8> m_presentStatuses;
+    small_vector<uint32_t, 8> m_pendingPresentStatuses;
+    uint32_t                  m_nextPresentStatus = 0;
+
     uint32_t                  m_frameLatency = DefaultFrameLatency;
     uint32_t                  m_frameLatencyCap = 0;
     HANDLE                    m_frameLatencyEvent = nullptr;
