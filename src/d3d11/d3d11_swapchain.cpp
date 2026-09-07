@@ -579,7 +579,7 @@ namespace dxvk {
       auto contextObjects = ctx->beginExternalRendering();
 
       cBlitter->present(contextObjects, cClearColor,
-        cAppBackBuffer, cDstRect, cPresentImage, cSrcRect);
+        cPresentImage, cDstRect, cAppBackBuffer, cSrcRect);
 
       // Submit current command list and present
       ctx->synchronizeWsi(cSync);
