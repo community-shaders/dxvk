@@ -816,7 +816,6 @@ namespace dxvk {
 
 
   VkResult Presenter::createSwapChain() {
-    // The frame-generation method may have changed since the last (re)create.
     updateFsePNextChainMode();
 
     VkSurfaceFullScreenExclusiveInfoEXT fullScreenExclusiveInfo = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };

@@ -95,13 +95,12 @@ Chaining `VkSurfaceFullScreenExclusiveInfoEXT` into surface and swapchain querie
 GDI-copy present path. Not chaining it (the spec default) yields hardware flips.
 
 Streamline's DLSS-G pacer requires hardware flips; its present wedges on the copy path. FSR-FG
-runs fine either way. The chain is therefore only added when FSE is actually opted into, and
-the host can override per frame-generation method through `dxvkSetFsePNextChain`.
+runs fine either way. The chain is therefore only added when FSE is actually opted into.
 
 Note the asymmetry if you ever force it: the driver flip-locks a window at its first flip
 present, so the copy path is only reachable before any flip has occurred.
 
-*File: `src/dxvk/dxvk_presenter.cpp` (`updateFsePNextChainMode`, `createSwapChain`)*
+*File: `src/dxvk/dxvk_presenter.cpp` (`createSwapChain`)*
 
 ---
 
@@ -137,55 +136,31 @@ This is the reason the fork exists. `include/cs_dxvk_api.h` is the shared privat
 kept in export-ordinal order so it can be diffed against `src/d3d11/d3d11.def` by eye.
 
 **Typedefs are not linked by name.** A mismatch between the header and the `.def` is silent.
-Keep them in sync whenever an export is added, renamed or removed. Ordinals 104-106, 108, 115,
-119 and 123-125 are holes left by removed exports — never reuse them, or a host built against
-an older header will bind an old ordinal to a new, incompatible function.
+Keep them in sync whenever an export is added, renamed or removed. Ordinals 100, 104-108,
+111-117, 119, 120 and 122-125 are holes left by removed exports — never reuse them, or a host
+built against an older header will bind an old ordinal to a new, incompatible function.
 
-### Frame-generation ownership
+The surface is seven exports, and every one is resolved and called by Community Shaders. An
+export that nothing consumes is deleted rather than kept "just in case": the present-wait
+semaphore system reached permanently-empty loops running on every present before it went.
 
-When an external layer (the FFX frame-interpolation swapchain, or Streamline's DLSS-G proxy)
-replaces the `VkSwapchainKHR`, DXVK must stop acting as a present loop and become a thin
-submit-and-hand-off. The host registers a predicate via `dxvkSetFrameGenOwnershipQuery`, which
-`createSwapChain` calls to classify each swapchain: 0 = normal, 1 = FSR replacement,
-2 = DLSS-G proxy.
+### Frame generation is above DXVK
 
-When owned, the presenter:
+DXVK is never told which frame-generation layer, if any, owns the swapchain. It cannot know
+whether the handle it holds is a real driver swapchain or one an interposer created, and the
+reference integration (NVIDIA-RTX/Streamline_Sample, donut DeviceManager_VK) acquires and
+presents unconditionally, letting the interposer pace transparently.
 
-- does not run its present-wait worker (the external layer does the display pacing);
-- does not pre-acquire the next image after presenting — re-entering the wrapped swapchain
-  from the submit thread while FFX's present thread is also driving it deadlocks;
-- does not chain DXVK's `presentId` / present-fence / present-mode `pNext` structs, which FFX's
-  replacement `vkQueuePresentKHR` does not handle (the present fence is never signalled, and
-  the fourth acquire hangs in `waitForSwapchainFence`). DLSS-G is the exception: its pacer
-  needs `presentId` for real-frame completion tracking, so that one is kept for owner type 2;
-- releases the frame-latency signal directly on the submit thread from `signalFrame`.
+pNext chaining is therefore split by failure mode rather than by ownership. The
+`swapchain_maintenance1` present *mode* struct is still chained -- an interposer that ignores it
+only costs a mode change. The present *fence* and the present-ID are not: an interposer that
+ignores those leaves the fence unsignalled, and `waitForSwapchainFence` then blocks the next
+acquire forever. That is not theoretical -- a build that chained them unconditionally hung
+Skyrim with frame generation on, no frames for ten minutes, the render loop simply stopped.
 
-### Present callbacks
-
-`dxvkSetPresentBeginCallback` runs immediately before `vkQueuePresentKHR` on the present
-thread; `dxvkSetPresentCompletedCallback` immediately after it returns. Both fire only for a
-DLSS-G-owned swapchain, and both receive a `CsDxvkPresentCallbackInfo` payload identifying the
-swapchain, presenter, queue and frame.
-
-Ordering matters: Streamline requires DLSS-G option changes to be ordered with the present that
-consumes them. Issuing `SetOptions` from the D3D render thread races DXVK's async presenter and
-can wedge the plugin pacer during a mode transition, which is why the begin callback exists at
-all rather than the host just calling before `Present`.
-
-### Present-wait semaphores
-
-`dxvkEnqueueInteropCommandBuffer` submits a host-owned command buffer through DXVK's submission
-queue, optionally signalling a semaphore. That semaphore is registered in a generation-keyed
-FIFO; the presenter attaches the oldest eligible one as an extra `pWaitSemaphores` entry on the
-next DLSS-G present, so the host's evaluate/tag submissions are GPU-ordered ahead of the present
-that reads them. Without it the generated frames flash. This is pure queue ordering — no CPU
-stall is introduced.
-
-The host tracks its own semaphores through `dxvkGetPresentWaitSemaphoreState`,
-`dxvkClearPresentWaitSemaphore`, `dxvkCancelPresentWaitSemaphore` and
-`dxvkReleaseQueuedPresentWaitSemaphoresAfterIdle`. A generation may only be cleared once
-reacquire has proven the present consumed it; the release-after-idle path requires the caller
-to have proven the device idle.
+HDR metadata is likewise never submitted for a swapchain an interposer may own: FidelityFX
+returns a `FrameInterpolationSwapChainVK*` cast to `VkSwapchainKHR`, and handing that to the real
+`vkSetHdrMetadataEXT` corrupts the driver silently. See `canSubmitHdrMetadata`.
 
 ### Swapchain lifecycle
 
@@ -214,15 +189,8 @@ present. FSR frame generation forces Reflex off, so without this nothing paces t
 
 ### Other exports
 
-`dxvkGetCsApiVersion` returns `CS_DXVK_API_VERSION`; check it before using anything else.
 `dxvkGetPresenterSurfaceState` reports the live surface format plus requested and effective
 colour spaces, with a serial the host can poll for changes.
-
-### Preconditions
-
-`dxvkEnqueueInteropCommandBuffer` routes to a single global active swapchain, last-constructor-
-wins. This assumes one D3D11 swapchain per process, which is how CS drives DXVK. With several,
-the others are unreachable for interop.
 
 ---
 
