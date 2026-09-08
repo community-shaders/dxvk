@@ -21,6 +21,7 @@ extern "C" {
  * Retired ordinals — never reuse one, or a host built against an older header
  * binds it to a new, incompatible function:
  *   100  frame-generation ownership query   (DXVK no longer branches on ownership)
+ *   103  external frame-rate cap            (Reflex owns the cap; see FORK.md)
  *   104-108, 115, 119, 123-125              (earlier removals)
  *   111-114  present-wait semaphore state   (the system they served is gone)
  *   116, 117 present begin/completed callbacks
@@ -31,7 +32,6 @@ extern "C" {
 /* @101 */ typedef void (*PFN_dxvkRequestSwapchainRecreate)(void);
 /* @102 */ typedef bool (*PFN_csDxvkSwapchainTornDownCallback)(void);
 /* @102 */ typedef void (*PFN_dxvkSetSwapchainTornDownCallback)(PFN_csDxvkSwapchainTornDownCallback callback);
-/* @103 */ typedef void (*PFN_dxvkSetTargetFrameRate)(double fps);
 /* @109 */ typedef uint64_t (*PFN_dxvkGetPresenterSurfaceState)(uint32_t* format,
                                                                uint32_t* requestedColorSpace,
                                                                uint32_t* effectiveColorSpace);
