@@ -128,6 +128,41 @@ namespace dxvk {
     { R"(\\Anno1800\.exe$)", {{
       { "d3d11.cachedDynamicResources",        "c" },
     }} },
+    /* Skyrim Special Edition: heavily CPU/draw-call    *
+     * bound, with an enormous number of per-draw       *
+     * Map/DISCARD constant buffer updates.             *
+     *                                                  *
+     * Measured in one Whiterun scene, frame gen off,   *
+     * uncapped, with the effective config verified in  *
+     * the dxgi log for every run:                      *
+     *   "a"  179.8 fps, PCIe rx 2960 avg / 11358 max   *
+     *   "c"  156.9 fps,          2506 /  8220         *
+     *   "vi" 133.1 fps,          1607 /  2927         *
+     *   ""   130.9 fps,          3531 / 10854         *
+     *                                                  *
+     * The gap between "a" and "vi" is the constant     *
+     * buffers, and it is where this game's PCIe traffic *
+     * comes from: keeping them in cached system memory  *
+     * lets the CPU write them without stalling, at the  *
+     * cost of the GPU reading them across the bus every *
+     * draw. That is the reason the Vulkan path pulls    *
+     * several times the PCIe bandwidth of native D3D11  *
+     * (310 MB/s avg in the same scene) -- it is a       *
+     * deliberate trade, not a leak.                     *
+     *                                                  *
+     * Keep "a": it is the fastest by 15-37%, and the    *
+     * bandwidth it spends is otherwise idle (3 GB/s of  *
+     * a 31.5 GB/s PCIe 4.0 x16 link). Anyone genuinely  *
+     * bandwidth-starved can set "vi" in dxvk.conf and   *
+     * trade 26% of the frame rate for 46% less traffic. */
+    { R"(\\SkyrimSE\.exe$)", {{
+      { "d3d11.cachedDynamicResources",     "a" },
+      /* Does not rely on DXVK's implicit WAR/WAW barriers *
+       * between draws, so relaxing them trims per-draw    *
+       * barrier work on the CPU-bound draw path.          */
+      { "d3d11.relaxedGraphicsBarriers",    "True" },
+      { "d3d11.relaxedBarriers",            "True" },
+    }} },
     /* Fifa '19+: Binds typed buffer SRV to shader *
      * that expects raw/structured buffer SRV      */
     { R"(\\FIFA(19|20|21|22)(_demo)?\.exe$)", {{
