@@ -26,7 +26,6 @@ extern "C" {
  *   111-114  present-wait semaphore state   (the system they served is gone)
  *   116, 117 present begin/completed callbacks
  *   120  enqueue interop command buffer     (the host submits via IDXGIVkInteropDevice)
- *   121  tearing preference                 (DXVK picks the present mode from the sync interval)
  *   122  API version                        (had no caller)
  */
 
@@ -38,6 +37,7 @@ extern "C" {
                                                                uint32_t* effectiveColorSpace);
 /* @110 */ typedef void (*PFN_dxvkSetSyncPresent)(uint32_t on);
 /* @118 */ typedef void (*PFN_dxvkSetPresentQueueDepth)(uint32_t depth);
+/* @121 */ typedef void (*PFN_dxvkSetTearingPreference)(uint32_t preference);
 
 #ifdef __cplusplus
 }

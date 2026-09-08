@@ -137,10 +137,10 @@ kept in export-ordinal order so it can be diffed against `src/d3d11/d3d11.def` b
 
 **Typedefs are not linked by name.** A mismatch between the header and the `.def` is silent.
 Keep them in sync whenever an export is added, renamed or removed. Ordinals 100, 104-108,
-111-117, 119-125 are holes left by removed exports — never reuse them, or a host
+111-117, 119, 120 and 122-125 are holes left by removed exports — never reuse them, or a host
 built against an older header will bind an old ordinal to a new, incompatible function.
 
-The surface is five exports, and every one is resolved and called by Community Shaders. An
+The surface is seven exports, and every one is resolved and called by Community Shaders. An
 export that nothing consumes is deleted rather than kept "just in case": the present-wait
 semaphore system reached permanently-empty loops running on every present before it went.
 
@@ -182,10 +182,7 @@ present before returning, `UINT32_MAX` is unrestricted, otherwise capped at 7).
 `dxvkSetSyncPresent` is the 0-or-unrestricted shorthand. CS uses zero for ownership and option
 transitions and for FSR-G, and two for steady-state DLSS-G.
 
-There is deliberately no present-mode export either. CS used to push a tearing preference and
-pick MAILBOX whenever a frame cap was in force, which cost a swapchain recreate whenever the
-setting changed. DXVK now picks the mode from the sync interval the game passes -- vsync off
-gives IMMEDIATE, vsync on gives FIFO -- and  is retired.
+`dxvkSetTearingPreference` overrides `dxvk.tearFree` per frame-gen method.
 
 There is deliberately no frame-rate cap export. DXVK applied one from `Presenter::signalFrame`,
 on the submission thread after the present had already gone out, which is too late to pace

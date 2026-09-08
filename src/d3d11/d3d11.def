@@ -9,3 +9,4 @@ EXPORTS
     dxvkGetPresenterSurfaceState @109
     dxvkSetSyncPresent @110
     dxvkSetPresentQueueDepth @118
+    dxvkSetTearingPreference @121

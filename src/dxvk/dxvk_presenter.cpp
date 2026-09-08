@@ -12,6 +12,14 @@
 
 namespace dxvk {
 
+  static std::atomic<int32_t> g_dxvkTearingPreference = { -1 };
+
+  // 0 = force tear-free, 1 = allow tearing, 2 = use DXVK configuration.
+  extern "C" void dxvkSetTearingPreference(uint32_t preference) {
+    g_dxvkTearingPreference.store(preference <= 1u ? int32_t(preference) : -1,
+      std::memory_order_release);
+  }
+
   struct PresenterSurfaceStateSnapshot {
     uint64_t serial = 0;
     uint32_t format = VK_FORMAT_UNDEFINED;
@@ -1365,7 +1373,10 @@ namespace dxvk {
     std::array<VkPresentModeKHR, 2> desired = { };
     uint32_t numDesired = 0;
 
-    const Tristate tearFree = m_device->config().tearFree;
+    Tristate tearFree = m_device->config().tearFree;
+    const int32_t tearingPreference = g_dxvkTearingPreference.load(std::memory_order_acquire);
+    if (tearingPreference >= 0)
+      tearFree = tearingPreference ? Tristate::False : Tristate::True;
 
     if (!syncInterval) {
       if (tearFree != Tristate::True)
