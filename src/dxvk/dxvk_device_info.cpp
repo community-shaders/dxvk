@@ -504,7 +504,20 @@ namespace dxvk {
       if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         // NGX 310.7 writes a combined D24S8 descriptor through the experimental heap path,
         // violating VUID-VkImageDescriptorInfoEXT-pView-11430 and recording no DLSS output.
-        // Keep Streamline interop on the established descriptor-set implementation.
+        // Keep Streamline interop off the heap path.
+        //
+        // Re-measured 2026-09-09 on an RTX 4080, in case the correctness cost bought speed.
+        // It does not: with the heap forced on via dxvk.enableDescriptorHeap, the fallback
+        // path (which is descriptor BUFFER here, not descriptor sets) is level or ahead.
+        // Median fps, uncapped Whiterun bench, binding model confirmed per run from the log:
+        //
+        //     pair 3   buffer 153.94   heap 153.28
+        //     pair 4   buffer 155.62   heap 150.40
+        //
+        // Two earlier pairs favoured the heap by 3-6%, but their buffer runs were drifting --
+        // one still warming up, one declining through the windows -- and neither survives the
+        // rule that only a run stable across its sample windows counts. Nothing to gain, so
+        // the correctness workaround costs nothing to keep.
         enableDescriptorHeap = false;
 
       applyTristate(enableDescriptorHeap, instance.options().enableDescriptorHeap);
