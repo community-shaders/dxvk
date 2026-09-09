@@ -13,7 +13,9 @@ namespace dxvk {
   // DxvkInstance is constructed only in dxvk_dxgi.dll, so initialising from there left
   // the dxvk_d3d11.dll copy -- the one every render-path call site actually reads --
   // permanently false. Initialise at module load instead.
-  bool g_vkProfEnabled = env::getEnvVar("DXVK_VKPROF") == "1";
+  // On by default on this branch: it exists to be profiled, and requiring an env var
+  // meant a portable build silently produced no report. DXVK_VKPROF=0 turns it off.
+  bool g_vkProfEnabled = env::getEnvVar("DXVK_VKPROF") != "0";
 
   std::array<VkProfCounter, size_t(VkProfId::Count)> VkProf::s_counters = { };
 

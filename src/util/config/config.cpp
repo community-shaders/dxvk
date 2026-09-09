@@ -156,7 +156,10 @@ namespace dxvk {
      * bandwidth-starved can set "vi" in dxvk.conf and   *
      * trade 26% of the frame rate for 46% less traffic. */
     { R"(\\SkyrimSE\.exe$)", {{
-      { "d3d11.cachedDynamicResources",     "a" },
+      /* Profiling branch: caching OFF. An empty value means cachedDynamicResources = 0.  *
+       * Shipping sets "a" here; this costs frame rate but is what makes the CPU cost of *
+       * dynamic-buffer traffic visible in the VkProf tables instead of hidden in cache. */
+      { "d3d11.cachedDynamicResources",     ""  },
       /* Does not rely on DXVK's implicit WAR/WAW barriers *
        * between draws, so relaxing them trims per-draw    *
        * barrier work on the CPU-bound draw path.          */
