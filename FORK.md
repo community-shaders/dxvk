@@ -182,10 +182,13 @@ present before returning, `UINT32_MAX` is unrestricted, otherwise capped at 7).
 `dxvkSetSyncPresent` is the 0-or-unrestricted shorthand. CS uses zero for ownership and option
 transitions and for FSR-G, and two for steady-state DLSS-G.
 
-`dxvkSetTargetFrameRate` provides an external FPS cap, reconciled into the limiter on every
-present. FSR frame generation forces Reflex off, so without this nothing paces the presents.
-
 `dxvkSetTearingPreference` overrides `dxvk.tearFree` per frame-gen method.
+
+There is deliberately no frame-rate cap export. DXVK applied one from `Presenter::signalFrame`,
+on the submission thread after the present had already gone out, which is too late to pace
+anything; Reflex sleeps in the render loop before simulation and owns the cap on every path.
+Having a second limiter that could engage at all was a source of frame-time spikes, not a
+safety net, so @103 is retired rather than left as a fallback.
 
 ### Other exports
 

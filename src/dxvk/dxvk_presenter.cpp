@@ -106,15 +106,6 @@ namespace dxvk {
     return true;
   }
 
-  // External frame-rate cap, in fps, driven by CS to pace presents when nothing else does (FSR frame
-  // generation forces Reflex off, so it has no Reflex limiter). NaN => unset, 0 => unlimited, >0 => cap.
-  // Reconciled into m_fpsLimiter every present via applyExternalFrameRateLimit().
-  std::atomic<double> g_dxvkExternalFrameRate = { std::numeric_limits<double>::quiet_NaN() };
-
-  extern "C" void dxvkSetTargetFrameRate(double fps) {
-    g_dxvkExternalFrameRate.store(fps < 0.0 ? 0.0 : fps, std::memory_order_release);
-  }
-
   // Present-path override. Chaining VkSurfaceFullScreenExclusiveInfoEXT with DISALLOWED makes
   // the NVIDIA ICD route presents through the compositor GDI-copy path; not chaining it (the
   // spec default, and the dxvk default here via allowFse=false) yields hardware flips, which
@@ -334,13 +325,6 @@ namespace dxvk {
     modeInfo.swapchainCount = 1;
     modeInfo.pPresentModes  = &m_presentMode;
 
-    // App-provided extra present-wait semaphore: queue-orders
-    // the present after external work the app submitted outside DXVK's own timeline — used by
-    // Streamline DLSS-G so its evaluate/tag submissions are GPU-ordered ahead of the present
-    // that reads them (pure queue sync, no CPU stall; the generated frames flash without it).
-    std::array<VkSemaphore, 2> waitSemaphores = { currSync.present, VK_NULL_HANDLE };
-    uint32_t waitSemaphoreCount = 1;
-
     VkPresentRegionKHR region = {};
     region.rectangleCount = rectCount;
     region.pRectangles = rects;
@@ -350,8 +334,8 @@ namespace dxvk {
     regionInfo.pRegions = &region;
 
     VkPresentInfoKHR info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    info.waitSemaphoreCount = waitSemaphoreCount;
-    info.pWaitSemaphores    = waitSemaphores.data();
+    info.waitSemaphoreCount = 1;
+    info.pWaitSemaphores    = &currSync.present;
     info.swapchainCount     = 1;
     info.pSwapchains        = &m_swapchain;
     info.pImageIndices      = &m_imageIndex;
@@ -481,9 +465,6 @@ namespace dxvk {
     // DXVK's present-wait worker is gone, so nothing else will ever complete this frame: release
     // the frame-latency signal on the submit thread. Any external presenter paces display itself.
     {
-      // Apply the external frame-rate cap here so a host can limit present rate when nothing else
-      // paces it. No-op unless one was set via dxvkSetTargetFrameRate.
-      applyExternalFrameRateLimit();
       m_fpsLimiter.delay();
 
       // FFX paces display; treat the frame as completed immediately so any path that checks the
@@ -513,7 +494,6 @@ namespace dxvk {
       if (canSignal)
         m_signal->signal(frameId);
     } else {
-      applyExternalFrameRateLimit();
       m_fpsLimiter.delay();
       m_signal->signal(frameId);
 
@@ -715,19 +695,7 @@ namespace dxvk {
 
 
   void Presenter::setFrameRateLimit(double frameRate, uint32_t maxLatency) {
-    m_frameRateLimitLatency = maxLatency;
-
-    // An active external cap (CS) takes precedence over the swapchain's DXGI target; don't let a swapchain
-    // re-push clobber it. applyExternalFrameRateLimit() re-asserts the override each present regardless.
-    if (std::isnan(g_dxvkExternalFrameRate.load(std::memory_order_acquire)))
-      m_fpsLimiter.setTargetFrameRate(frameRate, maxLatency);
-  }
-
-
-  void Presenter::applyExternalFrameRateLimit() {
-    double external = g_dxvkExternalFrameRate.load(std::memory_order_acquire);
-    if (!std::isnan(external))
-      m_fpsLimiter.setTargetFrameRate(external, m_frameRateLimitLatency);
+    m_fpsLimiter.setTargetFrameRate(frameRate, maxLatency);
   }
 
 
@@ -1649,7 +1617,6 @@ namespace dxvk {
       // Apply FPS limiter here to align it as closely with scanout as we can,
       // and delay signaling the frame latency event to emulate behaviour of a
       // low refresh rate display as closely as we can.
-      applyExternalFrameRateLimit();
       m_fpsLimiter.delay();
 
       // Wake up any thread that may be waiting for the queue to become empty

@@ -6,7 +6,6 @@ EXPORTS
     D3D11On12CreateDevice @24
     dxvkRequestSwapchainRecreate @101
     dxvkSetSwapchainTornDownCallback @102
-    dxvkSetTargetFrameRate @103
     dxvkGetPresenterSurfaceState @109
     dxvkSetSyncPresent @110
     dxvkSetPresentQueueDepth @118
