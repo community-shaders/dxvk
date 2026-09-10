@@ -5,6 +5,11 @@
 
 namespace dxvk {
 
+  // Counted across every command list: instances are short-lived, so per-object
+  // counters never accumulate enough to be worth reporting.
+  static std::atomic<uint64_t> g_descriptorSetLookups = { 0u };
+  static std::atomic<uint64_t> g_descriptorSetHits = { 0u };
+
   DxvkDeviceQueue getQueueForCommandBuffer(DxvkDevice* device, DxvkCmdBuffer cmdBuffer) {
     return cmdBuffer < DxvkCmdBuffer::SdmaBuffer
       ? device->queues().graphics
@@ -405,6 +410,7 @@ namespace dxvk {
       countDescriptorStats(m_descriptorRange, m_descriptorOffset);
 
       m_descriptorRange = nullptr;
+      m_descriptorEpoch++;
       m_descriptorHeap = nullptr;
     } else {
       m_descriptorPool->updateStats(m_statCounters);
@@ -470,6 +476,9 @@ namespace dxvk {
   void DxvkCommandList::reset() {
     resetCheckpoints();
 
+    // Report how often a draw re-presented a descriptor set already written into the
+    // heap. A low rate means the per-draw write is unavoidable here; a high rate with
+    // no frame-rate change means the write was never the cost worth chasing.
     // We will re-apply heap bindings first thing in a
     // new command list, so reset this flag here
     m_descriptorHeapInvalidated = false;
@@ -629,6 +638,12 @@ namespace dxvk {
     const DxvkDescriptorWrite*          descriptorInfos,
           size_t                        pushDataSize,
     const void*                         pushData) {
+    {
+      static std::atomic<bool> s_loggedEntry = { false };
+      if (unlikely(!s_loggedEntry.exchange(true)))
+        Logger::info("DescriptorSetCache: heap bind path ENTERED");
+    }
+
     auto setLayout = layout->getDescriptorSetLayout(0u);
 
     // Whether heaps are valid is command list state, not context state,
@@ -652,6 +667,12 @@ namespace dxvk {
     if (descriptorCount && setLayout && !setLayout->isEmpty()) {
       auto vk = m_device->vkd();
 
+      {
+        static std::atomic<bool> s_loggedGuard = { false };
+        if (unlikely(!s_loggedGuard.exchange(true)))
+          Logger::info("DescriptorSetCache: descriptor set path ENTERED");
+      }
+
       // Assume that a descriptor heap is already active and that
       // we're not recording into a secondary command buffer.
       if (!canAllocateDescriptors(layout))
@@ -669,8 +690,18 @@ namespace dxvk {
 
       uint32_t writeCount = 0u;
 
+      // Hash the inputs that determine the written set, so an identical set already
+      // present in this heap range can be reused. Buffers are described entirely by
+      // their address and size; image and sampler descriptors are pre-baked objects,
+      // so their identity is the pointer the caller hands us.
+      uint64_t setKey = bit::fnv1a_init();
+      setKey = bit::fnv1a_iter(setKey, reinterpret_cast<uintptr_t>(setLayout));
+      setKey = bit::fnv1a_iter(setKey, descriptorCount);
+
       for (uint32_t i = 0u; i < descriptorCount; i++) {
         const auto& info = descriptorInfos[i];
+
+        setKey = bit::fnv1a_iter(setKey, uint32_t(info.descriptorType));
 
         switch (info.descriptorType) {
           case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -690,6 +721,9 @@ namespace dxvk {
             write.type = info.descriptorType;
             write.data.pAddressRange = &bufferRange;
 
+            setKey = bit::fnv1a_iter(setKey, bufferRange.address);
+            setKey = bit::fnv1a_iter(setKey, bufferRange.size);
+
             writeCount += 1u;
           } break;
 
@@ -704,6 +738,8 @@ namespace dxvk {
               descriptor = m_device->getDescriptorProperties().getNullDescriptor(info.descriptorType);
 
             descriptors.push_back(descriptor);
+
+            setKey = bit::fnv1a_iter(setKey, reinterpret_cast<uintptr_t>(descriptor));
           } break;
 
           default:
@@ -711,20 +747,42 @@ namespace dxvk {
         }
       }
 
-      // Write out buffer descriptors
-      if (writeCount) {
-        vk->vkWriteResourceDescriptorsEXT(vk->device(),
-          writeCount, writes.data(), hostRanges.data());
+      auto& cacheEntry = m_descriptorSetCache[setKey % DescriptorSetCacheSize];
+
+      bool cacheHit = cacheEntry.epoch == m_descriptorEpoch
+                   && cacheEntry.key == setKey;
+
+      VkDeviceSize storageOffset = cacheEntry.offset;
+
+      if (unlikely(!cacheHit)) {
+        // Write out buffer descriptors
+        if (writeCount) {
+          vk->vkWriteResourceDescriptorsEXT(vk->device(),
+            writeCount, writes.data(), hostRanges.data());
+        }
+
+        // Allocate descriptor storage and update the set
+        auto storage = allocateDescriptors(setLayout);
+
+        setLayout->update(storage.mapPtr, descriptors.data());
+
+        storageOffset = storage.offset;
+
+        cacheEntry.key = setKey;
+        cacheEntry.epoch = m_descriptorEpoch;
+        cacheEntry.offset = storageOffset;
       }
 
-      // Allocate descriptor storage and update the set
-      auto setLayout = layout->getDescriptorSetLayout(0u);
-      auto storage = allocateDescriptors(setLayout);
+      uint64_t lookups = g_descriptorSetLookups.fetch_add(1u, std::memory_order_relaxed) + 1u;
+      uint64_t hits = g_descriptorSetHits.fetch_add(uint32_t(cacheHit), std::memory_order_relaxed) + uint32_t(cacheHit);
 
-      setLayout->update(storage.mapPtr, descriptors.data());
+      if (unlikely(!(lookups % 5000u))) {
+        Logger::info(str::format("DescriptorSetCache: ", hits, " / ", lookups,
+          " sets reused (", (100u * hits) / lookups, "%)"));
+      }
 
       // Bind the set by updating the appropriate push constant
-      uint32_t setOffset = storage.offset >> layout->getDescriptorOffsetShift();
+      uint32_t setOffset = storageOffset >> layout->getDescriptorOffsetShift();
 
       VkPushDataInfoEXT pushInfo = { VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT };
       pushInfo.offset = pushDataBlock.getSize();
@@ -868,12 +926,14 @@ namespace dxvk {
       : 0u;
 
     m_descriptorRange = m_descriptorHeap->allocRange();
+    m_descriptorEpoch++;
     auto newBaseAddress = m_descriptorRange->getHeapInfo().gpuAddress;
 
     if (unlikely(newBaseAddress != oldBaseAddress)) {
       if (m_execBuffer) {
         // Can't rebind heap on secondary
         m_descriptorRange = nullptr;
+      m_descriptorEpoch++;
         return false;
       }
 
@@ -949,6 +1009,7 @@ namespace dxvk {
 
     m_descriptorHeap = std::move(heap);
     m_descriptorRange = m_descriptorHeap->getRange();
+    m_descriptorEpoch++;
     m_descriptorOffset = m_descriptorRange->getAllocationOffset();
 
     if (m_device->canUseDescriptorHeap())

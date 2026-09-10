@@ -1390,6 +1390,30 @@ namespace dxvk {
     Rc<DxvkResourceDescriptorRange> m_descriptorRange;
     VkDeviceSize                    m_descriptorOffset = 0u;
 
+    // Set-level reuse for the descriptor heap path.
+    //
+    // Binding through the heap is already cheap -- the heaps are bound once per command
+    // buffer and a set is selected by pushing an offset. What is left per draw is writing
+    // the set: a vkWriteResourceDescriptorsEXT call for every buffer descriptor, plus a
+    // copy of the whole set into heap storage. Draws that re-present the same resources
+    // repeat both for a byte-identical result.
+    //
+    // Key the set on its inputs (buffer address/size, descriptor object identity) so a
+    // hit can skip the driver write as well as the copy, and push the offset already
+    // written into the heap. Offsets are only meaningful inside the range they were
+    // allocated from, so entries carry an epoch that changes whenever the range does.
+    // Direct-mapped: a collision simply evicts, which keeps lookup branch-free.
+    struct DescriptorSetCacheEntry {
+      uint64_t     key    = 0u;
+      uint64_t     epoch  = 0u;
+      VkDeviceSize offset = 0u;
+    };
+
+    constexpr static size_t DescriptorSetCacheSize = 2048u;
+
+    std::array<DescriptorSetCacheEntry, DescriptorSetCacheSize> m_descriptorSetCache = { };
+    uint64_t m_descriptorEpoch = 0u;
+
     std::vector<DxvkGraphicsPipeline*> m_pipelines;
 
     bool m_descriptorHeapInvalidated = false;
