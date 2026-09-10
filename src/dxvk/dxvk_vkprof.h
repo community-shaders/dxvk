@@ -43,6 +43,12 @@ namespace dxvk {
     CreateImageView,
     GetDescriptor,
     UpdateDescriptorSets,
+    /* Descriptor heap path. The branch predates VK_EXT_descriptor_heap, so without
+     * these the heap's own calls are invisible and their absence from a report
+     * reads, wrongly, as descriptors being free. */
+    WriteResourceDescriptors,
+    CmdBindResourceHeap,
+    CmdBindSamplerHeap,
     BeginCommandBuffer,
     EndCommandBuffer,
     ResetCommandPool,

@@ -720,8 +720,8 @@ namespace dxvk {
 
       // Write out buffer descriptors
       if (writeCount) {
-        vk->vkWriteResourceDescriptorsEXT(vk->device(),
-          writeCount, writes.data(), hostRanges.data());
+        DXVK_VKPROF_EXPR(WriteResourceDescriptors, vk->vkWriteResourceDescriptorsEXT(vk->device(),
+          writeCount, writes.data(), hostRanges.data()));
       }
 
       // Allocate descriptor storage and update the set
@@ -997,7 +997,7 @@ namespace dxvk {
       return;
 
     VkBindHeapInfoEXT bindInfo = getHeapBindInfo(m_device->getSamplerDescriptorHeap());
-    vk->vkCmdBindSamplerHeapEXT(cmdBuffer, &bindInfo);
+    DXVK_VKPROF_EXPR(CmdBindSamplerHeap, vk->vkCmdBindSamplerHeapEXT(cmdBuffer, &bindInfo));
   }
 
 
@@ -1008,7 +1008,7 @@ namespace dxvk {
       return;
 
     VkBindHeapInfoEXT bindInfo = getHeapBindInfo(m_descriptorRange->getHeapInfo());
-    vk->vkCmdBindResourceHeapEXT(cmdBuffer, &bindInfo);
+    DXVK_VKPROF_EXPR(CmdBindResourceHeap, vk->vkCmdBindResourceHeapEXT(cmdBuffer, &bindInfo));
   }
 
 
