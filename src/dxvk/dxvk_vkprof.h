@@ -47,6 +47,9 @@ namespace dxvk {
      * these the heap's own calls are invisible and their absence from a report
      * reads, wrongly, as descriptors being free. */
     WriteResourceDescriptors,
+    /* How the heap selects a set: the offset is pushed per binding change, so this
+     * is the per-draw half of the heap path and the one most likely to be hot. */
+    CmdPushData,
     CmdBindResourceHeap,
     CmdBindSamplerHeap,
     BeginCommandBuffer,

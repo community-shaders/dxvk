@@ -1050,7 +1050,7 @@ namespace dxvk {
     void cmdPushData(
             DxvkCmdBuffer           cmdBuffer,
       const VkPushDataInfoEXT*      info) {
-      m_vkd->vkCmdPushDataEXT(getCmdBuffer(cmdBuffer), info);
+      DXVK_VKPROF_EXPR(CmdPushData, m_vkd->vkCmdPushDataEXT(getCmdBuffer(cmdBuffer), info));
     }
 
 

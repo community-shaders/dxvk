@@ -47,6 +47,7 @@ namespace dxvk {
     "vkGetDescriptorEXT",
     "vkUpdateDescriptorSets",
     "vkWriteResourceDescriptorsEXT",
+    "vkCmdPushDataEXT",
     "vkCmdBindResourceHeapEXT",
     "vkCmdBindSamplerHeapEXT",
     "vkBeginCommandBuffer",
