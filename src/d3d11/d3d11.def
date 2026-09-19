@@ -10,3 +10,8 @@ EXPORTS
     dxvkSetSyncPresent @110
     dxvkSetPresentQueueDepth @118
     dxvkSetTearingPreference @121
+    dxvkRequestDeviceFeatures @130
+    dxvkGetInteropDeviceInfo @131
+    dxvkCreateBufferFromVkBuffer @132
+    dxvkSetDeviceTeardownCallback @133
+    dxvkEnqueueInteropSubmission @134

@@ -18,6 +18,11 @@ namespace dxvk {
   D3D11VkInterop::~D3D11VkInterop() {
     
   }
+
+
+  Rc<DxvkDevice> D3D11VkInterop::GetDXVKDevice() const {
+    return m_device->GetDXVKDevice();
+  }
   
   
   ULONG STDMETHODCALLTYPE D3D11VkInterop::AddRef() {

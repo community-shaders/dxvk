@@ -679,6 +679,18 @@ namespace dxvk {
             DxvkSubmitStatus*         status);
 
     /**
+     * \brief Submits an interop client's command buffers
+     *
+     * Queued behind every command list submitted so far, so
+     * callers on the CS thread get stream order for free.
+     * \param [in] submitInfo External submission
+     */
+    void submitExternal(
+            DxvkExternalSubmitInfo    submitInfo) {
+      m_submissionQueue.submitExternal(std::move(submitInfo));
+    }
+
+    /**
      * \brief Locks submission queue
      * 
      * Since Vulkan queues are only meant to be accessed

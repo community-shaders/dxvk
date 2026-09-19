@@ -59,6 +59,11 @@ namespace dxvk {
     if (this_thread::isInModuleDetachment())
       return;
 
+    // An interop client recording on this device retires its own work
+    // and objects before any of ours are destroyed.
+    notifyInteropTeardown(m_vkd->device());
+    forgetInteropDevice(m_vkd->device());
+
     // Wait for all pending Vulkan commands to be
     // executed before we destroy any resources.
     this->waitForIdle();

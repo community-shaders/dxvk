@@ -63,6 +63,22 @@ namespace dxvk {
     m_appendCond.notify_all();
   }
 
+  void DxvkSubmissionQueue::submitExternal(
+          DxvkExternalSubmitInfo    submitInfo) {
+    std::unique_lock<dxvk::mutex> lock(m_mutex);
+
+    m_finishCond.wait(lock, [this] {
+      return m_submitQueue.size() + m_finishQueue.size() <= MaxNumQueuedCommandBuffers;
+    });
+
+    DxvkSubmitEntry entry = { };
+    entry.external = std::make_shared<DxvkExternalSubmitInfo>(std::move(submitInfo));
+
+    m_submitQueue.push(std::move(entry));
+    m_appendCond.notify_all();
+  }
+
+
   void DxvkSubmissionQueue::present(
           DxvkPresentInfo           presentInfo,
           DxvkLatencyInfo           latencyInfo,
@@ -181,6 +197,19 @@ namespace dxvk {
             trackedPresentId = entry.latency.frameId;
             trackedSubmitId = 0u;
           }
+        } else if (entry.external != nullptr) {
+          const auto& external = *entry.external;
+
+          VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+          submitInfo.waitSemaphoreInfoCount = uint32_t(external.waits.size());
+          submitInfo.pWaitSemaphoreInfos = external.waits.data();
+          submitInfo.commandBufferInfoCount = uint32_t(external.commandBuffers.size());
+          submitInfo.pCommandBufferInfos = external.commandBuffers.data();
+          submitInfo.signalSemaphoreInfoCount = uint32_t(external.signals.size());
+          submitInfo.pSignalSemaphoreInfos = external.signals.data();
+
+          auto vk = m_device->vkd();
+          entry.result = vk->vkQueueSubmit2(m_device->queues().graphics.queueHandle, 1, &submitInfo, VK_NULL_HANDLE);
         }
 
         if (m_callback)
@@ -193,15 +222,26 @@ namespace dxvk {
 
       if (entry.status)
         entry.status->result = entry.result;
-      
+
+      if (entry.external != nullptr) {
+        if (entry.result != VK_SUCCESS)
+          Logger::err(str::format("DxvkSubmissionQueue: External submission failed: ", entry.result));
+
+        if (entry.external->onSubmitted)
+          entry.external->onSubmitted(entry.result);
+      }
+
       if (entry.result == VK_ERROR_DEVICE_LOST && m_checkpoints)
         m_checkpoints->printHangInfo();
 
       // On success, pass it on to the queue thread
       { std::unique_lock<dxvk::mutex> lock(m_mutex);
 
+        // A failed external submission is the client's to handle (it was
+        // notified above); only device loss affects DXVK's own state.
         bool doForward = (entry.result == VK_SUCCESS) ||
-          (entry.present.presenter != nullptr && entry.result != VK_ERROR_DEVICE_LOST);
+          (entry.present.presenter != nullptr && entry.result != VK_ERROR_DEVICE_LOST) ||
+          (entry.external != nullptr && entry.result != VK_ERROR_DEVICE_LOST);
 
         if (doForward) {
           m_finishQueue.push(std::move(entry));

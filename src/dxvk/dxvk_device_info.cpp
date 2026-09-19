@@ -116,6 +116,9 @@ namespace dxvk {
     initQueueProperties(instance, adapter, deviceInfo);
     initMemoryProperties(instance, adapter);
 
+    m_featuresRawSupported = m_featuresSupported;
+    m_extensionsRawSupported = m_extensionsSupported;
+
     disableUnusedFeatures(instance, safeMode);
 
     enableFeaturesAndExtensions();
@@ -131,18 +134,20 @@ namespace dxvk {
   bool DxvkDeviceCapabilities::queryDeviceExtensions(
           uint32_t*                   count,
           VkExtensionProperties*      extensions) const {
+    const auto& list = m_interopActive ? m_extensionListCreate : m_extensionList;
+
     if (!extensions) {
-      *count = m_extensionList.size();
+      *count = list.size();
       return true;
     }
 
-    if (*count > m_extensionList.size())
-      *count = m_extensionList.size();
+    if (*count > list.size())
+      *count = list.size();
 
     for (uint32_t i = 0u; i < *count; i++)
-      extensions[i] = *(m_extensionList[i]);
+      extensions[i] = *(list[i]);
 
-    return *count >= m_extensionList.size();
+    return *count >= list.size();
   }
 
 
@@ -181,16 +186,90 @@ namespace dxvk {
   bool DxvkDeviceCapabilities::queryDeviceFeatures(
           size_t*                     size,
           void*                       data) const {
+    const auto& features = getCreateFeatures();
+
     if (!data) {
-      *size = sizeof(m_featuresEnabled);
+      *size = sizeof(features);
       return true;
     }
 
-    if (*size > sizeof(m_featuresEnabled))
-      *size = sizeof(m_featuresEnabled);
+    if (*size > sizeof(features))
+      *size = sizeof(features);
 
-    std::memcpy(data, &m_featuresEnabled, *size);
-    return *size >= sizeof(m_featuresEnabled);
+    std::memcpy(data, &features, *size);
+    return *size >= sizeof(features);
+  }
+
+
+  namespace {
+
+    template<typename T, typename Base>
+    T* rebaseMember(T* member, const Base* from, Base* to) {
+      auto offset = reinterpret_cast<const char*>(member) - reinterpret_cast<const char*>(from);
+      return reinterpret_cast<T*>(reinterpret_cast<char*>(to) + offset);
+    }
+
+  }
+
+
+  void DxvkDeviceCapabilities::applyInteropRequest(
+    const std::vector<DxvkInteropFeature>& request,
+          std::vector<DxvkInteropFeature>& granted,
+          std::vector<DxvkInteropFeature>& denied) {
+    m_featuresCreate = m_featuresEnabled;
+    m_extensionsCreate = m_extensionsEnabled;
+
+    m_extensionListCreate.clear();
+
+    for (auto ext : m_extensionList)
+      m_extensionListCreate.push_back(rebaseMember(ext, &m_extensionsEnabled, &m_extensionsCreate));
+
+    auto features = getFeatureList();
+
+    for (const auto& r : request) {
+      bool enabled = false;
+
+      for (const auto& f : features) {
+        if (!f.readableName || r.feature != f.readableName)
+          continue;
+
+        if (r.extension.empty() != !f.extensionSupported)
+          continue;
+
+        if (!r.extension.empty() && r.extension != f.extensionSupported->extensionName)
+          continue;
+
+        // Judge support before DXVK's policy: a feature DXVK declines for
+        // itself may still be exactly what the interop client needs.
+        if (!*rebaseMember(f.featureSupported, &m_featuresSupported, &m_featuresRawSupported))
+          break;
+
+        if (f.extensionEnabled) {
+          auto rawExtension = rebaseMember(f.extensionSupported, &m_extensionsSupported, &m_extensionsRawSupported);
+          auto createExtension = rebaseMember(f.extensionEnabled, &m_extensionsEnabled, &m_extensionsCreate);
+
+          if (!rawExtension->specVersion)
+            break;
+
+          if (!createExtension->specVersion) {
+            createExtension->specVersion = rawExtension->specVersion;
+            m_extensionListCreate.push_back(createExtension);
+          }
+        }
+
+        *rebaseMember(f.featureEnabled, &m_featuresEnabled, &m_featuresCreate) = VK_TRUE;
+        enabled = true;
+        break;
+      }
+
+      (enabled ? granted : denied).push_back(r);
+    }
+
+    // The copy still points into m_featuresEnabled's chain; chainFeatures prepends,
+    // so start the creation chain empty.
+    m_featuresCreate.core.pNext = nullptr;
+    chainFeatures(m_extensionsCreate, m_featuresCreate);
+    m_interopActive = true;
   }
 
 
@@ -489,6 +568,10 @@ namespace dxvk {
   void DxvkDeviceCapabilities::disableUnusedFeatures(
     const DxvkInstance&               instance,
           bool                        safeMode) {
+    // DXVK does not use Device-scope memory semantics itself. Listed only so an interop
+    // client (whose DXC atomics use Device scope) can request it; see applyInteropRequest.
+    m_featuresSupported.vk12.vulkanMemoryModelDeviceScope = VK_FALSE;
+
     if (m_featuresSupported.extDescriptorHeap.descriptorHeap) {
       // Only enable descriptor heaps on drivers that are known to work and don't
       // have known performance regressions currently.
@@ -918,6 +1001,7 @@ namespace dxvk {
       ENABLE_FEATURE(vk12, timelineSemaphore, true),
       ENABLE_FEATURE(vk12, uniformBufferStandardLayout, true),
       ENABLE_FEATURE(vk12, vulkanMemoryModel, true),
+      ENABLE_FEATURE(vk12, vulkanMemoryModelDeviceScope, false),
 
       ENABLE_FEATURE(vk13, inlineUniformBlock, true),
       ENABLE_FEATURE(vk13, computeFullSubgroups, true),

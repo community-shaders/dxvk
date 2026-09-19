@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "dxvk_include.h"
+#include "dxvk_interop.h"
 
 #include "../util/util_version.h"
 
@@ -343,6 +344,32 @@ namespace dxvk {
             void*                       data) const;
 
     /**
+     * \brief Enables interop client features for device creation only
+     *
+     * Features requested by an in-process client recording its own work on
+     * the device are added to the extension list and feature chain returned
+     * by \c queryDeviceExtensions and \c queryDeviceFeatures, based on what
+     * the physical device supports before DXVK's own policy is applied.
+     * \c getFeatures keeps returning the set DXVK chose for itself, so the
+     * request never changes DXVK's code paths.
+     * \param [in] request Features to enable
+     * \param [out] granted Requested features that will be enabled
+     * \param [out] denied Requested features the device does not support
+     */
+    void applyInteropRequest(
+      const std::vector<DxvkInteropFeature>& request,
+            std::vector<DxvkInteropFeature>& granted,
+            std::vector<DxvkInteropFeature>& denied);
+
+    /**
+     * \brief Features the device is created with
+     * \returns DXVK's features plus any granted interop features
+     */
+    const DxvkDeviceFeatures& getCreateFeatures() const {
+      return m_interopActive ? m_featuresCreate : m_featuresEnabled;
+    }
+
+    /**
      * \brief Checks whether adapter supports all features
      *
      * \param [in] errorSize Size of error string
@@ -385,6 +412,15 @@ namespace dxvk {
 
     DxvkDeviceExtensionInfo               m_extensionsSupported = { };
     DxvkDeviceExtensionInfo               m_extensionsEnabled   = { };
+
+    // Device support before DXVK's own feature policy, and the creation-only
+    // feature set including interop client requests (applyInteropRequest).
+    DxvkDeviceFeatures                    m_featuresRawSupported   = { };
+    DxvkDeviceExtensionInfo               m_extensionsRawSupported = { };
+    DxvkDeviceFeatures                    m_featuresCreate         = { };
+    DxvkDeviceExtensionInfo               m_extensionsCreate       = { };
+    std::vector<const VkExtensionProperties*> m_extensionListCreate;
+    bool                                  m_interopActive = false;
 
     DxvkDeviceMemoryInfo                  m_memory = { };
 

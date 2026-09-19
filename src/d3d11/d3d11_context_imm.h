@@ -97,6 +97,17 @@ namespace dxvk {
       return m_multithread.AcquireLock();
     }
 
+    /**
+     * \brief Submits an interop client's command buffers in stream order
+     *
+     * Ends the current command list and queues the client's command
+     * buffers right behind it, so they execute after every D3D11 command
+     * issued so far and before every later one. Does not wait for the
+     * CS thread; call from the thread that owns this context.
+     */
+    void EnqueueExternalSubmission(
+            DxvkExternalSubmitInfo&&    SubmitInfo);
+
     void InjectCsChunk(
             DxvkCsQueue                 Queue,
             DxvkCsChunkRef&&            Chunk,

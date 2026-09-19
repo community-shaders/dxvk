@@ -217,6 +217,21 @@ namespace dxvk {
     Logger::info("Creating device:");
     caps.logDeviceInfo();
 
+    // Features an in-process interop client needs on this device, on top of
+    // what DXVK enables for itself (see DxvkDeviceCapabilities::applyInteropRequest).
+    std::vector<DxvkInteropFeature> interopGranted;
+    std::vector<DxvkInteropFeature> interopDenied;
+
+    if (auto interopRequest = getInteropFeatureRequest(); !interopRequest.empty()) {
+      caps.applyInteropRequest(interopRequest, interopGranted, interopDenied);
+
+      for (const auto& f : interopGranted)
+        Logger::info(str::format("  Interop feature enabled: ", f.extension.empty() ? "core" : f.extension, ".", f.feature));
+
+      for (const auto& f : interopDenied)
+        Logger::warn(str::format("  Interop feature unsupported: ", f.extension.empty() ? "core" : f.extension, ".", f.feature));
+    }
+
     // Get device features to enable
     size_t featureBlobSize = 0u;
     caps.queryDeviceFeatures(&featureBlobSize, nullptr);
@@ -301,6 +316,24 @@ namespace dxvk {
     deviceQueues.graphics = getDeviceQueue(vkd, caps, queueMapping.graphics);
     deviceQueues.transfer = getDeviceQueue(vkd, caps, queueMapping.transfer);
     deviceQueues.sparse   = getDeviceQueue(vkd, caps, queueMapping.sparse);
+
+    // Record what the device was created with, for clients adopting it.
+    auto record = std::make_shared<DxvkInteropDeviceRecord>();
+    record->device = device;
+
+    for (const auto& name : extensionNames)
+      record->extensionNames.push_back(name);
+
+    const auto& createFeatures = caps.getCreateFeatures();
+    record->features.features = createFeatures.core.features;
+    record->vk11 = createFeatures.vk11;
+    record->vk12 = createFeatures.vk12;
+    record->vk13 = createFeatures.vk13;
+    record->descriptorHeap = createFeatures.extDescriptorHeap;
+    record->grantedFeatures = std::move(interopGranted);
+    record->deniedFeatures = std::move(interopDenied);
+    record->chain();
+    registerInteropDevice(std::move(record));
 
     return new DxvkDevice(m_instance, this, vkd, caps, deviceQueues, DxvkQueueCallback());
   }

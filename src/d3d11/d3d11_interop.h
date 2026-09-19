@@ -4,6 +4,8 @@
 
 #include "d3d11_include.h"
 
+struct DxvkOrgInteropSubmission;
+
 namespace dxvk {
 
   class D3D11Device;
@@ -56,6 +58,22 @@ namespace dxvk {
             const D3D11_TEXTURE2D_DESC1* pDesc,
             VkImage                      vkImage,
             ID3D11Texture2D**            ppTexture2D);
+
+    /**
+     * \brief Wraps a client-owned VkBuffer (see d3d11_org_interop.h)
+     */
+    HRESULT CreateBufferFromVkBuffer(
+      const D3D11_BUFFER_DESC*          pDesc,
+            VkBuffer                    buffer,
+            ID3D11Buffer**              ppBuffer);
+
+    /**
+     * \brief Submits client command buffers in D3D11 stream order (see d3d11_org_interop.h)
+     */
+    HRESULT EnqueueExternalSubmission(
+      const DxvkOrgInteropSubmission* pSubmission);
+
+    Rc<DxvkDevice> GetDXVKDevice() const;
     
   private:
     

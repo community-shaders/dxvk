@@ -1089,6 +1089,25 @@ namespace dxvk {
   }
 
 
+  void D3D11ImmediateContext::EnqueueExternalSubmission(
+          DxvkExternalSubmitInfo&&    SubmitInfo) {
+    D3D10DeviceLock lock = LockContext();
+
+    // Close DXVK's command list so the client's work lands between it and
+    // whatever D3D11 records next. Both flush and submit are asynchronous.
+    ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, false);
+
+    EmitCs<false>([
+      cDevice = m_device,
+      cSubmit = std::move(SubmitInfo)
+    ] (DxvkContext*) {
+      cDevice->submitExternal(cSubmit);
+    });
+
+    FlushCsChunk();
+  }
+
+
   void D3D11ImmediateContext::ExecuteFlush(
           GpuFlushType                FlushType,
           HANDLE                      hEvent,

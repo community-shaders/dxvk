@@ -1,6 +1,8 @@
 #pragma once
 
 #include <condition_variable>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 
@@ -50,6 +52,20 @@ namespace dxvk {
 
 
   /**
+   * \brief External submission info
+   *
+   * Command buffers recorded by an interop client on DXVK's
+   * device, submitted to the graphics queue in stream order.
+   */
+  struct DxvkExternalSubmitInfo {
+    std::vector<VkSemaphoreSubmitInfo>      waits;
+    std::vector<VkCommandBufferSubmitInfo>  commandBuffers;
+    std::vector<VkSemaphoreSubmitInfo>      signals;
+    std::function<void (VkResult)>          onSubmitted;
+  };
+
+
+  /**
    * \brief Latency info
    *
    * Optionally stores a latency tracker
@@ -69,6 +85,7 @@ namespace dxvk {
     DxvkSubmitStatus*   status;
     DxvkSubmitInfo      submit;
     DxvkPresentInfo     present;
+    std::shared_ptr<DxvkExternalSubmitInfo> external;
     DxvkLatencyInfo     latency;
     DxvkTimelineSemaphoreValues timelines;
   };
@@ -124,6 +141,16 @@ namespace dxvk {
             DxvkSubmitInfo      submitInfo,
             DxvkLatencyInfo     latencyInfo,
             DxvkSubmitStatus*   status);
+
+    /**
+     * \brief Submits external command buffers asynchronously
+     *
+     * Queues an interop client's command buffers for submission
+     * to the graphics queue, ordered with every other entry.
+     * \param [in] submitInfo External submission
+     */
+    void submitExternal(
+            DxvkExternalSubmitInfo submitInfo);
 
     /**
      * \brief Presents an image synchronously
