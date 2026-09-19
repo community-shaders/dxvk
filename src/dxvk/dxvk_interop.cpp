@@ -40,7 +40,9 @@ namespace dxvk {
     vk11.pNext = &vk12;
     vk12.pNext = &vk13;
     vk13.pNext = &descriptorHeap;
-    descriptorHeap.pNext = nullptr;
+    descriptorHeap.pNext = &deviceGeneratedCommands;
+    deviceGeneratedCommands.pNext = &robustness2;
+    robustness2.pNext = nullptr;
 
     extensionPointers.clear();
 

@@ -15,3 +15,4 @@ EXPORTS
     dxvkCreateBufferFromVkBuffer @132
     dxvkSetDeviceTeardownCallback @133
     dxvkEnqueueInteropSubmission @134
+    dxvkGetInteropResourceInfo @135

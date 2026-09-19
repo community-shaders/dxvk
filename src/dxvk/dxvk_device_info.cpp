@@ -24,6 +24,7 @@ namespace dxvk {
     HANDLE_EXT(extDepthBiasControl);               \
     HANDLE_EXT(extDescriptorBuffer);               \
     HANDLE_EXT(extDescriptorHeap);                 \
+    HANDLE_EXT(extDeviceGeneratedCommands);        \
     HANDLE_EXT(extDynamicRenderingUnusedAttachments); \
     HANDLE_EXT(extExtendedDynamicState3);          \
     HANDLE_EXT(extFragmentShaderInterlock);        \
@@ -572,6 +573,11 @@ namespace dxvk {
     // client (whose DXC atomics use Device scope) can request it; see applyInteropRequest.
     m_featuresSupported.vk12.vulkanMemoryModelDeviceScope = VK_FALSE;
 
+    // Device-generated commands are for interop clients recording indirect work on DXVK's device
+    // (e.g. Drawcall Limit Fix); DXVK does not use them.
+    m_featuresSupported.extDeviceGeneratedCommands.deviceGeneratedCommands = VK_FALSE;
+    m_featuresSupported.extDeviceGeneratedCommands.dynamicGeneratedPipelineLayout = VK_FALSE;
+
     if (m_featuresSupported.extDescriptorHeap.descriptorHeap) {
       // Only enable descriptor heaps on drivers that are known to work and don't
       // have known performance regressions currently.
@@ -1042,6 +1048,10 @@ namespace dxvk {
 
       /* Descriptor heaps for a more efficient binding model */
       ENABLE_EXT_FEATURE(extDescriptorHeap, descriptorHeap, false),
+
+      /* Interop only (disabled for DXVK in disableUnusedFeatures): indirect command generation */
+      ENABLE_EXT_FEATURE(extDeviceGeneratedCommands, deviceGeneratedCommands, false),
+      ENABLE_EXT_FEATURE(extDeviceGeneratedCommands, dynamicGeneratedPipelineLayout, false),
 
       /* Unused attachments to silence VVL around pipelines with rasterizer discard */
       ENABLE_EXT_FEATURE(extDynamicRenderingUnusedAttachments, dynamicRenderingUnusedAttachments, false),

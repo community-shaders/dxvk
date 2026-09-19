@@ -5,6 +5,8 @@
 #include "d3d11_include.h"
 
 struct DxvkOrgInteropSubmission;
+struct DxvkOrgInteropResourceInfo;
+struct DxvkOrgInteropImageInfo;
 
 namespace dxvk {
 
@@ -73,9 +75,20 @@ namespace dxvk {
     HRESULT EnqueueExternalSubmission(
       const DxvkOrgInteropSubmission* pSubmission);
 
+    /**
+     * \brief Describes and locks a buffer, texture or SRV (see d3d11_org_interop.h)
+     */
+    HRESULT GetResourceInfo(
+            IUnknown*                   pObject,
+            DxvkOrgInteropResourceInfo* pInfo);
+
     Rc<DxvkDevice> GetDXVKDevice() const;
     
   private:
+
+    bool LockImage(const Rc<DxvkImage>& image);
+
+    static void FillImageInfo(const Rc<DxvkImage>& image, const DxvkImageViewKey& view, DxvkOrgInteropImageInfo& out);
     
     IDXGIObject* m_container;
     D3D11Device* m_device;

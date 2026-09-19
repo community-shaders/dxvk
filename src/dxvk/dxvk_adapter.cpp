@@ -330,6 +330,8 @@ namespace dxvk {
     record->vk12 = createFeatures.vk12;
     record->vk13 = createFeatures.vk13;
     record->descriptorHeap = createFeatures.extDescriptorHeap;
+    record->deviceGeneratedCommands = createFeatures.extDeviceGeneratedCommands;
+    record->robustness2 = createFeatures.extRobustness2;
     record->grantedFeatures = std::move(interopGranted);
     record->deniedFeatures = std::move(interopDenied);
     record->chain();

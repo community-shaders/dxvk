@@ -48,10 +48,12 @@ namespace dxvk {
     VkPhysicalDeviceVulkan12Features vk12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
     VkPhysicalDeviceVulkan13Features vk13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeap = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT };
+    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommands = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
+    VkPhysicalDeviceRobustness2FeaturesEXT robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
     std::vector<DxvkInteropFeature> grantedFeatures;
     std::vector<DxvkInteropFeature> deniedFeatures;
 
-    /// Links features -> vk11 -> vk12 -> vk13 -> descriptorHeap.
+    /// Links features -> vk11 -> vk12 -> vk13 -> descriptorHeap -> deviceGeneratedCommands -> robustness2.
     void chain();
   };
 

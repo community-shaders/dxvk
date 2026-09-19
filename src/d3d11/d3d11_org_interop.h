@@ -21,6 +21,7 @@ extern "C" {
 struct ID3D11Device;
 struct ID3D11Buffer;
 struct D3D11_BUFFER_DESC;
+struct IUnknown;
 
 typedef struct DxvkOrgInteropFeature {
   /** Extension exposing the feature, or null for core features. */
@@ -54,6 +55,48 @@ typedef struct DxvkOrgInteropDeviceInfo {
   uint32_t grantedFeatureCount;
   uint32_t deniedFeatureCount;
 } DxvkOrgInteropDeviceInfo;
+
+typedef enum DxvkOrgInteropResourceKind {
+  DXVK_ORG_INTEROP_RESOURCE_BUFFER = 1,
+  DXVK_ORG_INTEROP_RESOURCE_IMAGE  = 2,
+} DxvkOrgInteropResourceKind;
+
+typedef struct DxvkOrgInteropBufferInfo {
+  /** A D3D11 buffer is a range of a (possibly shared) VkBuffer. */
+  VkBuffer buffer;
+  VkDeviceSize offset;
+  VkDeviceSize size;
+  /** Device address of the range's first byte. */
+  VkDeviceAddress address;
+  VkBufferUsageFlags usage;
+} DxvkOrgInteropBufferInfo;
+
+typedef struct DxvkOrgInteropImageInfo {
+  VkImage image;
+  VkImageType type;
+  VkFormat format;
+  VkImageCreateFlags flags;
+  VkExtent3D extent;
+  uint32_t mipLevels;
+  uint32_t arrayLayers;
+  VkSampleCountFlagBits samples;
+  VkImageUsageFlags usage;
+  /** The layout DXVK keeps the image in between its own commands. */
+  VkImageLayout layout;
+  /** For a shader resource view: the view DXVK created for it. For a texture: the whole image. */
+  VkImageViewType viewType;
+  VkFormat viewFormat;
+  VkComponentMapping components;
+  VkImageSubresourceRange subresourceRange;
+} DxvkOrgInteropImageInfo;
+
+typedef struct DxvkOrgInteropResourceInfo {
+  uint32_t version;
+  /** DxvkOrgInteropResourceKind; selects buffer or image below. */
+  uint32_t kind;
+  DxvkOrgInteropBufferInfo buffer;
+  DxvkOrgInteropImageInfo image;
+} DxvkOrgInteropResourceInfo;
 
 typedef void (*PFN_dxvkOrgInteropTeardown)(void* user, VkDevice device);
 
@@ -101,6 +144,22 @@ typedef HRESULT (__stdcall *PFN_dxvkCreateBufferFromVkBuffer)(ID3D11Device* pDev
  * invoked during process detachment. Pass null to unregister.
  */
 typedef HRESULT (__stdcall *PFN_dxvkSetDeviceTeardownCallback)(PFN_dxvkOrgInteropTeardown pCallback, void* pUser);
+
+/**
+ * Describes the Vulkan resource behind a D3D11 buffer, texture or shader
+ * resource view, and marks it stable: DXVK will not relocate or rename it
+ * from now on (the same lock its NVX interop paths use), so the handles and
+ * addresses stay valid for the resource's lifetime. The client must keep a
+ * reference on the D3D11 object while it uses them.
+ *
+ * Buffers that the application can map (D3D11_USAGE_DYNAMIC or CPU access)
+ * are renamed by every discard map and cannot be made stable; they are
+ * rejected with E_INVALIDARG. Buffer views are not supported.
+ *
+ * Synchronizes with DXVK's worker thread; call it outside hot paths.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfo)(ID3D11Device* pDevice,
+  IUnknown* pObject, DxvkOrgInteropResourceInfo* pInfo);
 
 /**
  * Submits client command buffers to DXVK's graphics queue in D3D11 stream

@@ -3,6 +3,8 @@
 #include "d3d11_device.h"
 #include "d3d11_interop.h"
 #include "d3d11_org_interop.h"
+#include "d3d11_texture.h"
+#include "d3d11_view_srv.h"
 
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_device.h"
@@ -60,6 +62,141 @@ namespace dxvk {
       Logger::err(e.message());
       return E_INVALIDARG;
     }
+  }
+
+
+  HRESULT D3D11VkInterop::GetResourceInfo(
+          IUnknown*                   pObject,
+          DxvkOrgInteropResourceInfo* pInfo) {
+    if (!pObject || !pInfo || pInfo->version != DXVK_ORG_INTEROP_VERSION)
+      return E_INVALIDARG;
+
+    uint32_t version = pInfo->version;
+    *pInfo = DxvkOrgInteropResourceInfo();
+    pInfo->version = version;
+
+    // A shader resource view selects the image view; otherwise the resource itself.
+    Com<ID3D11ShaderResourceView> srv;
+    Com<ID3D11Resource> resource;
+    Rc<DxvkImageView> view;
+
+    if (SUCCEEDED(pObject->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv)))) {
+      auto srvImpl = static_cast<D3D11ShaderResourceView*>(srv.ptr());
+      view = srvImpl->GetImageView();
+
+      if (view == nullptr)
+        return E_INVALIDARG;  // buffer view
+    } else if (FAILED(pObject->QueryInterface(__uuidof(ID3D11Resource), reinterpret_cast<void**>(&resource)))) {
+      return E_INVALIDARG;
+    }
+
+    if (resource != nullptr) {
+      D3D11_COMMON_RESOURCE_DESC desc = { };
+
+      if (FAILED(GetCommonResourceDesc(resource.ptr(), &desc)))
+        return E_INVALIDARG;
+
+      if (desc.Dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+        auto buffer = GetCommonBuffer(resource.ptr());
+
+        // Discard maps rename the buffer; nothing about it can be stable.
+        if (buffer->Desc()->Usage == D3D11_USAGE_DYNAMIC || buffer->Desc()->CPUAccessFlags)
+          return E_INVALIDARG;
+
+        Rc<DxvkBuffer> dxvkBuffer = buffer->GetBuffer();
+
+        if (dxvkBuffer->canRelocate()) {
+          auto chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
+
+          chunk->push([cBuffer = dxvkBuffer] (DxvkContext* ctx) {
+            ctx->ensureBufferAddress(cBuffer);
+          });
+
+          m_device->GetContext()->InjectCsChunk(DxvkCsQueue::HighPriority, std::move(chunk), true);
+        }
+
+        auto slice = dxvkBuffer->getSliceInfo();
+        pInfo->kind = DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+        pInfo->buffer.buffer = slice.buffer;
+        pInfo->buffer.offset = slice.offset;
+        pInfo->buffer.size = buffer->Desc()->ByteWidth;
+        pInfo->buffer.address = slice.gpuAddress;
+        pInfo->buffer.usage = dxvkBuffer->info().usage;
+        return S_OK;
+      }
+
+      auto texture = GetCommonTexture(resource.ptr());
+
+      if (!texture)
+        return E_INVALIDARG;
+
+      Rc<DxvkImage> image = texture->GetImage();
+      const auto& info = image->info();
+
+      DxvkImageViewKey key = { };
+      key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+
+      if (info.type == VK_IMAGE_TYPE_1D)
+        key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
+      else if (info.type == VK_IMAGE_TYPE_3D)
+        key.viewType = VK_IMAGE_VIEW_TYPE_3D;
+
+      key.format = info.format;
+      key.aspects = image->formatInfo()->aspectMask;
+      key.mipIndex = 0u;
+      key.mipCount = info.mipLevels;
+      key.layerIndex = 0u;
+      key.layerCount = info.numLayers;
+      view = nullptr;
+
+      if (!LockImage(image))
+        return E_FAIL;
+
+      FillImageInfo(image, key, pInfo->image);
+      pInfo->kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+      return S_OK;
+    }
+
+    Rc<DxvkImage> image = view->image();
+
+    if (!LockImage(image))
+      return E_FAIL;
+
+    FillImageInfo(image, view->info(), pInfo->image);
+    pInfo->kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+    return S_OK;
+  }
+
+
+  bool D3D11VkInterop::LockImage(const Rc<DxvkImage>& image) {
+    // Same condition as D3D11DeviceExt::LockImage: nothing to do for an image that cannot move.
+    if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT))
+      return true;
+
+    return m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT);
+  }
+
+
+  void D3D11VkInterop::FillImageInfo(const Rc<DxvkImage>& image, const DxvkImageViewKey& view, DxvkOrgInteropImageInfo& out) {
+    const auto& info = image->info();
+    out.image = image->handle();
+    out.type = info.type;
+    out.format = info.format;
+    out.flags = info.flags;
+    out.extent = info.extent;
+    out.mipLevels = info.mipLevels;
+    out.arrayLayers = info.numLayers;
+    out.samples = info.sampleCount;
+    out.usage = info.usage;
+    out.layout = info.layout;
+    out.viewType = view.viewType;
+    out.viewFormat = view.format;
+    out.components = view.unpackSwizzle();
+    out.subresourceRange.aspectMask = view.aspects;
+    out.subresourceRange.baseMipLevel = view.mipIndex;
+    out.subresourceRange.levelCount = view.mipCount;
+    out.subresourceRange.baseArrayLayer = view.layerIndex;
+    out.subresourceRange.layerCount = view.layerCount;
   }
 
 
@@ -176,6 +313,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->EnqueueExternalSubmission(pSubmission);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkGetInteropResourceInfo(ID3D11Device* pDevice,
+    IUnknown* pObject, DxvkOrgInteropResourceInfo* pInfo) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->GetResourceInfo(pObject, pInfo);
   }
 
 
