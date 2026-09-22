@@ -43,6 +43,9 @@ namespace dxvk {
     VkDevice device = VK_NULL_HANDLE;
     std::vector<std::string> extensionNames;
     std::vector<const char*> extensionPointers;
+    /// The instance's, e.g. VK_EXT_debug_utils, which adopters must not call into unless enabled.
+    std::vector<std::string> instanceExtensionNames;
+    std::vector<const char*> instanceExtensionPointers;
     VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
     VkPhysicalDeviceVulkan11Features vk11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     VkPhysicalDeviceVulkan12Features vk12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };

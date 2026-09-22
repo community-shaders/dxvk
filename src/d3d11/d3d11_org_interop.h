@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define DXVK_ORG_INTEROP_VERSION 1u
+#define DXVK_ORG_INTEROP_VERSION 2u
 
 struct ID3D11Device;
 struct ID3D11Buffer;
@@ -54,6 +54,9 @@ typedef struct DxvkOrgInteropDeviceInfo {
   /** Outcome of dxvkRequestDeviceFeatures for this device. */
   uint32_t grantedFeatureCount;
   uint32_t deniedFeatureCount;
+  /** The instance's enabled extensions (version 2), e.g. whether VK_EXT_debug_utils may be called. */
+  uint32_t enabledInstanceExtensionCount;
+  const char* const* enabledInstanceExtensions;
 } DxvkOrgInteropDeviceInfo;
 
 typedef enum DxvkOrgInteropResourceKind {
@@ -114,6 +117,8 @@ typedef struct DxvkOrgInteropSubmission {
   /** Optional. Called on DXVK's submission thread once vkQueueSubmit2 returned. */
   PFN_dxvkOrgInteropSubmitted onSubmitted;
   void* user;
+  /** Optional (version 2). Copied; a queue label around the submission while a capture tool is attached. */
+  const char* label;
 } DxvkOrgInteropSubmission;
 
 /**

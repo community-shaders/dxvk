@@ -213,6 +213,9 @@ namespace dxvk {
     submitInfo.commandBuffers.assign(pSubmission->commandBuffers, pSubmission->commandBuffers + pSubmission->commandBufferCount);
     submitInfo.signals.assign(pSubmission->signals, pSubmission->signals + pSubmission->signalCount);
 
+    if (pSubmission->label)
+      submitInfo.label = pSubmission->label;
+
     for (auto& info : submitInfo.waits)
       info.pNext = nullptr;
     for (auto& info : submitInfo.commandBuffers)
@@ -288,6 +291,8 @@ extern "C" {
     pInfo->enabledFeatures = &record->features;
     pInfo->grantedFeatureCount = uint32_t(record->grantedFeatures.size());
     pInfo->deniedFeatureCount = uint32_t(record->deniedFeatures.size());
+    pInfo->enabledInstanceExtensionCount = uint32_t(record->instanceExtensionPointers.size());
+    pInfo->enabledInstanceExtensions = record->instanceExtensionPointers.data();
     return S_OK;
   }
 

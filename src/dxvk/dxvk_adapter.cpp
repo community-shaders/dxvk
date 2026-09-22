@@ -324,6 +324,9 @@ namespace dxvk {
     for (const auto& name : extensionNames)
       record->extensionNames.push_back(name);
 
+    for (const auto& ext : m_instance->getExtensionList())
+      record->instanceExtensionNames.push_back(ext.extensionName);
+
     const auto& createFeatures = caps.getCreateFeatures();
     record->features.features = createFeatures.core.features;
     record->vk11 = createFeatures.vk11;

@@ -14,7 +14,25 @@
 #include <set>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace dxvk {
+
+  // A graphics debugger injected into the process: its captures want the application's labels, and
+  // the environment variables above do not survive launchers that hand the game their own
+  // environment block (Mod Organizer 2). Nsight Graphics and RenderDoc load these at process start,
+  // before any Vulkan instance exists.
+  static bool isCaptureToolLoaded() {
+#ifdef _WIN32
+    for (const wchar_t* module : { L"Nvda.Graphics.Interception.dll", L"ngfx-capture-interception.dll", L"renderdoc.dll" }) {
+      if (::GetModuleHandleW(module))
+        return true;
+    }
+#endif
+    return false;
+  }
 
   DxvkInstance::DxvkInstance(DxvkInstanceFlags flags)
   : DxvkInstance(DxvkInstanceImportInfo(), flags) {
@@ -169,7 +187,8 @@ namespace dxvk {
 
     bool capture = debugEnv.empty() && (
       env::getEnvVar("ENABLE_VULKAN_RENDERDOC_CAPTURE") == "1" ||
-      env::getEnvVar("MESA_VK_TRACE") != "");
+      env::getEnvVar("MESA_VK_TRACE") != "" ||
+      isCaptureToolLoaded());
 
     if (debugEnv == "validation")
       m_debugFlags.set(DxvkDebugFlag::Validation);

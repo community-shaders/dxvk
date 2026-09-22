@@ -209,7 +209,20 @@ namespace dxvk {
           submitInfo.pSignalSemaphoreInfos = external.signals.data();
 
           auto vk = m_device->vkd();
-          entry.result = vk->vkQueueSubmit2(m_device->queues().graphics.queueHandle, 1, &submitInfo, VK_NULL_HANDLE);
+          VkQueue queue = m_device->queues().graphics.queueHandle;
+          // A queue label encloses the client's whole submission, which command buffer labels
+          // cannot: DXVK closes its own at every command buffer boundary.
+          bool labelled = !external.label.empty() && m_device->debugFlags().test(DxvkDebugFlag::Capture);
+
+          if (labelled) {
+            VkDebugUtilsLabelEXT label = vk::makeLabel(0x7fb2ff, external.label.c_str());
+            vk->vkQueueBeginDebugUtilsLabelEXT(queue, &label);
+          }
+
+          entry.result = vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
+
+          if (labelled)
+            vk->vkQueueEndDebugUtilsLabelEXT(queue);
         }
 
         if (m_callback)

@@ -48,6 +48,11 @@ namespace dxvk {
 
     for (const auto& name : extensionNames)
       extensionPointers.push_back(name.c_str());
+
+    instanceExtensionPointers.clear();
+
+    for (const auto& name : instanceExtensionNames)
+      instanceExtensionPointers.push_back(name.c_str());
   }
 
 

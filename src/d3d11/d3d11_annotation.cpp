@@ -38,7 +38,9 @@ namespace dxvk {
           ContextType*          container,
     const Rc<DxvkDevice>&       dxvkDevice)
   : m_container(container),
-    m_annotationsEnabled(dxvkDevice->debugFlags().test(DxvkDebugFlag::Markers)) {
+    // The application's own labels whenever debug utils are on for a capture (Capture, which
+    // Markers implies); Markers alone adds DXVK's internal labels on top.
+    m_annotationsEnabled(dxvkDevice->debugFlags().test(DxvkDebugFlag::Capture)) {
     if (!IsDeferred && m_annotationsEnabled)
       RegisterUserDefinedAnnotation<true>(this);
   }

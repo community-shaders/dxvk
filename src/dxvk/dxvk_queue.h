@@ -62,6 +62,8 @@ namespace dxvk {
     std::vector<VkCommandBufferSubmitInfo>  commandBuffers;
     std::vector<VkSemaphoreSubmitInfo>      signals;
     std::function<void (VkResult)>          onSubmitted;
+    /// Wrapped around the submission as a queue label when debug utils are on for a capture.
+    std::string                             label;
   };
 
 
