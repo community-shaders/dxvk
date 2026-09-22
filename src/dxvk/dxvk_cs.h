@@ -12,7 +12,11 @@
 
 namespace dxvk {
 
-  constexpr static size_t DxvkCsChunkSize = 16384;
+  // Every rollover costs a mutex acquisition, a queue push and a condition-variable notify, and
+  // a command-heavy frame rolls a 16 KB chunk over dozens of times. Larger chunks cut that
+  // proportionally; past 256 KB the CS thread starts to starve instead, and frame times get
+  // noticeably less even.
+  constexpr static size_t DxvkCsChunkSize = 262144;
 
   /**
    * \brief Command stream operation
