@@ -200,6 +200,11 @@ namespace dxvk {
   }
 
 
+  const uint64_t* D3D11VkInterop::GetSubmissionCounter() const {
+    return m_device->GetContext()->GetSubmissionCounter();
+  }
+
+
   HRESULT D3D11VkInterop::EnqueueExternalSubmission(
     const DxvkOrgInteropSubmission*   pSubmission) {
     if (!pSubmission || pSubmission->version != DXVK_ORG_INTEROP_VERSION
@@ -330,6 +335,23 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->GetResourceInfo(pObject, pInfo);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkGetSubmissionCounter(ID3D11Device* pDevice,
+    const volatile uint64_t** ppCounter) {
+    if (!ppCounter)
+      return E_INVALIDARG;
+    *ppCounter = nullptr;
+
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    *ppCounter = interop->GetSubmissionCounter();
+    return S_OK;
   }
 
 

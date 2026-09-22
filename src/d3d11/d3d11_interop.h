@@ -83,6 +83,11 @@ namespace dxvk {
             DxvkOrgInteropResourceInfo* pInfo);
 
     Rc<DxvkDevice> GetDXVKDevice() const;
+
+    /**
+     * \brief The immediate context's submission counter (see d3d11_org_interop.h)
+     */
+    const uint64_t* GetSubmissionCounter() const;
     
   private:
 

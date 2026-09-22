@@ -16,3 +16,4 @@ EXPORTS
     dxvkSetDeviceTeardownCallback @133
     dxvkEnqueueInteropSubmission @134
     dxvkGetInteropResourceInfo @135
+    dxvkGetSubmissionCounter @136

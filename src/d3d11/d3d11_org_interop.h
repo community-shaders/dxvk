@@ -178,6 +178,20 @@ typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfo)(ID3D11Device* pDevic
 typedef HRESULT (__stdcall *PFN_dxvkEnqueueInteropSubmission)(ID3D11Device* pDevice,
   const DxvkOrgInteropSubmission* pSubmission);
 
+/**
+ * Returns the address of the immediate context's submission counter, which
+ * grows by one each time DXVK closes a command list and hands it to the
+ * queue: implicit flushes, explicit Flush() and the flush ahead of an
+ * enqueued interop submission. Two D3D11 commands issued while the counter
+ * holds the same value are in the same Vulkan submission, so a timestamp
+ * query pair around them measures only the GPU work between them; a pair
+ * across a change also counts any time the queue sat idle between the two
+ * submissions. Valid for the device's lifetime. Written only by the thread
+ * using the immediate context, which is also the one that should read it.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkGetSubmissionCounter)(ID3D11Device* pDevice,
+  const volatile uint64_t** ppCounter);
+
 #ifdef __cplusplus
 }
 #endif

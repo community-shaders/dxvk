@@ -42,6 +42,17 @@ namespace dxvk {
             ID3D11Asynchronous*         pAsync);
     
     void STDMETHODCALLTYPE Flush();
+
+    /**
+     * \brief Number of command-list submissions issued so far
+     *
+     * Increments on every flush of the immediate context, explicit or
+     * implicit, including the one ahead of an external submission. Only
+     * written on the thread holding the context lock.
+     */
+    const uint64_t* GetSubmissionCounter() const {
+      return &m_submissionId;
+    }
     
     void STDMETHODCALLTYPE Flush1(
             D3D11_CONTEXT_TYPE          ContextType,
