@@ -17,3 +17,6 @@ EXPORTS
     dxvkEnqueueInteropSubmission @134
     dxvkGetInteropResourceInfo @135
     dxvkGetSubmissionCounter @136
+    dxvkSetSubmissionTrace @137
+    dxvkReadSubmissionTrace @138
+    dxvkEnqueueInteropSubmissions @139

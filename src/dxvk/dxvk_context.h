@@ -104,6 +104,15 @@ namespace dxvk {
             DxvkSubmitStatus*           status);
 
     /**
+     * \brief Describes the current command list for the submission trace
+     *
+     * Call right before flushCommandList.
+     */
+    void setSubmitTraceInfo(DxvkSubmitTraceInfo info) {
+      m_cmd->setTraceInfo(std::move(info));
+    }
+
+    /**
      * \brief Synchronizes command list with WSI
      *
      * The next submission can be used to render

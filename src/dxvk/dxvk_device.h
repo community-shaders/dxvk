@@ -691,6 +691,20 @@ namespace dxvk {
     }
 
     /**
+     * \brief Enables or disables the submission trace (see DxvkSubmissionQueue)
+     */
+    void setSubmissionTrace(bool enable) {
+      m_submissionQueue.setSubmissionTrace(enable);
+    }
+
+    /**
+     * \brief Takes completed submission trace records
+     */
+    uint32_t readSubmissionTrace(DxvkSubmissionTraceRecord* records, uint32_t capacity) {
+      return m_submissionQueue.readSubmissionTrace(records, capacity);
+    }
+
+    /**
      * \brief Locks submission queue
      * 
      * Since Vulkan queues are only meant to be accessed

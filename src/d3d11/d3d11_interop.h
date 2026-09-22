@@ -5,6 +5,7 @@
 #include "d3d11_include.h"
 
 struct DxvkOrgInteropSubmission;
+struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
 
@@ -74,6 +75,9 @@ namespace dxvk {
      */
     HRESULT EnqueueExternalSubmission(
       const DxvkOrgInteropSubmission* pSubmission);
+
+    HRESULT EnqueueExternalSubmissions(
+      const DxvkOrgInteropSubmissionBatch* pBatch);
 
     /**
      * \brief Describes and locks a buffer, texture or SRV (see d3d11_org_interop.h)

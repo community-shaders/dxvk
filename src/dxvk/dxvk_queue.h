@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -58,12 +60,39 @@ namespace dxvk {
    * device, submitted to the graphics queue in stream order.
    */
   struct DxvkExternalSubmitInfo {
-    std::vector<VkSemaphoreSubmitInfo>      waits;
-    std::vector<VkCommandBufferSubmitInfo>  commandBuffers;
-    std::vector<VkSemaphoreSubmitInfo>      signals;
+    /// One VkSubmitInfo2 each, handed to the queue in order by a single vkQueueSubmit2.
+    struct Submit {
+      std::vector<VkSemaphoreSubmitInfo>      waits;
+      std::vector<VkCommandBufferSubmitInfo>  commandBuffers;
+      std::vector<VkSemaphoreSubmitInfo>      signals;
+    };
+    std::vector<Submit>                     submits;
     std::function<void (VkResult)>          onSubmitted;
     /// Wrapped around the submission as a queue label when debug utils are on for a capture.
     std::string                             label;
+  };
+
+
+  /**
+   * \brief Submission trace record
+   *
+   * One queue submission with its CPU history and, for work
+   * submissions, GPU timestamps around it.
+   */
+  struct DxvkSubmissionTraceRecord {
+    enum Kind : uint32_t { CommandList = 0u, External = 1u, Present = 2u };
+
+    Kind        kind = CommandList;
+    uint32_t    flushType = ~0u;
+    uint64_t    submissionId = 0u;
+    int64_t     appQpc = 0;
+    int64_t     csQpc = 0;
+    int64_t     queueQpc = 0;
+    /// Top-of-pipe timestamp written just before the submission
+    uint64_t    gpuBegin = 0u;
+    /// All-commands timestamp written just after the submission
+    uint64_t    gpuEnd = 0u;
+    std::string label;
   };
 
 
@@ -117,6 +146,25 @@ namespace dxvk {
     uint64_t gpuIdleTicks() const {
       return m_gpuIdle.load();
     }
+
+    /**
+     * \brief Enables or disables the submission trace
+     *
+     * While enabled, every work submission on the graphics queue is
+     * bracketed by two timestamp-only submissions, and a record of it
+     * is kept until readSubmissionTrace takes it. For diagnostics only.
+     */
+    void setSubmissionTrace(bool enable);
+
+    /**
+     * \brief Takes completed trace records, oldest first
+     *
+     * Stops at the first record whose timestamps are not available yet.
+     * \returns Number of records written
+     */
+    uint32_t readSubmissionTrace(
+            DxvkSubmissionTraceRecord* records,
+            uint32_t            capacity);
 
     /**
      * \brief Retrieves last submission error
@@ -248,6 +296,28 @@ namespace dxvk {
 
     dxvk::thread                m_submitThread;
     dxvk::thread                m_finishThread;
+
+    struct PendingTrace {
+      DxvkSubmissionTraceRecord record;
+      uint32_t                  slot = ~0u;
+    };
+
+    static constexpr uint32_t TraceSlots = 1024u;
+
+    std::atomic<bool>           m_traceEnabled = { false };
+    dxvk::mutex                 m_traceMutex;
+    VkCommandPool               m_traceCmdPool = VK_NULL_HANDLE;
+    VkQueryPool                 m_traceQueries = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> m_traceCmds;
+    bool                        m_traceFailed = false;
+    uint32_t                    m_traceNextSlot = 0u;
+    std::deque<PendingTrace>    m_tracePending;
+
+    bool initSubmissionTrace();
+
+    void destroySubmissionTrace();
+
+    void submitTraceMarker(VkQueue queue, uint32_t query);
 
     void submitCmdLists();
 

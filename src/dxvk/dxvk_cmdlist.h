@@ -242,7 +242,39 @@ namespace dxvk {
    * When the command list has completed execution, resources that
    * are no longer used may get destroyed.
    */
+  /**
+   * \brief Where a command list came from, for the submission trace
+   */
+  struct DxvkSubmitTraceInfo {
+    /// Immediate context submission counter value, 0 for other flushes
+    uint64_t    submissionId = 0u;
+    /// GpuFlushType of the flush that closed the list, ~0u if unknown
+    uint32_t    flushType = ~0u;
+    /// Performance counter when the application thread issued the flush
+    int64_t     appQpc = 0;
+    /// Performance counter when the CS thread closed the list
+    int64_t     csQpc = 0;
+    /// Flush reason, if the context recorded one
+    std::string reason;
+  };
+
+
   class DxvkCommandList : public RcObject {
+  public:
+
+    /**
+     * \brief Sets the submission trace info
+     */
+    void setTraceInfo(DxvkSubmitTraceInfo info) {
+      m_traceInfo = std::move(info);
+    }
+
+    /**
+     * \brief Submission trace info
+     */
+    const DxvkSubmitTraceInfo& traceInfo() const {
+      return m_traceInfo;
+    }
     
   public:
     
@@ -299,6 +331,12 @@ namespace dxvk {
      * \param [in] stats Stat counters
      */
     void finalize();
+
+  private:
+
+    DxvkSubmitTraceInfo m_traceInfo;
+
+  public:
 
     /**
      * \brief Interrupts recording

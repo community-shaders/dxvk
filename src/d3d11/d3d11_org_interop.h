@@ -179,6 +179,26 @@ typedef HRESULT (__stdcall *PFN_dxvkEnqueueInteropSubmission)(ID3D11Device* pDev
   const DxvkOrgInteropSubmission* pSubmission);
 
 /**
+ * Several client queue submissions enqueued as one (dxvkEnqueueInteropSubmissions): one flush of the
+ * immediate context, one entry in DXVK's stream and one vkQueueSubmit2 carrying every VkSubmitInfo2 in
+ * order. pNext chains and flags of the submit infos and of the arrays they point at are ignored.
+ */
+typedef struct DxvkOrgInteropSubmissionBatch {
+  uint32_t version;
+  uint32_t submitCount;
+  const VkSubmitInfo2* submits;
+  /** On DXVK's submission thread, after the vkQueueSubmit2. */
+  PFN_dxvkOrgInteropSubmitted onSubmitted;
+  void* user;
+  /** Optional: a queue label around the submission under a capture tool. */
+  const char* label;
+} DxvkOrgInteropSubmissionBatch;
+
+/** As dxvkEnqueueInteropSubmission, for a batch of submissions (same ordering and lifetime rules). */
+typedef HRESULT (__stdcall *PFN_dxvkEnqueueInteropSubmissions)(ID3D11Device* pDevice,
+  const DxvkOrgInteropSubmissionBatch* pBatch);
+
+/**
  * Returns the address of the immediate context's submission counter, which
  * grows by one each time DXVK closes a command list and hands it to the
  * queue: implicit flushes, explicit Flush() and the flush ahead of an
@@ -191,6 +211,45 @@ typedef HRESULT (__stdcall *PFN_dxvkEnqueueInteropSubmission)(ID3D11Device* pDev
  */
 typedef HRESULT (__stdcall *PFN_dxvkGetSubmissionCounter)(ID3D11Device* pDevice,
   const volatile uint64_t** ppCounter);
+
+typedef enum DxvkOrgSubmissionKind {
+  /** A DXVK command list. */
+  DXVK_ORG_SUBMISSION_COMMAND_LIST = 0,
+  /** An enqueued interop submission (dxvkEnqueueInteropSubmission). */
+  DXVK_ORG_SUBMISSION_EXTERNAL = 1,
+  /** A present (no timestamps). */
+  DXVK_ORG_SUBMISSION_PRESENT = 2,
+} DxvkOrgSubmissionKind;
+
+/** One submission on DXVK's graphics queue. Times are QueryPerformanceCounter values. */
+typedef struct DxvkOrgSubmissionTraceRecord {
+  uint32_t kind;          /* DxvkOrgSubmissionKind */
+  uint32_t flushType;     /* command lists: the GpuFlushType that closed it, ~0u if unknown */
+  uint64_t submissionId;  /* command lists flushed by the immediate context: its submission counter value, else 0 */
+  int64_t  appQpc;        /* command lists: the application thread issued the flush */
+  int64_t  csQpc;         /* command lists: DXVK's CS thread closed the list */
+  int64_t  queueQpc;      /* the submission thread handed it to the queue */
+  uint64_t gpuBegin;      /* timestamp (device ticks) when the GPU reached it; 0 for presents */
+  uint64_t gpuEnd;        /* timestamp once everything up to its end had completed; 0 for presents */
+  char     label[64];     /* flush reason for command lists, the client's label for external submissions */
+} DxvkOrgSubmissionTraceRecord;
+
+/**
+ * Turns the submission trace on or off. While on, DXVK brackets every work
+ * submission on its graphics queue with two timestamp-only submissions and
+ * keeps a record per submission (a bounded backlog) for
+ * dxvkReadSubmissionTrace. Costs two extra queue submissions per submission;
+ * for diagnostics only.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkSetSubmissionTrace)(ID3D11Device* pDevice, BOOL enable);
+
+/**
+ * Takes completed trace records, oldest first, up to pCapacity. Stops at the
+ * first record whose timestamps are not available yet, so records come out
+ * in queue order and none is skipped.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkReadSubmissionTrace)(ID3D11Device* pDevice,
+  DxvkOrgSubmissionTraceRecord* pRecords, uint32_t capacity, uint32_t* pCount);
 
 #ifdef __cplusplus
 }

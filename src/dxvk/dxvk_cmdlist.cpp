@@ -394,6 +394,7 @@ namespace dxvk {
     // during command recording.
     m_cmd = DxvkCommandSubmissionInfo();
     m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)] = allocateCommandBuffer(DxvkCmdBuffer::ExecBuffer);
+    m_traceInfo = DxvkSubmitTraceInfo();
   }
   
   

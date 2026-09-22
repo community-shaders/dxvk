@@ -1141,12 +1141,22 @@ namespace dxvk {
       cSubmissionStatus = synchronizeSubmission ? &m_submitStatus : nullptr,
       cStagingFence     = m_stagingBufferFence,
       cStagingMemory    = GetStagingMemoryStatistics().allocatedTotal,
-      cFlushReason      = std::exchange(m_flushReason, std::string())
+      cFlushReason      = std::exchange(m_flushReason, std::string()),
+      cFlushType        = uint32_t(FlushType),
+      cAppQpc           = high_resolution_clock::get_counter()
     ] (DxvkContext* ctx) {
       auto debugLabel = vk::makeLabel(0xff5959, cFlushReason.c_str());
 
+      DxvkSubmitTraceInfo traceInfo;
+      traceInfo.submissionId = cSubmissionId;
+      traceInfo.flushType = cFlushType;
+      traceInfo.appQpc = cAppQpc;
+      traceInfo.csQpc = high_resolution_clock::get_counter();
+      traceInfo.reason = cFlushReason;
+
       ctx->signal(cSubmissionFence, cSubmissionId);
       ctx->signal(cStagingFence, cStagingMemory);
+      ctx->setSubmitTraceInfo(std::move(traceInfo));
       ctx->flushCommandList(&debugLabel, cSubmissionStatus);
     });
 

@@ -214,22 +214,67 @@ namespace dxvk {
       return E_INVALIDARG;
 
     DxvkExternalSubmitInfo submitInfo;
-    submitInfo.waits.assign(pSubmission->waits, pSubmission->waits + pSubmission->waitCount);
-    submitInfo.commandBuffers.assign(pSubmission->commandBuffers, pSubmission->commandBuffers + pSubmission->commandBufferCount);
-    submitInfo.signals.assign(pSubmission->signals, pSubmission->signals + pSubmission->signalCount);
+    auto& submit = submitInfo.submits.emplace_back();
+    submit.waits.assign(pSubmission->waits, pSubmission->waits + pSubmission->waitCount);
+    submit.commandBuffers.assign(pSubmission->commandBuffers, pSubmission->commandBuffers + pSubmission->commandBufferCount);
+    submit.signals.assign(pSubmission->signals, pSubmission->signals + pSubmission->signalCount);
 
     if (pSubmission->label)
       submitInfo.label = pSubmission->label;
 
-    for (auto& info : submitInfo.waits)
+    for (auto& info : submit.waits)
       info.pNext = nullptr;
-    for (auto& info : submitInfo.commandBuffers)
+    for (auto& info : submit.commandBuffers)
       info.pNext = nullptr;
-    for (auto& info : submitInfo.signals)
+    for (auto& info : submit.signals)
       info.pNext = nullptr;
 
     if (pSubmission->onSubmitted) {
       submitInfo.onSubmitted = [cb = pSubmission->onSubmitted, user = pSubmission->user] (VkResult result) {
+        cb(user, result);
+      };
+    }
+
+    m_device->GetContext()->EnqueueExternalSubmission(std::move(submitInfo));
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::EnqueueExternalSubmissions(
+    const DxvkOrgInteropSubmissionBatch*  pBatch) {
+    if (!pBatch || pBatch->version != DXVK_ORG_INTEROP_VERSION
+     || !pBatch->submitCount || !pBatch->submits)
+      return E_INVALIDARG;
+
+    DxvkExternalSubmitInfo submitInfo;
+    submitInfo.submits.resize(pBatch->submitCount);
+
+    for (uint32_t i = 0; i < pBatch->submitCount; i++) {
+      const auto& source = pBatch->submits[i];
+
+      if ((source.waitSemaphoreInfoCount && !source.pWaitSemaphoreInfos)
+       || (source.commandBufferInfoCount && !source.pCommandBufferInfos)
+       || (source.signalSemaphoreInfoCount && !source.pSignalSemaphoreInfos))
+        return E_INVALIDARG;
+
+      auto& submit = submitInfo.submits[i];
+      submit.waits.assign(source.pWaitSemaphoreInfos, source.pWaitSemaphoreInfos + source.waitSemaphoreInfoCount);
+      submit.commandBuffers.assign(source.pCommandBufferInfos, source.pCommandBufferInfos + source.commandBufferInfoCount);
+      submit.signals.assign(source.pSignalSemaphoreInfos, source.pSignalSemaphoreInfos + source.signalSemaphoreInfoCount);
+
+      for (auto& info : submit.waits)
+        info.pNext = nullptr;
+      for (auto& info : submit.commandBuffers)
+        info.pNext = nullptr;
+      for (auto& info : submit.signals)
+        info.pNext = nullptr;
+    }
+
+    if (pBatch->label)
+      submitInfo.label = pBatch->label;
+
+    if (pBatch->onSubmitted) {
+      submitInfo.onSubmitted = [cb = pBatch->onSubmitted, user = pBatch->user] (VkResult result) {
         cb(user, result);
       };
     }
@@ -326,6 +371,18 @@ extern "C" {
   }
 
 
+  DLLEXPORT HRESULT __stdcall dxvkEnqueueInteropSubmissions(ID3D11Device* pDevice,
+    const DxvkOrgInteropSubmissionBatch* pBatch) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->EnqueueExternalSubmissions(pBatch);
+  }
+
+
   DLLEXPORT HRESULT __stdcall dxvkGetInteropResourceInfo(ID3D11Device* pDevice,
     IUnknown* pObject, DxvkOrgInteropResourceInfo* pInfo) {
     Com<IDXGIVkInteropDevice1> ref;
@@ -351,6 +408,53 @@ extern "C" {
       return E_NOINTERFACE;
 
     *ppCounter = interop->GetSubmissionCounter();
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetSubmissionTrace(ID3D11Device* pDevice, BOOL enable) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    interop->GetDXVKDevice()->setSubmissionTrace(enable != FALSE);
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkReadSubmissionTrace(ID3D11Device* pDevice,
+    DxvkOrgSubmissionTraceRecord* pRecords, uint32_t capacity, uint32_t* pCount) {
+    if (!pCount || (capacity && !pRecords))
+      return E_INVALIDARG;
+    *pCount = 0u;
+
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    std::vector<DxvkSubmissionTraceRecord> records(capacity);
+    uint32_t count = interop->GetDXVKDevice()->readSubmissionTrace(records.data(), capacity);
+
+    for (uint32_t i = 0u; i < count; i++) {
+      const auto& src = records[i];
+      auto& dst = pRecords[i];
+      dst.kind = uint32_t(src.kind);
+      dst.flushType = src.flushType;
+      dst.submissionId = src.submissionId;
+      dst.appQpc = src.appQpc;
+      dst.csQpc = src.csQpc;
+      dst.queueQpc = src.queueQpc;
+      dst.gpuBegin = src.gpuBegin;
+      dst.gpuEnd = src.gpuEnd;
+      std::memset(dst.label, 0, sizeof(dst.label));
+      std::memcpy(dst.label, src.label.data(), std::min(src.label.size(), sizeof(dst.label) - 1u));
+    }
+
+    *pCount = count;
     return S_OK;
   }
 
