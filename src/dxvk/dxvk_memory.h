@@ -1270,6 +1270,11 @@ namespace dxvk {
     DxvkMemoryStats getMemoryStats(uint32_t heap) const;
 
     /**
+     * rief Sums allocated, used and budget across every heap
+     */
+    void getTotalMemoryStats(uint64_t& allocated, uint64_t& used, uint64_t& budget);
+
+    /**
      * \brief Retrieves detailed memory statistics
      *
      * Queries statistics for each memory type and each allocated chunk.

@@ -10,3 +10,4 @@ EXPORTS
     dxvkSetSyncPresent @110
     dxvkSetPresentQueueDepth @118
     dxvkSetTearingPreference @121
+    dxvkGetMemoryStats @122

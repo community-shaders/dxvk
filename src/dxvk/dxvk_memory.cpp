@@ -738,8 +738,39 @@ namespace dxvk {
 
 
 
+  // Published for dxvkGetMemoryStats below, so a host can tell committed memory apart from memory
+  // actually in use. Growth in allocated with used flat is fragmentation or retained chunks, not a
+  // leak; growth in both is a leak.
+  static std::atomic<DxvkMemoryAllocator*> g_dxvkStatsAllocator = { nullptr };
+
+  extern "C" void dxvkGetMemoryStats(uint64_t* allocated, uint64_t* used, uint64_t* budget) {
+    uint64_t totalAllocated = 0u;
+    uint64_t totalUsed = 0u;
+    uint64_t totalBudget = 0u;
+
+    if (auto* allocator = g_dxvkStatsAllocator.load(std::memory_order_acquire))
+      allocator->getTotalMemoryStats(totalAllocated, totalUsed, totalBudget);
+
+    if (allocated) *allocated = totalAllocated;
+    if (used)      *used      = totalUsed;
+    if (budget)    *budget    = totalBudget;
+  }
+
+  void DxvkMemoryAllocator::getTotalMemoryStats(uint64_t& allocated, uint64_t& used, uint64_t& budget) {
+    std::unique_lock lock(m_mutex);
+
+    for (uint32_t i = 0; i < m_memHeapCount; i++) {
+      DxvkMemoryStats stats = getMemoryStats(i);
+      allocated += stats.memoryAllocated;
+      used += stats.memoryUsed;
+      budget += stats.memoryBudget;
+    }
+  }
+
   DxvkMemoryAllocator::DxvkMemoryAllocator(DxvkDevice* device)
   : m_device(device), m_sharingModeInfo(m_device->getSharingMode()) {
+    g_dxvkStatsAllocator.store(this, std::memory_order_release);
+
     VkPhysicalDeviceMemoryProperties memInfo = m_device->adapter()->memoryProperties();
 
     m_memTypeCount = memInfo.memoryTypeCount;
@@ -785,6 +816,8 @@ namespace dxvk {
   
   
   DxvkMemoryAllocator::~DxvkMemoryAllocator() {
+    g_dxvkStatsAllocator.store(nullptr, std::memory_order_release);
+
     auto vk = m_device->vkd();
 
     // Free all resources that are still queued up for relocation
