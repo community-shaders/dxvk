@@ -1434,6 +1434,23 @@ namespace dxvk {
 
     std::array<int32_t, uint32_t(DxvkCmdBuffer::Count)> m_checkpointIds = {};
 
+  public:
+
+    /**
+     * \brief The execution command buffer being recorded
+     *
+     * For interop clients that record their own commands into
+     * DXVK's stream (DxvkContext::recordExternalCommands). The buffer
+     * counts as used: a submission skips an unused execution buffer,
+     * and the client's commands may be the only ones in it.
+     */
+    VkCommandBuffer getExecCmdBufferForInterop() {
+      m_cmd.execCommands = true;
+      return m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)];
+    }
+
+  private:
+
     force_inline VkCommandBuffer getCmdBuffer() const {
       // Allocation logic will always provide an execution buffer
       return m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)];

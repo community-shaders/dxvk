@@ -20,3 +20,6 @@ EXPORTS
     dxvkSetSubmissionTrace @137
     dxvkReadSubmissionTrace @138
     dxvkEnqueueInteropSubmissions @139
+    dxvkEnqueueQueueCallback @140
+    dxvkEmitCommandBufferCallback @141
+    dxvkSetCommandBufferBoundaryCallbacks @142

@@ -103,11 +103,13 @@ namespace dxvk {
     m_trackingId += 1u;
 
     this->beginCurrentCommands();
+    this->beginExternalCommands();
   }
   
   
   Rc<DxvkCommandList> DxvkContext::endRecording(
     const VkDebugUtilsLabelEXT*       reason) {
+    this->endExternalCommands();
     this->endCurrentCommands();
     this->relocateQueuedResources();
 
@@ -3329,6 +3331,31 @@ namespace dxvk {
   void DxvkContext::insertDebugLabel(const VkDebugUtilsLabelEXT& label) {
     if (m_features.test(DxvkContextFeature::DebugUtils))
       m_cmd->cmdInsertDebugUtilsLabel(DxvkCmdBuffer::ExecBuffer, label);
+  }
+
+
+  void DxvkContext::recordExternalCommands(const std::function<void (VkCommandBuffer)>& callback) {
+    this->endCurrentPass(true);
+    this->flushBarriers();
+
+    callback(m_cmd->getExecCmdBufferForInterop());
+  }
+
+
+  void DxvkContext::endExternalCommands() {
+    if (likely(!m_externalCmdEnd))
+      return;
+
+    this->endCurrentPass(true);
+    this->flushBarriers();
+
+    m_externalCmdEnd(m_cmd->getExecCmdBufferForInterop());
+  }
+
+
+  void DxvkContext::beginExternalCommands() {
+    if (unlikely(m_externalCmdBegin))
+      m_externalCmdBegin(m_cmd->getExecCmdBufferForInterop());
   }
 
 
@@ -9401,12 +9428,14 @@ namespace dxvk {
     // This behaves the same as a pair of endRecording and
     // beginRecording calls, except that we keep the same
     // command list object for subsequent commands.
+    this->endExternalCommands();
     this->endCurrentCommands();
 
     m_trackingId += 1u;
     m_cmd->next();
 
     this->beginCurrentCommands();
+    this->beginExternalCommands();
   }
 
 

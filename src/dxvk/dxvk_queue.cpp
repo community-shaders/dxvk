@@ -245,7 +245,11 @@ namespace dxvk {
             vk->vkQueueBeginDebugUtilsLabelEXT(queue, &label);
           }
 
-          entry.result = vk->vkQueueSubmit2(queue, uint32_t(submitInfos.size()), submitInfos.data(), VK_NULL_HANDLE);
+          if (external.queueCallback)
+            external.queueCallback(queue);
+
+          entry.result = submitInfos.empty() ? VK_SUCCESS
+            : vk->vkQueueSubmit2(queue, uint32_t(submitInfos.size()), submitInfos.data(), VK_NULL_HANDLE);
 
           if (labelled)
             vk->vkQueueEndDebugUtilsLabelEXT(queue);

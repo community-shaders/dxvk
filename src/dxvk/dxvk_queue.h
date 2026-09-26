@@ -70,6 +70,9 @@ namespace dxvk {
     std::function<void (VkResult)>          onSubmitted;
     /// Wrapped around the submission as a queue label when debug utils are on for a capture.
     std::string                             label;
+    /// Called on the submission thread with the queue locked, in stream order, before the submits (which may be
+    /// none): lets an interop client make queue-level calls (a GPU profiler's sessions and passes) between DXVK's own.
+    std::function<void (VkQueue)>           queueCallback;
   };
 
 

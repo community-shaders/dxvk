@@ -80,6 +80,28 @@ namespace dxvk {
       const DxvkOrgInteropSubmissionBatch* pBatch);
 
     /**
+     * \brief Runs a client callback on the submission thread in stream order (see d3d11_org_interop.h)
+     */
+    HRESULT EnqueueQueueCallback(
+            void                          (*pCallback)(void*, VkQueue),
+            void*                           pUser);
+
+    /**
+     * \brief Runs a client callback on the worker thread in stream order (see d3d11_org_interop.h)
+     */
+    HRESULT EmitCommandBufferCallback(
+            void                          (*pCallback)(void*, VkCommandBuffer),
+            void*                                   pUser);
+
+    /**
+     * rief Client callbacks at DXVK's command buffer boundaries (see d3d11_org_interop.h)
+     */
+    HRESULT SetCommandBufferBoundaryCallbacks(
+            void                          (*pOnEnd)(void*, VkCommandBuffer),
+            void                          (*pOnBegin)(void*, VkCommandBuffer),
+            void*                                   pUser);
+
+    /**
      * \brief Describes and locks a buffer, texture or SRV (see d3d11_org_interop.h)
      */
     HRESULT GetResourceInfo(

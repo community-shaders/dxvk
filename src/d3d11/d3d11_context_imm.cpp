@@ -1089,6 +1089,32 @@ namespace dxvk {
   }
 
 
+  void D3D11ImmediateContext::EmitExternalCommands(
+          std::function<void (VkCommandBuffer)> Callback) {
+    D3D10DeviceLock lock = LockContext();
+
+    EmitCs([
+      cCallback = std::move(Callback)
+    ] (DxvkContext* ctx) {
+      ctx->recordExternalCommands(cCallback);
+    });
+  }
+
+
+  void D3D11ImmediateContext::SetExternalCommandBufferHooks(
+          std::function<void (VkCommandBuffer)> OnEnd,
+          std::function<void (VkCommandBuffer)> OnBegin) {
+    D3D10DeviceLock lock = LockContext();
+
+    EmitCs([
+      cOnEnd    = std::move(OnEnd),
+      cOnBegin  = std::move(OnBegin)
+    ] (DxvkContext* ctx) mutable {
+      ctx->setExternalCommandBufferHooks(std::move(cOnEnd), std::move(cOnBegin));
+    });
+  }
+
+
   void D3D11ImmediateContext::EnqueueExternalSubmission(
           DxvkExternalSubmitInfo&&    SubmitInfo) {
     D3D10DeviceLock lock = LockContext();

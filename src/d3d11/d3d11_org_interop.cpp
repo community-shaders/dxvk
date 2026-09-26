@@ -240,6 +240,51 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D11VkInterop::EnqueueQueueCallback(
+          void                          (*pCallback)(void*, VkQueue),
+          void*                           pUser) {
+    if (!pCallback)
+      return E_INVALIDARG;
+
+    DxvkExternalSubmitInfo submitInfo;
+    submitInfo.queueCallback = [pCallback, pUser] (VkQueue queue) {
+      pCallback(pUser, queue);
+    };
+
+    m_device->GetContext()->EnqueueExternalSubmission(std::move(submitInfo));
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::EmitCommandBufferCallback(
+          void                          (*pCallback)(void*, VkCommandBuffer),
+          void*                                   pUser) {
+    if (!pCallback)
+      return E_INVALIDARG;
+
+    m_device->GetContext()->EmitExternalCommands([pCallback, pUser] (VkCommandBuffer commandBuffer) {
+      pCallback(pUser, commandBuffer);
+    });
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::SetCommandBufferBoundaryCallbacks(
+          void                          (*pOnEnd)(void*, VkCommandBuffer),
+          void                          (*pOnBegin)(void*, VkCommandBuffer),
+          void*                                   pUser) {
+    std::function<void (VkCommandBuffer)> onEnd, onBegin;
+
+    if (pOnEnd)
+      onEnd = [pOnEnd, pUser] (VkCommandBuffer commandBuffer) { pOnEnd(pUser, commandBuffer); };
+    if (pOnBegin)
+      onBegin = [pOnBegin, pUser] (VkCommandBuffer commandBuffer) { pOnBegin(pUser, commandBuffer); };
+
+    m_device->GetContext()->SetExternalCommandBufferHooks(std::move(onEnd), std::move(onBegin));
+    return S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::EnqueueExternalSubmissions(
     const DxvkOrgInteropSubmissionBatch*  pBatch) {
     if (!pBatch || pBatch->version != DXVK_ORG_INTEROP_VERSION
@@ -380,6 +425,42 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->EnqueueExternalSubmissions(pBatch);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkEnqueueQueueCallback(ID3D11Device* pDevice,
+    PFN_dxvkOrgInteropQueueCallback pCallback, void* pUser) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->EnqueueQueueCallback(pCallback, pUser);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkEmitCommandBufferCallback(ID3D11Device* pDevice,
+    PFN_dxvkOrgInteropCommandBufferCallback pCallback, void* pUser) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->EmitCommandBufferCallback(pCallback, pUser);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetCommandBufferBoundaryCallbacks(ID3D11Device* pDevice,
+    PFN_dxvkOrgInteropCommandBufferCallback pOnEnd, PFN_dxvkOrgInteropCommandBufferCallback pOnBegin, void* pUser) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->SetCommandBufferBoundaryCallbacks(pOnEnd, pOnBegin, pUser);
   }
 
 

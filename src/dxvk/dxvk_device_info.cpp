@@ -657,8 +657,9 @@ namespace dxvk {
       m_featuresSupported.nvxImageViewHandle = VK_FALSE;
     }
 
-    // Reflex is broken on 32-bit
-    if (env::is32BitHostPlatform())
+    // Reflex is broken on 32-bit. Elsewhere it is off unless dxvk.disableNvLowLatency2 = False asks for it, for now:
+    // capture tools such as Nsight Graphics do not support VK_NV_low_latency2.
+    if (env::is32BitHostPlatform() || instance.options().disableNvLowLatency2 != Tristate::False)
       m_featuresSupported.nvLowLatency2 = VK_FALSE;
 
     // EXT_multi_draw is broken on proprietary qcom on some devices

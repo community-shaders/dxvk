@@ -1320,6 +1320,32 @@ namespace dxvk {
     void insertDebugLabel(const VkDebugUtilsLabelEXT& label);
 
     /**
+     * \brief Records an interop client's commands into the stream
+     *
+     * Ends the current render pass and flushes pending barriers,
+     * then hands the client the execution command buffer.
+     * \param [in] callback Records the client's commands
+     */
+    void recordExternalCommands(const std::function<void (VkCommandBuffer)>& callback);
+
+    /**
+     * \brief Interop hooks at the execution command buffer's boundaries
+     *
+     * \p onEnd records into each execution command buffer right before it
+     * ends and \p onBegin into each one right after it begins, outside any
+     * render pass, so that a client keeps what it opened in one command
+     * buffer balanced across DXVK's flushes (a GPU profiler's ranges).
+     * \param [in] onEnd Called before a command buffer ends, may be empty
+     * \param [in] onBegin Called after a command buffer begins, may be empty
+     */
+    void setExternalCommandBufferHooks(
+            std::function<void (VkCommandBuffer)> onEnd,
+            std::function<void (VkCommandBuffer)> onBegin) {
+      m_externalCmdEnd = std::move(onEnd);
+      m_externalCmdBegin = std::move(onBegin);
+    }
+
+    /**
      * \brief Increments a given stat counter
      *
      * The stat counters will be merged into the global
@@ -1347,6 +1373,9 @@ namespace dxvk {
 
     uint64_t                m_frameCount = 0u;
     std::pair<uint64_t, uint64_t> m_framesToCapture = {};
+
+    std::function<void (VkCommandBuffer)> m_externalCmdEnd;
+    std::function<void (VkCommandBuffer)> m_externalCmdBegin;
 
     uint64_t                m_trackingId = 0u;
     uint64_t                m_submitWaitId = 0u;
@@ -1917,6 +1946,11 @@ namespace dxvk {
             uint32_t                  bindingCount);
 
     void flushImplicitResolves();
+
+    void beginExternalCommands();
+
+    void endExternalCommands();
+
 
     void beginCurrentCommands();
 

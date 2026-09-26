@@ -59,6 +59,28 @@ typedef struct DxvkOrgInteropDeviceInfo {
   const char* const* enabledInstanceExtensions;
 } DxvkOrgInteropDeviceInfo;
 
+/**
+ * Called on DXVK's submission thread in stream order with the graphics queue locked
+ * (dxvkEnqueueQueueCallback): the client may make queue-level calls on it, such as a GPU
+ * profiler's session and pass boundaries, between DXVK's own submissions.
+ */
+typedef void (*PFN_dxvkOrgInteropQueueCallback)(void* user, VkQueue queue);
+
+/**
+ * Called on DXVK's worker thread in D3D11 stream order, outside any render pass, with the
+ * command buffer DXVK is recording (dxvkEmitCommandBufferCallback): the client may record
+ * commands into it, such as a GPU profiler's ranges around the work that follows.
+ */
+typedef void (*PFN_dxvkOrgInteropCommandBufferCallback)(void* user, VkCommandBuffer commandBuffer);
+
+/*
+ * dxvkSetCommandBufferBoundaryCallbacks: on DXVK's worker thread, outside any render pass,
+ * onEnd records into each command buffer that dxvkEmitCommandBufferCallback records into
+ * right before it ends, and onBegin into the next one right after it begins. A client keeps
+ * what it opened in one command buffer balanced across DXVK's flushes: a GPU profiler closes
+ * its open ranges at the end and reopens them at the beginning. Null callbacks clear them.
+ */
+
 typedef enum DxvkOrgInteropResourceKind {
   DXVK_ORG_INTEROP_RESOURCE_BUFFER = 1,
   DXVK_ORG_INTEROP_RESOURCE_IMAGE  = 2,

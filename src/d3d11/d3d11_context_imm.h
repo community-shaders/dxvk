@@ -116,8 +116,21 @@ namespace dxvk {
      * issued so far and before every later one. Does not wait for the
      * CS thread; call from the thread that owns this context.
      */
+    /**
+     * \brief Runs an interop client's recording in stream order (see DxvkContext::recordExternalCommands)
+     */
+    void EmitExternalCommands(
+            std::function<void (VkCommandBuffer)> Callback);
+
     void EnqueueExternalSubmission(
             DxvkExternalSubmitInfo&&    SubmitInfo);
+
+    /**
+     * rief Sets an interop client's command buffer boundary hooks in stream order (see DxvkContext::setExternalCommandBufferHooks)
+     */
+    void SetExternalCommandBufferHooks(
+            std::function<void (VkCommandBuffer)> OnEnd,
+            std::function<void (VkCommandBuffer)> OnBegin);
 
     void InjectCsChunk(
             DxvkCsQueue                 Queue,
