@@ -1,4 +1,5 @@
 #include "d3d11_buffer.h"
+#include <atomic>
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_interop.h"
@@ -23,6 +24,126 @@ namespace dxvk {
       return static_cast<D3D11VkInterop*>(ref.ptr());
     }
 
+  }
+
+
+
+  struct D3D11VkInterop::RegisteredBacking {
+    uint64_t token;
+    std::pair<uint32_t, uint64_t> identity;
+    std::weak_ptr<RegistrationState> registry;
+    ~RegisteredBacking() {
+      // The last reference may retire on the finish worker after the client
+      // registration (or the D3D11 interop object itself) has been destroyed.
+      if (auto state = registry.lock()) {
+        std::lock_guard lock(state->mutex);
+        auto found = state->backings.find(identity);
+        if (found != state->backings.end() && found->second.expired())
+          state->backings.erase(found);
+      }
+    }
+  };
+
+  struct D3D11VkInterop::RegisteredResource {
+    std::shared_ptr<RegisteredBacking> backing;
+    Rc<DxvkBuffer> buffer;
+    Rc<DxvkImage> image;
+    DxvkOrgInteropRegistration description;
+  };
+
+  HRESULT D3D11VkInterop::RegisterResource(
+          IUnknown* object, DxvkOrgInteropRegistration* registration) {
+    if (!registration || registration->version != DXVK_ORG_RESOURCE_REGISTRATION_VERSION)
+      return E_INVALIDARG;
+    *registration = {};
+    registration->version = DXVK_ORG_RESOURCE_REGISTRATION_VERSION;
+    if (!object) return E_INVALIDARG;
+
+    // Validate device ownership before any implementation-specific casts.
+    Com<ID3D11DeviceChild> child;
+    if (FAILED(object->QueryInterface(__uuidof(ID3D11DeviceChild), reinterpret_cast<void**>(&child))))
+      return E_INVALIDARG;
+    Com<ID3D11Device> owner;
+    child->GetDevice(&owner);
+    if (owner.ptr() != static_cast<ID3D11Device*>(m_device)) return E_INVALIDARG;
+
+    try {
+      auto entry = std::make_shared<RegisteredResource>();
+      auto& description = entry->description;
+      description.version = DXVK_ORG_RESOURCE_REGISTRATION_VERSION;
+      description.resource.version = DXVK_ORG_INTEROP_VERSION;
+      HRESULT result = GetResourceInfo(object, &description.resource);
+      if (FAILED(result)) return result;
+
+      Com<ID3D11Resource> resource;
+      Com<ID3D11ShaderResourceView> view;
+      if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&view))))
+        view->GetResource(&resource);
+      else if (FAILED(object->QueryInterface(__uuidof(ID3D11Resource), reinterpret_cast<void**>(&resource))))
+        return E_INVALIDARG;
+
+      uint64_t nativeHandle = 0;
+      if (description.resource.kind == DXVK_ORG_INTEROP_RESOURCE_BUFFER) {
+        entry->buffer = GetCommonBuffer(resource.ptr())->GetBuffer();
+        description.legalStages = entry->buffer->info().stages;
+        description.legalAccess = entry->buffer->info().access;
+        nativeHandle = uint64_t(description.resource.buffer.buffer);
+      } else {
+        entry->image = GetCommonTexture(resource.ptr())->GetImage();
+        description.legalStages = entry->image->info().stages;
+        description.legalAccess = entry->image->info().access;
+        nativeHandle = uint64_t(description.resource.image.image);
+      }
+      description.queueFamily = GetDXVKDevice()->queues().graphics.queueFamily;
+      const auto key = std::make_pair(description.resource.kind, nativeHandle);
+      // Process-wide monotonically allocated tokens also reject tokens from a
+      // different device or an earlier device lifetime. No COM owners are kept:
+      // native resource references pin DXVK-owned allocations without a D3D11
+      // cycle. Externally imported allocations still require their owner lease.
+      static std::atomic<uint64_t> nextToken{1};
+      std::lock_guard lock(m_registration->mutex);
+      auto found = m_registration->backings.find(key);
+      if (found != m_registration->backings.end()) entry->backing = found->second.lock();
+      if (!entry->backing) {
+        entry->backing = std::make_shared<RegisteredBacking>();
+        entry->backing->token = nextToken.fetch_add(1);
+        entry->backing->identity = key;
+        entry->backing->registry = m_registration;
+      }
+      description.backingToken = entry->backing->token;
+      description.leaseToken = nextToken.fetch_add(1);
+      m_registration->resources.emplace(description.leaseToken, entry);
+      try {
+        m_registration->backings.insert_or_assign(key, entry->backing);
+      } catch (...) {
+        m_registration->resources.erase(description.leaseToken);
+        throw;
+      }
+      *registration = description;
+      return S_OK;
+    } catch (const std::bad_alloc&) {
+      return E_OUTOFMEMORY;
+    } catch (const DxvkError& error) {
+      Logger::err(error.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT D3D11VkInterop::UnregisterResource(uint64_t leaseToken) {
+    std::shared_ptr<RegisteredResource> retired;
+    {
+      std::lock_guard lock(m_registration->mutex);
+      auto found = m_registration->resources.find(leaseToken);
+      if (found == m_registration->resources.end()) return E_INVALIDARG;
+      retired = std::move(found->second);
+      m_registration->resources.erase(found);
+      // The resource entry itself may have submitted owners. Its backing's
+      // shared_ptr use_count cannot count those owners: they share the entry.
+      // RegisteredBacking removes the weak lookup on actual final retirement.
+    }
+    // Native-resource destruction may acquire allocator locks.
+    retired.reset();
+    return S_OK;
   }
 
 
@@ -285,13 +406,12 @@ namespace dxvk {
   }
 
 
-  HRESULT D3D11VkInterop::EnqueueExternalSubmissions(
-    const DxvkOrgInteropSubmissionBatch*  pBatch) {
+  static HRESULT CopyExternalSubmissions(const DxvkOrgInteropSubmissionBatch* pBatch,
+      DxvkExternalSubmitInfo& submitInfo) {
     if (!pBatch || pBatch->version != DXVK_ORG_INTEROP_VERSION
      || !pBatch->submitCount || !pBatch->submits)
       return E_INVALIDARG;
 
-    DxvkExternalSubmitInfo submitInfo;
     submitInfo.submits.resize(pBatch->submitCount);
 
     for (uint32_t i = 0; i < pBatch->submitCount; i++) {
@@ -303,9 +423,12 @@ namespace dxvk {
         return E_INVALIDARG;
 
       auto& submit = submitInfo.submits[i];
-      submit.waits.assign(source.pWaitSemaphoreInfos, source.pWaitSemaphoreInfos + source.waitSemaphoreInfoCount);
-      submit.commandBuffers.assign(source.pCommandBufferInfos, source.pCommandBufferInfos + source.commandBufferInfoCount);
-      submit.signals.assign(source.pSignalSemaphoreInfos, source.pSignalSemaphoreInfos + source.signalSemaphoreInfoCount);
+      if (source.waitSemaphoreInfoCount)
+        submit.waits.assign(source.pWaitSemaphoreInfos, source.pWaitSemaphoreInfos + source.waitSemaphoreInfoCount);
+      if (source.commandBufferInfoCount)
+        submit.commandBuffers.assign(source.pCommandBufferInfos, source.pCommandBufferInfos + source.commandBufferInfoCount);
+      if (source.signalSemaphoreInfoCount)
+        submit.signals.assign(source.pSignalSemaphoreInfos, source.pSignalSemaphoreInfos + source.signalSemaphoreInfoCount);
 
       for (auto& info : submit.waits)
         info.pNext = nullptr;
@@ -324,8 +447,151 @@ namespace dxvk {
       };
     }
 
+    return S_OK;
+  }
+
+  HRESULT D3D11VkInterop::EnqueueExternalSubmissions(const DxvkOrgInteropSubmissionBatch* pBatch) {
+    DxvkExternalSubmitInfo submitInfo;
+    HRESULT result = CopyExternalSubmissions(pBatch, submitInfo);
+    if (FAILED(result)) return result;
     m_device->GetContext()->EnqueueExternalSubmission(std::move(submitInfo));
     return S_OK;
+  }
+
+  HRESULT D3D11VkInterop::PrepareLeasedSubmission(const DxvkOrgInteropLeasedSubmission* submission, DxvkExternalSubmitInfo& info) {
+    if (!submission || submission->version != DXVK_ORG_RESOURCE_INTERFACE_VERSION
+        || (submission->leaseCount && !submission->leaseTokens))
+      return E_INVALIDARG;
+    try {
+      HRESULT result = CopyExternalSubmissions(&submission->batch, info);
+      if (FAILED(result)) return result;
+      // The managed interface cannot silently discard submission extensions or
+      // protected/device-group execution requirements it does not implement.
+      for (uint32_t i = 0; i < submission->batch.submitCount; ++i) {
+        const auto& source = submission->batch.submits[i];
+        if (source.sType != VK_STRUCTURE_TYPE_SUBMIT_INFO_2 || source.pNext || source.flags)
+          return E_INVALIDARG;
+        for (uint32_t j = 0; j < source.commandBufferInfoCount; ++j) {
+          const auto& command = source.pCommandBufferInfos[j];
+          if (command.sType != VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO || command.pNext || !command.commandBuffer
+              || command.deviceMask > 1u)
+            return E_INVALIDARG;
+        }
+        auto validSemaphore = [](const VkSemaphoreSubmitInfo& semaphore) {
+          return semaphore.sType == VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO && !semaphore.pNext
+            && semaphore.semaphore && !semaphore.deviceIndex;
+        };
+        for (uint32_t j = 0; j < source.waitSemaphoreInfoCount; ++j)
+          if (!validSemaphore(source.pWaitSemaphoreInfos[j])) return E_INVALIDARG;
+        for (uint32_t j = 0; j < source.signalSemaphoreInfoCount; ++j)
+          if (!validSemaphore(source.pSignalSemaphoreInfos[j])) return E_INVALIDARG;
+      }
+      info.trackCompletion = true;
+      info.leases.reserve(submission->leaseCount);
+      {
+        std::lock_guard lock(m_registration->mutex);
+        for (uint32_t i = 0; i < submission->leaseCount; ++i) {
+          auto found = m_registration->resources.find(submission->leaseTokens[i]);
+          if (found == m_registration->resources.end()) return E_INVALIDARG;
+          info.leases.push_back(found->second);
+        }
+      }
+      if (submission->onCompleted)
+        info.onCompleted = [callback = submission->onCompleted, user = submission->completionUser](VkResult result) {
+          callback(user, result);
+        };
+      return S_OK;
+    } catch (const std::bad_alloc&) {
+      return E_OUTOFMEMORY;
+    } catch (const DxvkError& error) {
+      Logger::err(error.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT D3D11VkInterop::EnqueueLeasedSubmission(const DxvkOrgInteropLeasedSubmission* submission) {
+    DxvkExternalSubmitInfo info;
+    HRESULT result = PrepareLeasedSubmission(submission, info);
+    if (FAILED(result)) return result;
+    m_device->GetContext()->EnqueueExternalSubmission(std::move(info));
+    return S_OK;
+  }
+
+  HRESULT D3D11VkInterop::EnqueueBufferHandoff(const DxvkOrgInteropBufferHandoff* handoff) {
+    if (!handoff || handoff->version != DXVK_ORG_BUFFER_HANDOFF_VERSION
+        || !handoff->accessCount || !handoff->accesses || handoff->submission.batch.submitCount != 1)
+      return E_INVALIDARG;
+    DxvkOrgInteropResourceHandoff resources = {};
+    resources.version = DXVK_ORG_RESOURCE_HANDOFF_VERSION;
+    resources.submission = handoff->submission;
+    DxvkOrgInteropEpochAccesses epoch = {};
+    epoch.complete = VK_TRUE;
+    epoch.bufferCount = handoff->accessCount;
+    epoch.buffers = handoff->accesses;
+    resources.epochCount = 1;
+    resources.epochs = &epoch;
+    return EnqueueResourceHandoff(&resources);
+  }
+
+  HRESULT D3D11VkInterop::EnqueueResourceHandoff(const DxvkOrgInteropResourceHandoff* handoff) {
+    if (!handoff || handoff->version != DXVK_ORG_RESOURCE_HANDOFF_VERSION
+        || !handoff->epochs || !handoff->epochCount
+        || handoff->submission.batch.submitCount != handoff->epochCount)
+      return E_INVALIDARG;
+    try {
+      DxvkExternalSubmitInfo info;
+      HRESULT result = PrepareLeasedSubmission(&handoff->submission, info);
+      if (FAILED(result)) return result;
+      {
+        std::lock_guard lock(m_registration->mutex);
+        for (uint32_t epochIndex = 0; epochIndex < handoff->epochCount; ++epochIndex) {
+          const auto& epoch = handoff->epochs[epochIndex];
+          if (epoch.complete != VK_TRUE || (epoch.bufferCount && !epoch.buffers) || (epoch.imageCount && !epoch.images))
+            return E_INVALIDARG;
+          auto& target = info.submits[epochIndex];
+          target.bufferManifest.reserve(epoch.bufferCount);
+          target.imageManifest.reserve(epoch.imageCount);
+          for (uint32_t i = 0; i < epoch.bufferCount; ++i) {
+            const auto& access = epoch.buffers[i];
+            auto found = m_registration->resources.find(access.leaseToken);
+            if (found == m_registration->resources.end() || !found->second->buffer
+                || !access.stages || !access.access || !access.size)
+              return E_INVALIDARG;
+            const auto& entry = *found->second;
+            if (access.offset >= entry.description.resource.buffer.size
+                || access.size > entry.description.resource.buffer.size - access.offset)
+              return E_INVALIDARG;
+            target.bufferManifest.push_back({entry.buffer, access.offset, access.size, access.stages, access.access});
+            info.leases.push_back(found->second);
+          }
+          for (uint32_t i = 0; i < epoch.imageCount; ++i) {
+            const auto& access = epoch.images[i];
+            auto found = m_registration->resources.find(access.leaseToken);
+            if (found == m_registration->resources.end() || !found->second->image
+                || !access.stages || !access.access || access.layout != VK_IMAGE_LAYOUT_GENERAL)
+              return E_INVALIDARG;
+            const auto& entry = *found->second;
+            const auto& allowed = entry.description.resource.image.subresourceRange;
+            const auto& range = access.range;
+            if (entry.description.resource.image.layout != VK_IMAGE_LAYOUT_GENERAL
+                || !range.aspectMask || (range.aspectMask & ~allowed.aspectMask)
+                || !range.levelCount || !range.layerCount
+                || range.baseMipLevel < allowed.baseMipLevel || range.baseArrayLayer < allowed.baseArrayLayer
+                || range.baseMipLevel - allowed.baseMipLevel >= allowed.levelCount
+                || range.levelCount > allowed.levelCount - (range.baseMipLevel - allowed.baseMipLevel)
+                || range.baseArrayLayer - allowed.baseArrayLayer >= allowed.layerCount
+                || range.layerCount > allowed.layerCount - (range.baseArrayLayer - allowed.baseArrayLayer))
+              return E_INVALIDARG;
+            target.imageManifest.push_back({entry.image, range, access.stages, access.access});
+            info.leases.push_back(found->second);
+          }
+        }
+      }
+      m_device->GetContext()->EnqueueExternalSubmission(std::move(info));
+      return S_OK;
+    } catch (const std::bad_alloc&) {
+      return E_OUTOFMEMORY;
+    }
   }
 
 }
@@ -463,6 +729,51 @@ extern "C" {
     return interop->SetCommandBufferBoundaryCallbacks(pOnEnd, pOnBegin, pUser);
   }
 
+
+  DLLEXPORT HRESULT __stdcall dxvkEnqueueBufferHandoff(void* context, const DxvkOrgInteropBufferHandoff* handoff) {
+    if (!context) return E_INVALIDARG;
+    return static_cast<D3D11VkInterop*>(context)->EnqueueBufferHandoff(handoff);
+  }
+
+  DLLEXPORT HRESULT __stdcall dxvkEnqueueResourceHandoff(void* context, const DxvkOrgInteropResourceHandoff* handoff) {
+    if (!context) return E_INVALIDARG;
+    return static_cast<D3D11VkInterop*>(context)->EnqueueResourceHandoff(handoff);
+  }
+
+  DLLEXPORT HRESULT __stdcall dxvkGetResourceInteropInterface(ID3D11Device* device,
+      DxvkOrgInteropResourceInterface* output) {
+    if (!output || output->version != DXVK_ORG_RESOURCE_INTERFACE_VERSION) return E_INVALIDARG;
+    *output = {};
+    output->version = DXVK_ORG_RESOURCE_INTERFACE_VERSION;
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(device, ref);
+    if (!interop) return E_NOINTERFACE;
+    output->context = interop;
+    output->capabilities = DXVK_ORG_CAP_RESOURCE_REGISTRATION | DXVK_ORG_CAP_RETAINED_SUBMISSION;
+    output->registerResource = [](void* context, IUnknown* object, DxvkOrgInteropRegistration* registration) -> HRESULT {
+      return static_cast<D3D11VkInterop*>(context)->RegisterResource(object, registration);
+    };
+    output->unregisterResource = [](void* context, uint64_t token) -> HRESULT {
+      return static_cast<D3D11VkInterop*>(context)->UnregisterResource(token);
+    };
+    output->enqueue = [](void* context, const DxvkOrgInteropLeasedSubmission* submission) -> HRESULT {
+      return static_cast<D3D11VkInterop*>(context)->EnqueueLeasedSubmission(submission);
+    };
+    return S_OK;
+  }
+
+  DLLEXPORT HRESULT __stdcall dxvkRegisterInteropResource(ID3D11Device* device,
+    IUnknown* object, DxvkOrgInteropRegistration* registration) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(device, ref);
+    return interop ? interop->RegisterResource(object, registration) : E_NOINTERFACE;
+  }
+
+  DLLEXPORT HRESULT __stdcall dxvkUnregisterInteropResource(ID3D11Device* device, uint64_t leaseToken) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(device, ref);
+    return interop ? interop->UnregisterResource(leaseToken) : E_NOINTERFACE;
+  }
 
   DLLEXPORT HRESULT __stdcall dxvkGetInteropResourceInfo(ID3D11Device* pDevice,
     IUnknown* pObject, DxvkOrgInteropResourceInfo* pInfo) {

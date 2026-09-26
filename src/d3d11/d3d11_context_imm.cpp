@@ -1116,8 +1116,31 @@ namespace dxvk {
 
 
   void D3D11ImmediateContext::EnqueueExternalSubmission(
-          DxvkExternalSubmitInfo&&    SubmitInfo) {
+            DxvkExternalSubmitInfo&&    SubmitInfo) {
     D3D10DeviceLock lock = LockContext();
+
+    // Clears and pending rendering must become native commands before the
+    // existing flush. They must not be left after the external submission.
+    std::shared_ptr<VkResult> preparation;
+    std::vector<DxvkExternalImageUse> images;
+    for (const auto& epoch : SubmitInfo.submits)
+      images.insert(images.end(), epoch.imageManifest.begin(), epoch.imageManifest.end());
+    if (!images.empty()) {
+      preparation = std::make_shared<VkResult>(VK_SUCCESS);
+      EmitCs<false>([images = std::move(images), preparation] (DxvkContext* ctx) {
+        try {
+          ctx->materializeExternalImages(images);
+        } catch (const std::bad_alloc&) {
+          *preparation = VK_ERROR_OUT_OF_HOST_MEMORY;
+        } catch (const DxvkError& error) {
+          Logger::err(error.message());
+          *preparation = VK_ERROR_UNKNOWN;
+        } catch (const std::exception& error) {
+          Logger::err(error.what());
+          *preparation = VK_ERROR_UNKNOWN;
+        }
+      });
+    }
 
     // Close DXVK's command list so the client's work lands between it and
     // whatever D3D11 records next. Both flush and submit are asynchronous.
@@ -1125,9 +1148,33 @@ namespace dxvk {
 
     EmitCs<false>([
       cDevice = m_device,
+      cPreparation = std::move(preparation),
       cSubmit = std::move(SubmitInfo)
-    ] (DxvkContext*) {
-      cDevice->submitExternal(cSubmit);
+    ] (DxvkContext* ctx) mutable {
+      // Native flush/materialization precedes resolution. The boundary commands
+      // go inside the external submission, not a new native command-list flush.
+      if (cPreparation) cSubmit.preparationResult = *cPreparation;
+      try {
+        if (cSubmit.preparationResult == VK_SUCCESS) {
+          for (auto& epoch : cSubmit.submits) {
+            if (!epoch.bufferManifest.empty())
+              ctx->prepareExternalBufferHandoff(epoch.bufferManifest, epoch.entryBufferBarriers);
+            if (!epoch.imageManifest.empty())
+              ctx->prepareExternalImageHandoff(epoch.imageManifest, epoch.entryImageBarriers);
+          }
+        }
+      } catch (const std::bad_alloc&) {
+        cSubmit.preparationResult = VK_ERROR_OUT_OF_HOST_MEMORY;
+      } catch (const DxvkError& error) {
+        Logger::err(error.message());
+        cSubmit.preparationResult = VK_ERROR_UNKNOWN;
+      } catch (const std::exception& error) {
+        Logger::err(error.what());
+        cSubmit.preparationResult = VK_ERROR_UNKNOWN;
+      }
+      // Failed accepted work enters the queue's terminal managed-error path;
+      // later native or external submissions cannot use fictitious ledger state.
+      cDevice->submitExternal(std::move(cSubmit));
     });
 
     FlushCsChunk();

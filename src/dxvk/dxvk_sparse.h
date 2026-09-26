@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <map>
+#include <memory>
+#include <vector>
 
 #include "dxvk_access.h"
 #include "dxvk_memory.h"
@@ -450,6 +452,14 @@ namespace dxvk {
 
     virtual ~DxvkPagedResource();
 
+    // Called on the owning CS worker while a strong resource reference is held.
+    // Tokens receive destruction notification without keeping this resource alive.
+    void trackInteropLifetime(std::shared_ptr<const void> token) {
+      if (!m_interopLifetimes)
+        m_interopLifetimes = std::make_unique<std::vector<std::shared_ptr<const void>>>();
+      m_interopLifetimes->push_back(std::move(token));
+    }
+
     /**
      * \brief Queries resource cookie
      * \returns Resource cookie
@@ -725,6 +735,7 @@ namespace dxvk {
     std::atomic<uint64_t> m_useCount = { 0u };
     uint64_t              m_trackId = { 0u };
     uint64_t              m_cookie = { 0u };
+    std::unique_ptr<std::vector<std::shared_ptr<const void>>> m_interopLifetimes;
 
     std::atomic<DxvkResourceResidency> m_residency = { DxvkResourceResidency::Resident };
 

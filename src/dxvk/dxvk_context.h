@@ -1,6 +1,8 @@
 #pragma once
 
 #include "dxvk_barrier.h"
+#include "dxvk_external_access.h"
+#include <unordered_set>
 #include "dxvk_bind_mask.h"
 #include "dxvk_cmdlist.h"
 #include "dxvk_context_state.h"
@@ -1326,6 +1328,12 @@ namespace dxvk {
      * then hands the client the execution command buffer.
      * \param [in] callback Records the client's commands
      */
+    void prepareExternalBufferHandoff(const std::vector<DxvkExternalBufferUse>& accesses,
+      std::vector<VkBufferMemoryBarrier2>& barriers);
+    void materializeExternalImages(const std::vector<DxvkExternalImageUse>& accesses);
+    void prepareExternalImageHandoff(const std::vector<DxvkExternalImageUse>& accesses,
+      std::vector<VkImageMemoryBarrier2>& barriers);
+
     void recordExternalCommands(const std::function<void (VkCommandBuffer)>& callback);
 
     /**
@@ -1410,6 +1418,45 @@ namespace dxvk {
     DxvkBarrierControlFlags m_barrierControl;
 
     small_vector<DxvkResourceAccess, MaxNumRenderTargets + 1u> m_rtAccess;
+
+    struct ExternalBufferBacking {
+      uint64_t token = 0;
+      std::unordered_set<uint64_t> seededResources;
+    };
+    DxvkExternalAccessLedger m_externalBufferLedger;
+    std::unordered_map<uint64_t, ExternalBufferBacking> m_externalBuffers;
+    std::unordered_map<uint64_t, VkBuffer> m_externalBufferHandles;
+    uint64_t m_nextExternalBufferToken = 1;
+    struct ExternalImageBacking {
+      uint64_t token;
+      uint64_t cookie;
+    };
+    DxvkExternalAccessLedger m_externalImageLedger;
+    std::unordered_map<uint64_t, ExternalImageBacking> m_externalImages;
+    std::unordered_map<uint64_t, DxvkImage*> m_externalImageTokens;
+    uint64_t m_nextExternalImageToken = 1;
+    struct ExternalRetirementQueue;
+    struct ExternalRetirementNotice;
+    std::shared_ptr<ExternalRetirementQueue> m_externalRetirements;
+    void watchExternalResource(DxvkPagedResource& resource, bool image, uint64_t handle, uint64_t token, uint64_t identity);
+    void retireExternalResources();
+    void appendExternalImageAccess(DxvkImage& image, const VkImageSubresourceRange& range,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access, std::vector<DxvkExternalAccess>& uses);
+    void observeExternalImageAccess(DxvkImage& image, const VkImageSubresourceRange& range,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access);
+    void externalImageBarriers(const DxvkExternalAccessLedger::Transaction& transaction,
+      std::vector<VkImageMemoryBarrier2>& barriers) const;
+    void synchronizeExternalImages(DxvkCmdBuffer cmdBuffer, const std::vector<DxvkExternalAccess>& accesses);
+    bool externalBufferAccess(DxvkBuffer& buffer, VkDeviceSize offset, VkDeviceSize size,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access, DxvkExternalAccess& out);
+    void observeExternalBufferAccess(DxvkBuffer& buffer, VkDeviceSize offset, VkDeviceSize size,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access);
+    void synchronizeExternalBuffers(DxvkCmdBuffer cmdBuffer, const std::vector<DxvkExternalAccess>& accesses);
+    std::vector<DxvkExternalAccess> m_externalShaderBufferAccesses;
+    std::vector<DxvkExternalAccess> m_externalShaderImageAccesses;
+    void synchronizeExternalShaderResources(const DxvkPipelineBindings* layout,
+      bool graphics, bool indexed, bool indirect);
+
 
     DxvkGpuQueryManager     m_queryManager;
 

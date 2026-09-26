@@ -23,3 +23,8 @@ EXPORTS
     dxvkEnqueueQueueCallback @140
     dxvkEmitCommandBufferCallback @141
     dxvkSetCommandBufferBoundaryCallbacks @142
+    dxvkRegisterInteropResource @143
+    dxvkUnregisterInteropResource @144
+    dxvkGetResourceInteropInterface @145
+    dxvkEnqueueBufferHandoff @146
+    dxvkEnqueueResourceHandoff @147

@@ -1,5 +1,10 @@
 #pragma once
 
+#include <map>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
 #include "../dxgi/dxgi_interfaces.h"
 
 #include "d3d11_include.h"
@@ -7,11 +12,16 @@
 struct DxvkOrgInteropSubmission;
 struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropResourceInfo;
+struct DxvkOrgInteropRegistration;
+struct DxvkOrgInteropLeasedSubmission;
+struct DxvkOrgInteropBufferHandoff;
+struct DxvkOrgInteropResourceHandoff;
 struct DxvkOrgInteropImageInfo;
 
 namespace dxvk {
 
   class D3D11Device;
+  struct DxvkExternalSubmitInfo;
   
   class D3D11VkInterop : public ComObject<IDXGIVkInteropDevice1> {
     
@@ -108,6 +118,12 @@ namespace dxvk {
             IUnknown*                   pObject,
             DxvkOrgInteropResourceInfo* pInfo);
 
+    HRESULT RegisterResource(IUnknown* object, DxvkOrgInteropRegistration* registration);
+    HRESULT UnregisterResource(uint64_t leaseToken);
+    HRESULT EnqueueLeasedSubmission(const DxvkOrgInteropLeasedSubmission* submission);
+    HRESULT EnqueueBufferHandoff(const DxvkOrgInteropBufferHandoff* handoff);
+    HRESULT EnqueueResourceHandoff(const DxvkOrgInteropResourceHandoff* handoff);
+
     Rc<DxvkDevice> GetDXVKDevice() const;
 
     /**
@@ -116,6 +132,17 @@ namespace dxvk {
     const uint64_t* GetSubmissionCounter() const;
     
   private:
+
+    struct RegisteredBacking;
+    struct RegisteredResource;
+    struct RegistrationState {
+      std::mutex mutex;
+      std::map<std::pair<uint32_t, uint64_t>, std::weak_ptr<RegisteredBacking>> backings;
+      std::unordered_map<uint64_t, std::shared_ptr<RegisteredResource>> resources;
+    };
+    std::shared_ptr<RegistrationState> m_registration = std::make_shared<RegistrationState>();
+
+    HRESULT PrepareLeasedSubmission(const DxvkOrgInteropLeasedSubmission* submission, DxvkExternalSubmitInfo& info);
 
     bool LockImage(const Rc<DxvkImage>& image);
 

@@ -59,15 +59,40 @@ namespace dxvk {
    * Command buffers recorded by an interop client on DXVK's
    * device, submitted to the graphics queue in stream order.
    */
+  struct DxvkExternalBufferUse {
+    Rc<DxvkBuffer> buffer;
+    VkDeviceSize offset = 0; // relative to the DXVK buffer, not its shared VkBuffer
+    VkDeviceSize size = 0;
+    VkPipelineStageFlags2 stages = 0;
+    VkAccessFlags2 access = 0;
+  };
+
+  struct DxvkExternalImageUse {
+    Rc<DxvkImage> image;
+    VkImageSubresourceRange range;
+    VkPipelineStageFlags2 stages;
+    VkAccessFlags2 access;
+  };
+
   struct DxvkExternalSubmitInfo {
     /// One VkSubmitInfo2 each, handed to the queue in order by a single vkQueueSubmit2.
     struct Submit {
       std::vector<VkSemaphoreSubmitInfo>      waits;
       std::vector<VkCommandBufferSubmitInfo>  commandBuffers;
       std::vector<VkSemaphoreSubmitInfo>      signals;
+      std::vector<VkBufferMemoryBarrier2>     entryBufferBarriers;
+      std::vector<VkImageMemoryBarrier2>      entryImageBarriers;
+      std::vector<DxvkExternalBufferUse>      bufferManifest;
+      std::vector<DxvkExternalImageUse>       imageManifest;
     };
     std::vector<Submit>                     submits;
     std::function<void (VkResult)>          onSubmitted;
+    // Managed submissions retain backing/pool leases until the existing finish
+    // worker observes an internal timeline signal appended to the last submit.
+    bool                                   trackCompletion = false;
+    VkResult                               preparationResult = VK_SUCCESS;
+    std::vector<std::shared_ptr<const void>> leases;
+    std::function<void (VkResult)>          onCompleted;
     /// Wrapped around the submission as a queue label when debug utils are on for a capture.
     std::string                             label;
     /// Called on the submission thread with the queue locked, in stream order, before the submits (which may be
@@ -278,6 +303,10 @@ namespace dxvk {
     DxvkDevice*                 m_device;
     DxvkCheckpointBuffer*       m_checkpoints = nullptr;
     DxvkQueueCallback           m_callback;
+
+    struct ExternalBoundaryPool;
+    std::vector<std::shared_ptr<ExternalBoundaryPool>> m_externalBoundaryPools;
+    VkResult recordExternalBoundaries(DxvkExternalSubmitInfo& submission);
 
     DxvkTimelineSemaphores      m_semaphores;
     DxvkTimelineSemaphoreValues m_timelines;

@@ -456,7 +456,8 @@ namespace dxvk {
 
 
   void DxvkBarrierBatch::addImageBarrier(
-    const VkImageMemoryBarrier2&      barrier) {
+    const VkImageMemoryBarrier2&      barrier,
+          bool                       keepResourceScope) {
     if (unlikely(barrier.dstAccessMask & vk::AccessHostMask)) {
       m_hostSrcStages |= barrier.srcStageMask & vk::StageDeviceMask;
       m_hostDstAccess |= barrier.dstAccessMask & vk::AccessHostMask;
@@ -464,7 +465,7 @@ namespace dxvk {
 
     if (barrier.oldLayout != barrier.newLayout
      || barrier.srcQueueFamilyIndex != barrier.dstQueueFamilyIndex
-     || m_keepImageBarriers) {
+     || m_keepImageBarriers || keepResourceScope) {
       auto& entry = m_imageBarriers.emplace_back(barrier);
 
       entry.srcStageMask &= vk::StageDeviceMask;
@@ -477,6 +478,20 @@ namespace dxvk {
       m_memoryBarrier.dstStageMask |= barrier.dstStageMask & vk::StageDeviceMask;
       m_memoryBarrier.dstAccessMask |= barrier.dstAccessMask & vk::AccessDeviceMask;
     }
+  }
+
+
+  void DxvkBarrierBatch::addBufferBarrier(
+    const VkBufferMemoryBarrier2&     barrier) {
+    if (unlikely(barrier.dstAccessMask & vk::AccessHostMask)) {
+      m_hostSrcStages |= barrier.srcStageMask & vk::StageDeviceMask;
+      m_hostDstAccess |= barrier.dstAccessMask & vk::AccessHostMask;
+    }
+    auto& entry = m_bufferBarriers.emplace_back(barrier);
+    entry.srcStageMask &= vk::StageDeviceMask;
+    entry.srcAccessMask &= vk::AccessWriteMask;
+    entry.dstStageMask &= vk::StageDeviceMask;
+    entry.dstAccessMask &= vk::AccessDeviceMask;
   }
 
 
@@ -494,7 +509,10 @@ namespace dxvk {
       depInfo.pImageMemoryBarriers = m_imageBarriers.data();
     }
 
-    if (!(depInfo.memoryBarrierCount | depInfo.imageMemoryBarrierCount))
+    depInfo.bufferMemoryBarrierCount = m_bufferBarriers.size();
+    depInfo.pBufferMemoryBarriers = m_bufferBarriers.data();
+
+    if (!(depInfo.memoryBarrierCount | depInfo.imageMemoryBarrierCount | depInfo.bufferMemoryBarrierCount))
       return;
 
     list->cmdPipelineBarrier(m_cmdBuffer, &depInfo);
@@ -505,6 +523,7 @@ namespace dxvk {
     m_memoryBarrier.dstAccessMask = 0u;
 
     m_imageBarriers.clear();
+    m_bufferBarriers.clear();
   }
 
 

@@ -9,6 +9,85 @@
 #include "dxvk_context.h"
 
 namespace dxvk {
+
+  struct DxvkContext::ExternalRetirementQueue {
+    struct Node {
+      bool image;
+      uint64_t handle, token, identity;
+      std::unique_ptr<Node> next;
+    };
+    dxvk::mutex mutex;
+    std::atomic<bool> pending{false};
+    std::unique_ptr<Node> head;
+    ~ExternalRetirementQueue() {
+      // Avoid recursive destruction when a streaming burst retires many resources.
+      while (head) {
+        auto current = std::move(head);
+        head = std::move(current->next);
+      }
+    }
+  };
+
+  struct DxvkContext::ExternalRetirementNotice {
+    std::weak_ptr<ExternalRetirementQueue> queue;
+    std::unique_ptr<ExternalRetirementQueue::Node> node;
+    ~ExternalRetirementNotice() {
+      if (!node) return;
+      if (auto target = queue.lock()) {
+        std::lock_guard<dxvk::mutex> lock(target->mutex);
+        node->next = std::move(target->head);
+        target->head = std::move(node);
+        target->pending.store(true, std::memory_order_release);
+      }
+    }
+  };
+
+  void DxvkContext::watchExternalResource(DxvkPagedResource& resource, bool image,
+      uint64_t handle, uint64_t token, uint64_t identity) {
+    if (!m_externalRetirements) m_externalRetirements = std::make_shared<ExternalRetirementQueue>();
+    auto notice = std::make_shared<ExternalRetirementNotice>();
+    notice->queue = m_externalRetirements;
+    notice->node = std::make_unique<ExternalRetirementQueue::Node>();
+    notice->node->image = image;
+    notice->node->handle = handle;
+    notice->node->token = token;
+    notice->node->identity = identity;
+    resource.trackInteropLifetime(std::move(notice));
+  }
+
+  void DxvkContext::retireExternalResources() {
+    if (!m_externalRetirements || !m_externalRetirements->pending.load(std::memory_order_acquire)) return;
+    std::unique_ptr<ExternalRetirementQueue::Node> retired;
+    {
+      std::lock_guard<dxvk::mutex> lock(m_externalRetirements->mutex);
+      retired = std::move(m_externalRetirements->head);
+      m_externalRetirements->pending.store(false, std::memory_order_relaxed);
+    }
+    while (retired) {
+      const auto& notice = *retired;
+      if (notice.image) {
+        auto found = m_externalImages.find(notice.handle);
+        if (found != m_externalImages.end() && found->second.token == notice.token
+            && found->second.cookie == notice.identity) {
+          m_externalImageLedger.retireResource(notice.token);
+          m_externalImageTokens.erase(notice.token);
+          m_externalImages.erase(found);
+        }
+      } else {
+        auto found = m_externalBuffers.find(notice.handle);
+        if (found != m_externalBuffers.end() && found->second.token == notice.token) {
+          found->second.seededResources.erase(notice.identity);
+          if (found->second.seededResources.empty()) {
+            m_externalBufferLedger.retireResource(notice.token);
+            m_externalBufferHandles.erase(notice.token);
+            m_externalBuffers.erase(found);
+          }
+        }
+      }
+      auto current = std::move(retired);
+      retired = std::move(current->next);
+    }
+  }
   
   DxvkContext::DxvkContext(const Rc<DxvkDevice>& device)
   : m_device      (device),
@@ -3333,6 +3412,297 @@ namespace dxvk {
       m_cmd->cmdInsertDebugUtilsLabel(DxvkCmdBuffer::ExecBuffer, label);
   }
 
+
+  bool DxvkContext::externalBufferAccess(DxvkBuffer& buffer, VkDeviceSize offset, VkDeviceSize size,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access, DxvkExternalAccess& out) {
+    retireExternalResources();
+    if (m_externalBuffers.empty() || !size || !stages || !access) return false;
+    const auto slice = buffer.getSliceInfo(offset, size);
+    const auto found = m_externalBuffers.find(uint64_t(slice.buffer));
+    if (found == m_externalBuffers.end()) return false;
+    constexpr VkAccessFlags2 writes = vk::AccessWriteMask | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+      | VK_ACCESS_2_COMMAND_PREPROCESS_WRITE_BIT_EXT;
+    out = {found->second.token, 0, slice.offset, slice.offset + size, stages, access, bool(access & writes)};
+    return true;
+  }
+
+  void DxvkContext::observeExternalBufferAccess(DxvkBuffer& buffer, VkDeviceSize offset, VkDeviceSize size,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+    DxvkExternalAccess use;
+    if (!externalBufferAccess(buffer, offset, size, stages, access, use)) return;
+    // Native DXVK synchronization owns native-to-native dependencies. Retain
+    // actual provenance for the next external epoch across native flushes.
+    auto transaction = m_externalBufferLedger.prepare({use});
+    m_externalBufferLedger.commit(std::move(transaction));
+  }
+
+  void DxvkContext::synchronizeExternalBuffers(DxvkCmdBuffer cmdBuffer, const std::vector<DxvkExternalAccess>& accesses) {
+    if (accesses.empty()) return;
+    auto transaction = m_externalBufferLedger.prepare(accesses);
+    if (!transaction.dependencies.empty() && cmdBuffer == DxvkCmdBuffer::ExecBuffer
+        && m_flags.test(DxvkContextFlag::GpRenderPassActive)) {
+      endCurrentPass(true);
+      flushBarriers();
+      // Ending rendering may materialize further native accesses.
+      transaction = m_externalBufferLedger.prepare(accesses);
+    }
+    if (!transaction.dependencies.empty()) {
+      if (cmdBuffer >= DxvkCmdBuffer::SdmaBuffer)
+        throw DxvkError("External buffer handoff requires graphics-queue consumer tracking; SDMA consumer unsupported");
+      std::vector<VkBufferMemoryBarrier2> barriers;
+      barriers.reserve(transaction.dependencies.size());
+      for (const auto& dependency : transaction.dependencies) {
+        VkBufferMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        barrier.buffer = m_externalBufferHandles.at(dependency.token);
+        barrier.offset = dependency.begin;
+        barrier.size = dependency.end - dependency.begin;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.srcStageMask = dependency.srcStages;
+        barrier.srcAccessMask = dependency.srcAccess;
+        barrier.dstStageMask = dependency.dstStages;
+        barrier.dstAccessMask = dependency.dstAccess;
+        barriers.push_back(barrier);
+      }
+      VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dependency.bufferMemoryBarrierCount = uint32_t(barriers.size());
+      dependency.pBufferMemoryBarriers = barriers.data();
+      m_cmd->cmdPipelineBarrier(cmdBuffer, &dependency);
+    }
+    m_externalBufferLedger.commit(std::move(transaction));
+  }
+
+  void DxvkContext::synchronizeExternalShaderResources(const DxvkPipelineBindings* layout,
+      bool graphics, bool indexed, bool indirect) {
+    if (m_externalBuffers.empty() && m_externalImages.empty()) return;
+    auto& accesses = m_externalShaderBufferAccesses;
+    auto& images = m_externalShaderImageAccesses;
+    accesses.clear();
+    images.clear();
+    auto append = [&](DxvkBuffer& buffer, VkDeviceSize offset, VkDeviceSize size,
+        VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+      DxvkExternalAccess use;
+      if (externalBufferAccess(buffer, offset, size, stages, access, use))
+        accesses.push_back(use);
+    };
+    auto slice = [&](const DxvkBufferSlice& buffer, VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+      if (buffer.length()) append(*buffer.buffer(), buffer.offset(), buffer.length(), stages, access);
+    };
+    auto bindings = [&](auto range) {
+      for (uint32_t i = 0; i < range.bindingCount; ++i) {
+        const auto& binding = range.bindings[i];
+        const auto stages = util::pipelineStages(binding.getStageMask());
+        switch (binding.getDescriptorType()) {
+          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            if (binding.isUniformBuffer()) {
+              slice(m_uniformBuffers[binding.getResourceIndex()], stages, binding.getAccess());
+              break;
+            }
+            [[fallthrough]];
+          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            const auto& view = m_resources[binding.getResourceIndex()].bufferView;
+            if (view) append(*view->buffer(), view->info().offset, view->info().size, stages, binding.getAccess());
+          } break;
+          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+            const auto& view = m_resources[binding.getResourceIndex()].imageView;
+            if (view) appendExternalImageAccess(*view->image(), view->imageSubresources(), stages, binding.getAccess(), images);
+          } break;
+          default: break;
+        }
+      }
+    };
+    // Clean bindings and read-only graphics pipelines are deliberately included:
+    // external writes are not present in DXVK's ordinary conflict tracker.
+    bindings(layout->getReadWriteResources());
+    for (auto stageIndex : bit::BitMask(uint32_t(layout->getNonemptyStageMask())))
+      bindings(layout->getReadOnlyResourcesForStage(VkShaderStageFlagBits(1u << stageIndex)));
+    if (indirect) {
+      slice(m_state.id.argBuffer, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+      if (graphics) slice(m_state.id.cntBuffer, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+    }
+    if (graphics) {
+      if (indexed) slice(m_state.vi.indexBuffer, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+      for (uint32_t i = 0; i < m_state.gp.state.il.bindingCount(); ++i)
+        slice(m_state.vi.vertexBuffers[m_state.gp.state.ilBindings[i].binding()],
+          VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+      if (m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasTransformFeedback)) {
+        for (uint32_t i = 0; i < MaxNumXfbBuffers; ++i) {
+          slice(m_state.xfb.buffers[i], VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT, VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT);
+          slice(m_state.xfb.counters[i], VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_READ_BIT_EXT | VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT);
+        }
+      }
+    }
+    synchronizeExternalBuffers(DxvkCmdBuffer::ExecBuffer, accesses);
+    synchronizeExternalImages(DxvkCmdBuffer::ExecBuffer, images);
+  }
+
+  void DxvkContext::prepareExternalBufferHandoff(const std::vector<DxvkExternalBufferUse>& accesses,
+      std::vector<VkBufferMemoryBarrier2>& barriers) {
+    retireExternalResources();
+    endCurrentPass(true);
+    flushBarriers();
+    std::vector<DxvkExternalAccess> incoming;
+    incoming.reserve(accesses.size());
+    for (const auto& use : accesses) {
+      const auto slice = use.buffer->getSliceInfo();
+      auto& backing = m_externalBuffers[uint64_t(slice.buffer)];
+      if (!backing.token) {
+        backing.token = m_nextExternalBufferToken++;
+        m_externalBufferLedger.registerResource(backing.token);
+        m_externalBufferHandles.emplace(backing.token, slice.buffer);
+      }
+      if (backing.seededResources.insert(uint64_t(use.buffer->getResourceId())).second) {
+        watchExternalResource(*use.buffer, false, uint64_t(slice.buffer), backing.token, uint64_t(use.buffer->getResourceId()));
+        const auto& info = use.buffer->info();
+        DxvkExternalAccess seed{backing.token, 0, slice.offset, slice.offset + info.size,
+          info.stages, info.access, true};
+        auto bootstrap = m_externalBufferLedger.prepare({seed}, true);
+        m_externalBufferLedger.commit(std::move(bootstrap));
+      }
+      DxvkExternalAccess access;
+      if (!externalBufferAccess(*use.buffer, use.offset, use.size, use.stages, use.access, access))
+        throw DxvkError("Invalid external buffer manifest");
+      incoming.push_back(access);
+    }
+    auto transaction = m_externalBufferLedger.prepare(incoming);
+    barriers.reserve(transaction.dependencies.size());
+    for (const auto& dependency : transaction.dependencies) {
+      VkBufferMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+      barrier.buffer = m_externalBufferHandles.at(dependency.token);
+      barrier.offset = dependency.begin;
+      barrier.size = dependency.end - dependency.begin;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.srcStageMask = dependency.srcStages;
+      barrier.srcAccessMask = dependency.srcAccess;
+      barrier.dstStageMask = dependency.dstStages;
+      barrier.dstAccessMask = dependency.dstAccess;
+      barriers.push_back(barrier);
+    }
+    m_externalBufferLedger.commit(std::move(transaction));
+  }
+
+  void DxvkContext::appendExternalImageAccess(DxvkImage& image, const VkImageSubresourceRange& range,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access, std::vector<DxvkExternalAccess>& uses) {
+    retireExternalResources();
+    const auto found = m_externalImages.find(uint64_t(image.handle()));
+    if (found == m_externalImages.end() || found->second.cookie != image.cookie() || !stages || !access) return;
+    const uint32_t mips = range.levelCount == VK_REMAINING_MIP_LEVELS
+      ? image.info().mipLevels - range.baseMipLevel : range.levelCount;
+    const uint32_t layers = range.layerCount == VK_REMAINING_ARRAY_LAYERS
+      ? image.info().numLayers - range.baseArrayLayer : range.layerCount;
+    constexpr VkAccessFlags2 writes = vk::AccessWriteMask | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    for (auto aspect : bit::BitMask(uint32_t(range.aspectMask))) {
+      for (uint32_t mip = range.baseMipLevel; mip < range.baseMipLevel + mips; ++mip) {
+        const uint64_t lane = (uint64_t(1u << aspect) << 32) | mip;
+        uses.push_back({found->second.token, lane, range.baseArrayLayer,
+          uint64_t(range.baseArrayLayer) + layers, stages, access, bool(access & writes)});
+      }
+    }
+  }
+
+  void DxvkContext::observeExternalImageAccess(DxvkImage& image, const VkImageSubresourceRange& range,
+      VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+    if (m_externalImages.empty()) return;
+    std::vector<DxvkExternalAccess> uses;
+    appendExternalImageAccess(image, range, stages, access, uses);
+    if (!uses.empty()) m_externalImageLedger.commit(m_externalImageLedger.prepare(uses));
+  }
+
+  void DxvkContext::externalImageBarriers(const DxvkExternalAccessLedger::Transaction& transaction,
+      std::vector<VkImageMemoryBarrier2>& barriers) const {
+    for (const auto& dependency : transaction.dependencies) {
+      const auto& image = *m_externalImageTokens.at(dependency.token);
+      VkImageMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      barrier.image = image.handle();
+      barrier.srcStageMask = dependency.srcStages;
+      barrier.srcAccessMask = dependency.srcAccess;
+      barrier.dstStageMask = dependency.dstStages;
+      barrier.dstAccessMask = dependency.dstAccess;
+      barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.subresourceRange = {uint32_t(dependency.lane >> 32), uint32_t(dependency.lane), 1,
+        uint32_t(dependency.begin), uint32_t(dependency.end - dependency.begin)};
+      barrier.oldLayout = image.queryLayout(barrier.subresourceRange);
+      if (barrier.oldLayout != VK_IMAGE_LAYOUT_MAX_ENUM) {
+        barrier.newLayout = barrier.oldLayout;
+        barriers.push_back(barrier);
+      } else {
+        // Preserve distinct layouts when native operations have split a mip.
+        barrier.subresourceRange.layerCount = 1;
+        for (uint32_t layer = uint32_t(dependency.begin); layer < dependency.end; ++layer) {
+          barrier.subresourceRange.baseArrayLayer = layer;
+          barrier.oldLayout = barrier.newLayout = image.queryLayout(barrier.subresourceRange);
+          barriers.push_back(barrier);
+        }
+      }
+    }
+  }
+
+  void DxvkContext::synchronizeExternalImages(DxvkCmdBuffer cmdBuffer, const std::vector<DxvkExternalAccess>& accesses) {
+    if (accesses.empty()) return;
+    auto transaction = m_externalImageLedger.prepare(accesses);
+    if (!transaction.dependencies.empty()) {
+      if (cmdBuffer != DxvkCmdBuffer::ExecBuffer)
+        throw DxvkError("External image access promoted across its epoch");
+      if (m_flags.test(DxvkContextFlag::GpRenderPassActive)) {
+        endCurrentPass(true);
+        flushBarriers();
+        transaction = m_externalImageLedger.prepare(accesses);
+      }
+      std::vector<VkImageMemoryBarrier2> barriers;
+      externalImageBarriers(transaction, barriers);
+      VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dependency.imageMemoryBarrierCount = uint32_t(barriers.size());
+      dependency.pImageMemoryBarriers = barriers.data();
+      m_cmd->cmdPipelineBarrier(cmdBuffer, &dependency);
+    }
+    m_externalImageLedger.commit(std::move(transaction));
+  }
+
+  void DxvkContext::materializeExternalImages(const std::vector<DxvkExternalImageUse>& accesses) {
+    endCurrentPass(false);
+    for (const auto& use : accesses)
+      flushDeferredClear(*use.image, use.range);
+    endCurrentPass(false);
+  }
+
+  void DxvkContext::prepareExternalImageHandoff(const std::vector<DxvkExternalImageUse>& accesses,
+      std::vector<VkImageMemoryBarrier2>& barriers) {
+    retireExternalResources();
+    std::vector<DxvkExternalAccess> incoming;
+    for (const auto& use : accesses) {
+      if (use.image->queryLayout(use.range) != VK_IMAGE_LAYOUT_GENERAL)
+        throw DxvkError("External image epoch requires materialized GENERAL layout");
+      const uint64_t handle = uint64_t(use.image->handle());
+      auto previous = m_externalImages.find(handle);
+      if (previous != m_externalImages.end() && previous->second.cookie != use.image->cookie()) {
+        // An allocator may recycle a VkImage before the old resource's base
+        // destructor delivers its notice. Never carry state across generations.
+        m_externalImageLedger.retireResource(previous->second.token);
+        m_externalImageTokens.erase(previous->second.token);
+        m_externalImages.erase(previous);
+      }
+      if (m_externalImages.find(handle) == m_externalImages.end()) {
+        const auto token = m_nextExternalImageToken++;
+        m_externalImages.emplace(handle, ExternalImageBacking{token, use.image->cookie()});
+        m_externalImageTokens.emplace(token, use.image.ptr());
+        m_externalImageLedger.registerResource(token);
+        watchExternalResource(*use.image, true, handle, token, use.image->cookie());
+        std::vector<DxvkExternalAccess> bootstrap;
+        appendExternalImageAccess(*use.image, use.image->getAvailableSubresources(),
+          use.image->info().stages, use.image->info().access, bootstrap);
+        m_externalImageLedger.commit(m_externalImageLedger.prepare(bootstrap));
+      }
+      appendExternalImageAccess(*use.image, use.range, use.stages, use.access, incoming);
+    }
+    auto transaction = m_externalImageLedger.prepare(incoming);
+    externalImageBarriers(transaction, barriers);
+    m_externalImageLedger.commit(std::move(transaction));
+  }
 
   void DxvkContext::recordExternalCommands(const std::function<void (VkCommandBuffer)>& callback) {
     this->endCurrentPass(true);
@@ -8279,6 +8649,8 @@ namespace dxvk {
         return false;
     }
 
+    synchronizeExternalShaderResources(m_state.cp.pipeline->getLayout(), false, false, Indirect);
+
     if (this->checkComputeHazards<Indirect>()) {
       this->flushBarriers();
 
@@ -8350,6 +8722,8 @@ namespace dxvk {
         }
       }
     }
+
+    synchronizeExternalShaderResources(m_state.gp.pipeline->getLayout(), true, Indexed, Indirect);
 
     // Check whether we can actually start the render pass as unsynchronized.
     if (!m_flags.test(DxvkContextFlag::GpRenderPassActive)) {
@@ -9357,6 +9731,7 @@ namespace dxvk {
 
 
   void DxvkContext::beginCurrentCommands() {
+    retireExternalResources();
     beginActiveDebugRegions();
 
     // The current state of the internal command buffer is
@@ -9847,6 +10222,26 @@ namespace dxvk {
       }
     }
 
+    if (!m_externalBuffers.empty()) {
+      std::vector<DxvkExternalAccess> external;
+      external.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        DxvkExternalAccess use;
+        if (batch[i].buffer && externalBufferAccess(*batch[i].buffer, batch[i].bufferOffset,
+            batch[i].bufferSize, batch[i].stages, batch[i].access, use))
+          external.push_back(use);
+      }
+      synchronizeExternalBuffers(cmdBuffer, external);
+    }
+
+    if (!m_externalImages.empty()) {
+      std::vector<DxvkExternalAccess> external;
+      for (size_t i = 0; i < count; ++i)
+        if (batch[i].image) appendExternalImageAccess(*batch[i].image, batch[i].imageSubresources,
+          batch[i].stages, batch[i].access, external);
+      synchronizeExternalImages(cmdBuffer, external);
+    }
+
     // Even if we have to perform the current operation on the main command buffer,
     // we can still try to move layout transitions that may be necessary to an
     // out-of-order command buffer in order to avoid additional barriers.
@@ -10066,6 +10461,7 @@ namespace dxvk {
           VkPipelineStageFlags2     dstStages,
           VkAccessFlags2            dstAccess,
           DxvkAccessOp              accessOp) {
+    observeExternalImageAccess(image, subresources, srcStages, srcAccess);
     auto& batch = getBarrierBatch(cmdBuffer);
 
     VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
@@ -10164,6 +10560,8 @@ namespace dxvk {
         dstLayout, dstStages, dstAccess, accessOp);
       return;
     }
+
+    observeExternalImageAccess(image, vk::makeSubresourceRange(subresources), srcStages, srcAccess);
 
     // No layout transition, just emit a plain memory barrier
     auto& batch = getBarrierBatch(cmdBuffer);
@@ -10297,6 +10695,8 @@ namespace dxvk {
           DxvkAccessOp              accessOp) {
     if (unlikely(!size))
       return;
+
+    observeExternalBufferAccess(buffer, offset, size, srcStages, srcAccess);
 
     auto& batch = getBarrierBatch(cmdBuffer);
 
@@ -10621,6 +11021,13 @@ namespace dxvk {
           VkDeviceSize              offset,
           VkDeviceSize              size,
           DxvkAccess                access) {
+    // The development buffer handoff uses the shared graphics queue. Do not
+    // promote a registered consumer onto SDMA without its ownership/timeline
+    // contract, or ahead of another native operation in the execution stream.
+    if (!m_externalBuffers.empty()
+        && m_externalBuffers.find(uint64_t(buffer.getSliceInfo().buffer)) != m_externalBuffers.end())
+      return DxvkCmdBuffer::ExecBuffer;
+
     // Sparse resources can alias, need to ignore.
     if (unlikely(buffer.info().flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
@@ -10689,6 +11096,8 @@ namespace dxvk {
     const VkImageSubresourceRange&  subresources,
           bool                      discard,
           DxvkAccess                access) {
+    if (m_externalImages.find(uint64_t(image.handle())) != m_externalImages.end())
+      return DxvkCmdBuffer::ExecBuffer;
     // Sparse resources can alias, need to ignore.
     if (unlikely(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
@@ -10758,6 +11167,8 @@ namespace dxvk {
 
   bool DxvkContext::prepareOutOfOrderTransition(
           DxvkImage&                image) {
+    if (m_externalImages.find(uint64_t(image.handle())) != m_externalImages.end())
+      return false;
     // Sparse resources can alias, need to ignore.
     return !(image.isTracked(m_trackingId, DxvkAccess::Write))
         && !(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
