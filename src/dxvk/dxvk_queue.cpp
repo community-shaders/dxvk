@@ -3,66 +3,6 @@
 
 namespace dxvk {
   
-  struct DxvkSubmissionQueue::ExternalBoundaryPool {
-    Rc<vk::DeviceFn> vk;
-    VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer commands = VK_NULL_HANDLE;
-    ~ExternalBoundaryPool() {
-      if (pool) vk->vkDestroyCommandPool(vk->device(), pool, nullptr);
-    }
-  };
-
-  VkResult DxvkSubmissionQueue::recordExternalBoundaries(DxvkExternalSubmitInfo& submission) {
-    try {
-      for (auto& submit : submission.submits) {
-        if (submit.entryBufferBarriers.empty() && submit.entryImageBarriers.empty()) continue;
-        std::shared_ptr<ExternalBoundaryPool> pool;
-        // Only the pool cache owns retired pools. The finish worker releases
-        // submission leases after the graphics timeline reaches completion.
-        for (const auto& candidate : m_externalBoundaryPools) {
-          if (candidate.use_count() == 1) { pool = candidate; break; }
-        }
-        if (!pool) {
-          pool = std::make_shared<ExternalBoundaryPool>();
-          pool->vk = m_device->vkd();
-          VkCommandPoolCreateInfo create = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-          create.queueFamilyIndex = m_device->queues().graphics.queueFamily;
-          create.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-          VkResult result = pool->vk->vkCreateCommandPool(pool->vk->device(), &create, nullptr, &pool->pool);
-          if (result != VK_SUCCESS) return result;
-          VkCommandBufferAllocateInfo allocate = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-          allocate.commandPool = pool->pool;
-          allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-          allocate.commandBufferCount = 1;
-          result = pool->vk->vkAllocateCommandBuffers(pool->vk->device(), &allocate, &pool->commands);
-          if (result != VK_SUCCESS) return result;
-          m_externalBoundaryPools.push_back(pool);
-        }
-        VkResult result = pool->vk->vkResetCommandPool(pool->vk->device(), pool->pool, 0);
-        if (result != VK_SUCCESS) return result;
-        VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        result = pool->vk->vkBeginCommandBuffer(pool->commands, &begin);
-        if (result != VK_SUCCESS) return result;
-        VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dependency.bufferMemoryBarrierCount = uint32_t(submit.entryBufferBarriers.size());
-        dependency.pBufferMemoryBarriers = submit.entryBufferBarriers.data();
-        dependency.imageMemoryBarrierCount = uint32_t(submit.entryImageBarriers.size());
-        dependency.pImageMemoryBarriers = submit.entryImageBarriers.data();
-        pool->vk->vkCmdPipelineBarrier2(pool->commands, &dependency);
-        result = pool->vk->vkEndCommandBuffer(pool->commands);
-        if (result != VK_SUCCESS) return result;
-        VkCommandBufferSubmitInfo commands = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        commands.commandBuffer = pool->commands;
-        submit.commandBuffers.insert(submit.commandBuffers.begin(), commands);
-        submission.leases.push_back(pool);
-      }
-      return VK_SUCCESS;
-    } catch (const std::bad_alloc&) {
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
-  }
-
   DxvkSubmissionQueue::DxvkSubmissionQueue(DxvkDevice* device, const DxvkQueueCallback& callback)
   : m_device        (device),
     m_checkpoints   (device->getCheckpointBuffer()),
@@ -227,7 +167,7 @@ namespace dxvk {
       }
 
       // Submit command buffer to device
-      if (m_lastError == VK_SUCCESS) {
+      if (m_lastError != VK_ERROR_DEVICE_LOST) {
         std::lock_guard<dxvk::mutex> lock(m_mutexQueue);
 
         if (m_callback)
@@ -279,13 +219,9 @@ namespace dxvk {
             trackedSubmitId = 0u;
           }
         } else if (entry.external != nullptr) {
-          auto& external = *entry.external;
-          entry.result = external.preparationResult;
-          if (entry.result == VK_SUCCESS)
-            entry.result = recordExternalBoundaries(external);
+          const auto& external = *entry.external;
 
           small_vector<VkSubmitInfo2, 4> submitInfos;
-          small_vector<VkSemaphoreSubmitInfo, 4> completionSignals;
 
           for (const auto& submit : external.submits) {
             VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
@@ -296,18 +232,6 @@ namespace dxvk {
             submitInfo.signalSemaphoreInfoCount = uint32_t(submit.signals.size());
             submitInfo.pSignalSemaphoreInfos = submit.signals.data();
             submitInfos.push_back(submitInfo);
-          }
-
-          if (external.trackCompletion && !submitInfos.empty()) {
-            const auto& last = external.submits.back();
-            for (const auto& signal : last.signals) completionSignals.push_back(signal);
-            VkSemaphoreSubmitInfo completion = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-            completion.semaphore = m_semaphores.graphics;
-            completion.value = m_timelines.graphics + 1;
-            completion.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-            completionSignals.push_back(completion);
-            submitInfos.back().signalSemaphoreInfoCount = uint32_t(completionSignals.size());
-            submitInfos.back().pSignalSemaphoreInfos = completionSignals.data();
           }
 
           auto vk = m_device->vkd();
@@ -321,17 +245,11 @@ namespace dxvk {
             vk->vkQueueBeginDebugUtilsLabelEXT(queue, &label);
           }
 
-          if (entry.result == VK_SUCCESS && external.queueCallback)
+          if (external.queueCallback)
             external.queueCallback(queue);
 
-          if (entry.result == VK_SUCCESS)
-            entry.result = submitInfos.empty() ? VK_SUCCESS
-              : vk->vkQueueSubmit2(queue, uint32_t(submitInfos.size()), submitInfos.data(), VK_NULL_HANDLE);
-
-          if (external.trackCompletion && entry.result == VK_SUCCESS && !submitInfos.empty()) {
-            ++m_timelines.graphics;
-            entry.timelines.graphics = m_timelines.graphics;
-          }
+          entry.result = submitInfos.empty() ? VK_SUCCESS
+            : vk->vkQueueSubmit2(queue, uint32_t(submitInfos.size()), submitInfos.data(), VK_NULL_HANDLE);
 
           if (labelled)
             vk->vkQueueEndDebugUtilsLabelEXT(queue);
@@ -391,29 +309,14 @@ namespace dxvk {
       if (entry.result == VK_ERROR_DEVICE_LOST && m_checkpoints)
         m_checkpoints->printHangInfo();
 
-      const bool managedFailure = entry.external && entry.external->trackCompletion && entry.result != VK_SUCCESS;
-      if (managedFailure) {
-        // Ordered resource state must never be followed by later work after its
-        // submission failed. Quiesce the Vulkan queue directly on non-device-loss
-        // errors: waitForIdle() would wait for this submit worker itself.
-        m_lastError = entry.result;
-        if (entry.result != VK_ERROR_DEVICE_LOST) {
-          std::lock_guard<dxvk::mutex> queueLock(m_mutexQueue);
-          m_device->vkd()->vkDeviceWaitIdle(m_device->vkd()->device());
-        }
-        entry.external->leases.clear();
-        if (entry.external->onCompleted)
-          entry.external->onCompleted(entry.result);
-      }
-
       // On success, pass it on to the queue thread
       { std::unique_lock<dxvk::mutex> lock(m_mutex);
 
-        // Managed submissions own ordered resource state and fail terminally.
-        // Preserve the legacy callback-only interface's error behavior.
+        // A failed external submission is the client's to handle (it was
+        // notified above); only device loss affects DXVK's own state.
         bool doForward = (entry.result == VK_SUCCESS) ||
           (entry.present.presenter != nullptr && entry.result != VK_ERROR_DEVICE_LOST) ||
-          (entry.external != nullptr && !entry.external->trackCompletion && entry.result != VK_ERROR_DEVICE_LOST);
+          (entry.external != nullptr && entry.result != VK_ERROR_DEVICE_LOST);
 
         if (doForward) {
           m_finishQueue.push(std::move(entry));
@@ -421,7 +324,7 @@ namespace dxvk {
           Logger::err(str::format("DxvkSubmissionQueue: Command submission failed: ", entry.result));
           m_lastError = entry.result;
 
-          if (!managedFailure && m_lastError != VK_ERROR_DEVICE_LOST)
+          if (m_lastError != VK_ERROR_DEVICE_LOST)
             m_device->waitForIdle();
         }
 
@@ -599,7 +502,7 @@ namespace dxvk {
       DxvkSubmitEntry entry = std::move(m_finishQueue.front());
       lock.unlock();
       
-      if (entry.submit.cmdList != nullptr || (entry.external && entry.external->trackCompletion)) {
+      if (entry.submit.cmdList != nullptr) {
         VkResult status = m_lastError.load();
 
         if (status != VK_ERROR_DEVICE_LOST) {
@@ -610,7 +513,7 @@ namespace dxvk {
             entry.latency.tracker->notifyGpuExecutionBegin(entry.latency.frameId);
 
           VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-          waitInfo.semaphoreCount = entry.external ? 1u : uint32_t(semaphores.size());
+          waitInfo.semaphoreCount = semaphores.size();
           waitInfo.pSemaphores = semaphores.data();
           waitInfo.pValues = timelines.data();
 
@@ -626,19 +529,8 @@ namespace dxvk {
         if (status != VK_SUCCESS) {
           m_lastError = status;
 
-          if (status != VK_ERROR_DEVICE_LOST) {
-            if (entry.external) {
-              std::lock_guard<dxvk::mutex> queueLock(m_mutexQueue);
-              vk->vkDeviceWaitIdle(vk->device());
-            } else {
-              m_device->waitForIdle();
-            }
-          }
-        }
-        if (entry.external) {
-          entry.external->leases.clear();
-          if (entry.external->onCompleted)
-            entry.external->onCompleted(status);
+          if (status != VK_ERROR_DEVICE_LOST)
+            m_device->waitForIdle();
         }
       } else if (entry.present.presenter != nullptr) {
         // Signal the frame and then immediately destroy the reference.

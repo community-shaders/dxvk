@@ -323,12 +323,7 @@ namespace dxvk {
      * \param [in] barrier Memory barrier
      */
     void addImageBarrier(
-      const VkImageMemoryBarrier2&      barrier,
-            bool                       keepResourceScope = false);
-
-    // External handoffs retain byte intervals and independent stage pairs.
-    void addBufferBarrier(
-      const VkBufferMemoryBarrier2&     barrier);
+      const VkImageMemoryBarrier2&      barrier);
 
     /**
      * \brief Flushes batched memory barriers
@@ -365,9 +360,6 @@ namespace dxvk {
           return true;
       }
 
-      for (const auto& b : m_bufferBarriers)
-        if (b.srcStageMask & stages) return true;
-
       return false;
     }
 
@@ -385,9 +377,6 @@ namespace dxvk {
         if (b.srcAccessMask & access)
           return true;
       }
-
-      for (const auto& b : m_bufferBarriers)
-        if (b.srcAccessMask & access) return true;
 
       return false;
     }
@@ -411,9 +400,6 @@ namespace dxvk {
           return true;
       }
 
-      for (const auto& b : m_bufferBarriers)
-        if (b.dstAccessMask & access) return true;
-
       return false;
     }
 
@@ -429,7 +415,6 @@ namespace dxvk {
     bool                  m_keepImageBarriers = false;
 
     std::vector<VkImageMemoryBarrier2> m_imageBarriers = { };
-    std::vector<VkBufferMemoryBarrier2> m_bufferBarriers = { };
 
   };
 
