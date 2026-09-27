@@ -9730,19 +9730,30 @@ namespace dxvk {
 
 
   void DxvkContext::prepareSharedImages() {
-    // Only flush clears for shared images, and restore layouts
-    bool hasSharedClear = false;
+    // An ORG-imported image may remain in its default GENERAL layout, so it
+    // need not be in m_nonDefaultLayoutImages despite having a deferred clear.
+    // Materialize that clear before external commands can write the image.
+    bool hasExternalClear = false;
 
-    for (const auto& image : m_nonDefaultLayoutImages) {
-      if (image->info().shared)
-        hasSharedClear = flushDeferredClear(*image, image->getAvailableSubresources());
+    for (size_t i = 0; i < m_deferredClears.size(); ) {
+      DxvkImage* image = m_deferredClears[i].imageView->image();
+      if ((image->info().shared || image->isOrgInteropImage())
+       && flushDeferredClear(*image, image->getAvailableSubresources()))
+        hasExternalClear = true;
+      else
+        i += 1u;
     }
 
-    if (hasSharedClear)
+    for (const auto& image : m_nonDefaultLayoutImages) {
+      if (image->info().shared || image->isOrgInteropImage())
+        hasExternalClear |= flushDeferredClear(*image, image->getAvailableSubresources());
+    }
+
+    if (hasExternalClear)
       flushBarriers();
 
     restoreImageLayouts([] (DxvkImage& image) {
-      return image.info().shared;
+      return image.info().shared || image.isOrgInteropImage();
     }, false);
   }
 

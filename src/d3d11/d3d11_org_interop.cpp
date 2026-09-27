@@ -170,10 +170,15 @@ namespace dxvk {
 
   bool D3D11VkInterop::LockImage(const Rc<DxvkImage>& image) {
     // Same condition as D3D11DeviceExt::LockImage: nothing to do for an image that cannot move.
-    if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT))
+    if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+      image->markOrgInteropImage();
       return true;
+    }
 
-    return m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT);
+    const bool locked = m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (locked)
+      image->markOrgInteropImage();
+    return locked;
   }
 
 
