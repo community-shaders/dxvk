@@ -472,6 +472,14 @@ namespace dxvk {
     const DxvkImageCreateInfo& info() const {
       return m_info;
     }
+
+    void markOrgInteropImage() {
+      m_orgInteropImage.store(true, std::memory_order_release);
+    }
+
+    bool isOrgInteropImage() const {
+      return m_orgInteropImage.load(std::memory_order_acquire);
+    }
     
     /**
      * \brief Memory type flags
@@ -849,6 +857,8 @@ namespace dxvk {
     VkShaderStageFlags          m_shaderStages = 0u;
 
     DxvkImageCreateInfo         m_info        = { };
+
+    std::atomic<bool>           m_orgInteropImage = { false };
 
     uint32_t                    m_version     = 0u;
     bool                        m_shared      = false;
