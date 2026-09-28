@@ -72,6 +72,10 @@ namespace dxvk {
      */
     void printHangInfo();
 
+    // Resolve a Vulkan checkpoint's integer payload while this device is alive.
+    // Used by the application's Aftermath crash-dump callback.
+    bool copyCheckpointText(uintptr_t marker, char* text, uint32_t capacity);
+
   private:
 
     struct Marker {

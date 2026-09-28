@@ -6,12 +6,34 @@
 #include "d3d11_texture.h"
 #include "d3d11_view_srv.h"
 
+#include <algorithm>
+
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_device.h"
+#include "../dxvk/dxvk_hang.h"
 #include "../dxvk/dxvk_instance.h"
 #include "../dxvk/dxvk_interop.h"
 
 namespace dxvk {
+
+  namespace {
+    thread_local DxvkDrawCaller g_nextDrawCaller;
+  }
+
+  DxvkDrawCaller TakeDrawCaller() noexcept {
+    auto caller = g_nextDrawCaller;
+    g_nextDrawCaller = {};
+    return caller;
+  }
+
+  extern "C" DLLEXPORT void __stdcall dxvkSetDrawCaller(
+    const void* caller, const void* const* stack, uint32_t count) {
+    g_nextDrawCaller = {};
+    g_nextDrawCaller.caller = caller;
+    g_nextDrawCaller.stackCount = std::min(count, 16u);
+    for (uint32_t i = 0; i < g_nextDrawCaller.stackCount; i++)
+      g_nextDrawCaller.stack[i] = stack[i];
+  }
 
   namespace {
 
@@ -495,6 +517,17 @@ extern "C" {
 
     *ppCounter = interop->GetSubmissionCounter();
     return S_OK;
+  }
+
+
+  DLLEXPORT BOOL __stdcall dxvkResolveCheckpointMarker(ID3D11Device* pDevice,
+    const void* marker, char* text, UINT capacity) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+    if (!interop)
+      return FALSE;
+    auto* checkpoints = interop->GetDXVKDevice()->getCheckpointBuffer();
+    return checkpoints && checkpoints->copyCheckpointText(reinterpret_cast<uintptr_t>(marker), text, capacity) ? TRUE : FALSE;
   }
 
 

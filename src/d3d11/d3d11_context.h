@@ -797,6 +797,7 @@ namespace dxvk {
     DxvkCsChunkFlags            m_csFlags;
     DxvkCsChunkRef              m_csChunk;
     DxvkCsDataBlock*            m_csData = nullptr;
+    std::shared_ptr<std::vector<std::pair<uint32_t, uint64_t>>> m_traceIndexedBatch;
 
     uint64_t                    m_estimatedCost = 0u;
 
@@ -855,7 +856,8 @@ namespace dxvk {
       const VkDrawIndirectCommand&            draw);
 
     void BatchDrawIndexed(
-      const VkDrawIndexedIndirectCommand&     draw);
+      const VkDrawIndexedIndirectCommand&     draw,
+            uint64_t                          traceId = 0);
 
     template<D3D11ShaderType ShaderStage>
     void BindShader(

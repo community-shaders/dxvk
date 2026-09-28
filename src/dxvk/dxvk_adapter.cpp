@@ -5,6 +5,8 @@
 #include "dxvk_device.h"
 #include "dxvk_instance.h"
 
+#include "../util/util_env.h"
+
 namespace dxvk {
 
   DxvkDeviceQueue getDeviceQueue(const Rc<vk::DeviceFn>& vkd, const DxvkDeviceCapabilities& caps, DxvkDeviceQueueIndex queue) {
@@ -267,6 +269,50 @@ namespace dxvk {
     for (const auto& ext : extensions)
       extensionNames.push_back(ext.extensionName);
 
+    // DXVK_DEBUG=hang supplies checkpoints and VK_EXT_device_fault. For an
+    // Aftermath page fault, ask NVIDIA's driver to retain the resource history
+    // and shader mapping too. Probe both the extension and its feature so a
+    // different driver keeps the ordinary hang-debug path.
+    VkDeviceDiagnosticsConfigFlagsNV aftermathDiagnosticFlags = 0;
+    bool aftermathDiagnostics = false;
+    const auto aftermathFlagEnabled = [](const char* name) {
+      const auto value = env::getEnvVar(name);
+      return value == "1" || value == "true";
+    };
+    if (aftermathFlagEnabled("DXVK_AFTERMATH_RESOURCE_TRACKING"))
+      aftermathDiagnosticFlags |= VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV;
+    if (aftermathFlagEnabled("DXVK_AFTERMATH_SHADER_DEBUG_INFO"))
+      aftermathDiagnosticFlags |= VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
+    if (aftermathFlagEnabled("DXVK_AFTERMATH_SHADER_ERROR_REPORTING"))
+      aftermathDiagnosticFlags |= VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
+    // This driver produced repeatable loading-time shader faults with the
+    // heavier NVIDIA diagnostics configuration. Keep normal hang checkpoints
+    // and device-fault reporting on, and opt in to resource tracking separately.
+    if (m_instance->debugFlags().test(DxvkDebugFlag::Hang)
+     && aftermathDiagnosticFlags) {
+      uint32_t supportedCount = 0;
+      if (vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, nullptr) == VK_SUCCESS) {
+        std::vector<VkExtensionProperties> supported(supportedCount);
+        if (vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, supported.data()) == VK_SUCCESS) {
+          auto found = std::find_if(supported.begin(), supported.begin() + supportedCount,
+            [](const VkExtensionProperties& ext) {
+              return !std::strcmp(ext.extensionName, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+            });
+          if (found != supported.begin() + supportedCount) {
+            VkPhysicalDeviceDiagnosticsConfigFeaturesNV configSupport = {
+              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+            VkPhysicalDeviceFeatures2 deviceFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+            deviceFeatures.pNext = &configSupport;
+            vk->vkGetPhysicalDeviceFeatures2(m_handle, &deviceFeatures);
+            if (configSupport.diagnosticsConfig) {
+              extensionNames.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+              aftermathDiagnostics = true;
+            }
+          }
+        }
+      }
+    }
+
     // Query queue infos
     DxvkDeviceQueueMapping queueMapping = caps.getQueueMapping();
 
@@ -295,6 +341,23 @@ namespace dxvk {
     // Create the actual Vulkan device
     VkDeviceCreateInfo deviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     deviceInfo.pNext = features->pNext;
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV enabledConfigFeature = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+    VkDeviceDiagnosticsConfigCreateInfoNV diagnostics = {
+      VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV };
+    if (aftermathDiagnostics) {
+      enabledConfigFeature.pNext = const_cast<void*>(deviceInfo.pNext);
+      enabledConfigFeature.diagnosticsConfig = VK_TRUE;
+      diagnostics.pNext = &enabledConfigFeature;
+      diagnostics.flags = aftermathDiagnosticFlags;
+      deviceInfo.pNext = &diagnostics;
+      Logger::info(str::format("NVIDIA Aftermath diagnostic flags enabled: resource tracking=",
+        bool(aftermathDiagnosticFlags & VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV),
+        ", shader debug info=",
+        bool(aftermathDiagnosticFlags & VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV),
+        ", shader error reporting=",
+        bool(aftermathDiagnosticFlags & VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV)));
+    }
     deviceInfo.queueCreateInfoCount = queues.size();
     deviceInfo.pQueueCreateInfos = queues.data();
     deviceInfo.enabledExtensionCount = extensionNames.size();

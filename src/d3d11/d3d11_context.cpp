@@ -1,10 +1,17 @@
 #include <algorithm>
+#include <atomic>
+#include <iomanip>
 
 #include "d3d11_context.h"
 #include "d3d11_context_def.h"
 #include "d3d11_context_imm.h"
+#include "d3d11_org_interop.h"
+
+#include "../util/util_env.h"
 
 namespace dxvk {
+
+  static std::atomic<uint64_t> g_nextDrawBatchId{ 1 };
 
   template<typename ContextType>
   D3D11CommonContext<ContextType>::D3D11CommonContext(
@@ -1059,6 +1066,47 @@ namespace dxvk {
           INT             BaseVertexLocation) {
     D3D10DeviceLock lock = LockContext();
 
+    // Diagnostic-only provenance is captured before BatchDrawIndexed merges API calls.
+    // Filtering by count locates candidates, not the faulting draw by itself.
+    static const bool trace = env::getEnvVar("DXVK_DRAW_INDEXED_TRACE") == "1";
+    uint64_t traceId = 0;
+    if (unlikely(trace && IndexCount == 8991u)) {
+      static std::atomic<uint64_t> nextDrawId{ 1 };
+      const auto id = nextDrawId.fetch_add(1, std::memory_order_relaxed);
+      traceId = id;
+      const auto caller = TakeDrawCaller();
+      const auto& ib = m_state.ia.indexBuffer;
+      D3D11_BUFFER_DESC ibDesc{};
+      if (ib.buffer != nullptr)
+        ib.buffer->GetDesc(&ibDesc);
+      Logger::info(str::format("DrawIndexed candidate id=", id, " context=", static_cast<const void*>(this),
+        " count=", IndexCount, " first=", StartIndexLocation, " base=", BaseVertexLocation,
+        " caller=", caller.caller, " vs=", m_state.vs != nullptr ? m_state.vs->GetCommonShader()->GetName() : "null",
+        " ps=", m_state.ps != nullptr ? m_state.ps->GetCommonShader()->GetName() : "null",
+        " ib=", static_cast<const void*>(ib.buffer.ptr()), " ibBytes=", ibDesc.ByteWidth,
+        " ibFormat=", uint32_t(ib.format), " ibOffset=", ib.offset,
+        " vb0=", static_cast<const void*>(m_state.ia.vertexBuffers[0].buffer.ptr()),
+        " vb0Offset=", m_state.ia.vertexBuffers[0].offset,
+        " vb0Stride=", m_state.ia.vertexBuffers[0].stride,
+        " rtv0=", static_cast<const void*>(m_state.om.rtvs[0].ptr()),
+        " dsv=", static_cast<const void*>(m_state.om.dsv.ptr())));
+      const auto indexBytes = ib.format == DXGI_FORMAT_R16_UINT ? 2u : ib.format == DXGI_FORMAT_R32_UINT ? 4u : 0u;
+      const auto needed = uint64_t(ib.offset) + (uint64_t(StartIndexLocation) + IndexCount) * indexBytes;
+      if (!indexBytes || needed > ibDesc.ByteWidth)
+        Logger::err(str::format("DrawIndexed candidate id=", id, " invalid index-buffer range: need ", needed,
+          " bytes, have ", ibDesc.ByteWidth));
+      for (uint32_t i = 0; i < caller.stackCount; i++) {
+        HMODULE module = nullptr;
+        char path[MAX_PATH]{};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+              reinterpret_cast<LPCSTR>(caller.stack[i]), &module))
+          GetModuleFileNameA(module, path, MAX_PATH);
+        Logger::info(str::format("DrawIndexed candidate id=", id, " stack[", i, "]=", caller.stack[i],
+          " module=", path, " rva=0x", std::hex,
+          module ? uintptr_t(caller.stack[i]) - uintptr_t(module) : uintptr_t(0)));
+      }
+    }
+
     if (unlikely(!IndexCount))
       return;
 
@@ -1069,7 +1117,7 @@ namespace dxvk {
     draw.vertexOffset  = BaseVertexLocation;
     draw.firstInstance = 0u;
 
-    BatchDrawIndexed(draw);
+    BatchDrawIndexed(draw, traceId);
   }
 
 
@@ -3556,7 +3604,8 @@ namespace dxvk {
 
   template<typename ContextType>
   void D3D11CommonContext<ContextType>::BatchDrawIndexed(
-    const VkDrawIndexedIndirectCommand&     draw) {
+    const VkDrawIndexedIndirectCommand&     draw,
+          uint64_t                          traceId) {
     if (unlikely(HasDirtyGraphicsBindings()))
       ApplyDirtyGraphicsBindings();
 
@@ -3566,12 +3615,27 @@ namespace dxvk {
 
       if (likely(drawInfo)) {
         new (drawInfo) VkDrawIndexedIndirectCommand(draw);
+        if (traceId && m_traceIndexedBatch)
+          m_traceIndexedBatch->emplace_back(uint32_t(m_csData->count() - 1), traceId);
         return;
       }
     }
 
+    static const bool trace = env::getEnvVar("DXVK_DRAW_INDEXED_TRACE") == "1";
+    m_traceIndexedBatch = trace ? std::make_shared<std::vector<std::pair<uint32_t, uint64_t>>>() : nullptr;
+    if (traceId)
+      m_traceIndexedBatch->emplace_back(0u, traceId);
     EmitCsCmd<VkDrawIndexedIndirectCommand>(D3D11CmdType::DrawIndexed, 1u,
-      [] (DxvkContext* ctx, const VkDrawIndexedIndirectCommand* draws, size_t count) {
+      [provenance = m_traceIndexedBatch] (DxvkContext* ctx, const VkDrawIndexedIndirectCommand* draws, size_t count) {
+        if (provenance && !provenance->empty()) {
+          const auto batchId = g_nextDrawBatchId.fetch_add(1, std::memory_order_relaxed);
+          const auto name = str::format("DrawIndexed API batch=", batchId, " draws=", count);
+          for (const auto& [index, id] : *provenance)
+            Logger::info(str::format("DrawIndexed API batch=", batchId, " member[", index, "]=", id));
+          VkDebugUtilsLabelEXT label{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
+          label.pLabelName = name.c_str();
+          ctx->insertDebugLabel(label);
+        }
         ctx->drawIndexed(count, draws);
       });
 

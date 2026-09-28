@@ -23,3 +23,5 @@ EXPORTS
     dxvkEnqueueQueueCallback @140
     dxvkEmitCommandBufferCallback @141
     dxvkSetCommandBufferBoundaryCallbacks @142
+    dxvkResolveCheckpointMarker @143
+    dxvkSetDrawCaller @144

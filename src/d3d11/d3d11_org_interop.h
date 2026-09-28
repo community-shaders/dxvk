@@ -275,4 +275,13 @@ typedef HRESULT (__stdcall *PFN_dxvkReadSubmissionTrace)(ID3D11Device* pDevice,
 
 #ifdef __cplusplus
 }
+
+namespace dxvk {
+  struct DxvkDrawCaller {
+    const void* caller = nullptr;
+    uint32_t stackCount = 0;
+    const void* stack[16]{};
+  };
+  DxvkDrawCaller TakeDrawCaller() noexcept;
+}
 #endif

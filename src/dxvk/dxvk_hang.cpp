@@ -20,6 +20,24 @@ namespace dxvk {
   }
 
 
+  bool DxvkCheckpointBuffer::copyCheckpointText(uintptr_t marker, char* text, uint32_t capacity) {
+    if (!text || !capacity)
+      return false;
+    // A dump callback may run after a fault while other application threads
+    // are stalled. Never let marker enrichment prevent the dump itself.
+    std::unique_lock lock(m_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+      return false;
+    if (marker >= m_checkpoints.size() || !m_checkpoints[marker].info[0])
+      return false;
+    const auto& source = m_checkpoints[marker].info;
+    const size_t length = std::min(std::strlen(source.data()), size_t(capacity - 1));
+    std::memcpy(text, source.data(), length);
+    text[length] = '\0';
+    return true;
+  }
+
+
   int32_t DxvkCheckpointBuffer::addCheckpoint(
     const DxvkDeviceQueue&      queue,
           VkCommandBuffer       cmd,
@@ -123,15 +141,27 @@ namespace dxvk {
 
         int32_t hangTop = -1;
         int32_t hangBottom = -1;
+        uintptr_t externalTop = 0;
+        uintptr_t externalBottom = 0;
 
         for (const auto& cp : checkpointData) {
-          if (cp.stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
-            hangTop = int32_t(reinterpret_cast<uintptr_t>(cp.pCheckpointMarker));
-          if (cp.stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)
-            hangBottom = int32_t(reinterpret_cast<uintptr_t>(cp.pCheckpointMarker));
+          const auto marker = reinterpret_cast<uintptr_t>(cp.pCheckpointMarker);
+          const bool external = marker & (uintptr_t(1) << 62);
+          if (cp.stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) {
+            hangTop = external ? -1 : int32_t(marker);
+            externalTop = external ? marker : 0;
+          }
+          if (cp.stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT) {
+            hangBottom = external ? -1 : int32_t(marker);
+            externalBottom = external ? marker : 0;
+          }
         }
 
-        if (hangTop != hangBottom)
+        if (externalTop || externalBottom) {
+          Logger::err(str::format("External ORG checkpoint, queue family ", q.queueFamily,
+            ", index ", q.queueIndex, ": top=0x", std::hex, externalTop,
+            ", bottom=0x", externalBottom));
+        } else if (hangTop != hangBottom)
           logHangCommands(q, hangTop, hangBottom);
       }
     } else if (m_device->features().amdBufferMarker) {
