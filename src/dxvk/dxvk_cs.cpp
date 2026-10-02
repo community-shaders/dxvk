@@ -257,7 +257,10 @@ namespace dxvk {
             auto& counter = isHighPrio ? m_seqHighPrio : m_seqOrdered;
             counter.store(entry.seq);
 
-            m_condOnSync.notify_one();
+            // Every waiter: each waits for its own sequence number on either queue, and more than one thread can
+            // synchronize at once (the ORG interop's injected chunks). Woken alone, the wrong one sleeps again and
+            // the one whose chunk just ran is never woken.
+            m_condOnSync.notify_all();
           }
 
           // Immediately free the chunk to release
