@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define DXVK_ORG_INTEROP_VERSION 2u
+#define DXVK_ORG_INTEROP_VERSION 3u
 
 struct ID3D11Device;
 struct ID3D11Buffer;
@@ -57,6 +57,11 @@ typedef struct DxvkOrgInteropDeviceInfo {
   /** The instance's enabled extensions (version 2), e.g. whether VK_EXT_debug_utils may be called. */
   uint32_t enabledInstanceExtensionCount;
   const char* const* enabledInstanceExtensions;
+  /** Version 3: a queue of a compute-only family that DXVK never uses, or null. The client submits to it itself,
+      under a lock of its own; DXVK's resources stay exclusive to its graphics and transfer families. */
+  VkQueue computeQueue;
+  uint32_t computeQueueFamily;
+  uint32_t computeQueueIndex;
 } DxvkOrgInteropDeviceInfo;
 
 /**

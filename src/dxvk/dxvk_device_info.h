@@ -226,6 +226,8 @@ namespace dxvk {
     DxvkDeviceQueueIndex graphics;
     DxvkDeviceQueueIndex transfer;
     DxvkDeviceQueueIndex sparse;
+    /** A compute-only queue for interop clients (dxvkGetInteropDeviceInfo); DXVK never submits to it. */
+    DxvkDeviceQueueIndex compute;
   };
 
 

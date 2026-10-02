@@ -295,7 +295,8 @@ namespace dxvk {
     stream << "Queues:" << std::endl
            << "  Graphics : (" << m_queueMapping.graphics.family << ", " << m_queueMapping.graphics.index << ")" << std::endl
            << "  Transfer : (" << m_queueMapping.transfer.family << ", " << m_queueMapping.transfer.index << ")" << std::endl
-           << "  Sparse   : (" << m_queueMapping.sparse.family   << ", " << m_queueMapping.sparse.index   << ")" << std::endl;
+           << "  Sparse   : (" << m_queueMapping.sparse.family   << ", " << m_queueMapping.sparse.index   << ")" << std::endl
+           << "  Compute  : (" << m_queueMapping.compute.family  << ", " << m_queueMapping.compute.index  << ")" << std::endl;
 
     // Log memory type and heap properties
     static const std::array<std::pair<VkMemoryPropertyFlagBits, const char*>, 8> s_flags = {{
@@ -799,10 +800,23 @@ namespace dxvk {
         VK_QUEUE_SPARSE_BINDING_BIT);
     }
 
+    // A queue of the compute-only family for interop clients, never one DXVK uses: where the transfer queue fell
+    // back to that family, the next queue of it. Without one the client's compute work shares the graphics queue.
+    if (computeQueue != m_queueMapping.graphics.family) {
+      m_queueMapping.compute.family = computeQueue;
+
+      if (computeQueue == m_queueMapping.transfer.family)
+        m_queueMapping.compute.index = m_queueMapping.transfer.index + 1u;
+
+      if (m_queueMapping.compute.index >= m_queuesAvailable[computeQueue].core.queueFamilyProperties.queueCount)
+        m_queueMapping.compute = { };
+    }
+
     // Actually enable all the queues
     enableQueue(m_queueMapping.graphics);
     enableQueue(m_queueMapping.transfer);
     enableQueue(m_queueMapping.sparse);
+    enableQueue(m_queueMapping.compute);
 
     // Fix up queue priority pointers
     uint32_t maxQueueCount = 0u;

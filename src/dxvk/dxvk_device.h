@@ -69,6 +69,7 @@ namespace dxvk {
     DxvkDeviceQueue graphics;
     DxvkDeviceQueue transfer;
     DxvkDeviceQueue sparse;
+    DxvkDeviceQueue compute;  // interop clients' (DxvkDeviceQueueMapping::compute); null without one
   };
   
   /**

@@ -415,6 +415,10 @@ extern "C" {
     pInfo->deniedFeatureCount = uint32_t(record->deniedFeatures.size());
     pInfo->enabledInstanceExtensionCount = uint32_t(record->instanceExtensionPointers.size());
     pInfo->enabledInstanceExtensions = record->instanceExtensionPointers.data();
+    const auto& compute = device->queues().compute;
+    pInfo->computeQueue = compute.queueHandle;
+    pInfo->computeQueueFamily = compute.queueFamily;
+    pInfo->computeQueueIndex = compute.queueIndex;
     return S_OK;
   }
 
