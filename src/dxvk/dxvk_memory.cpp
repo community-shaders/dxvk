@@ -1306,7 +1306,11 @@ namespace dxvk {
     const VkBufferCreateInfo&         createInfo,
     const DxvkAllocationInfo&         allocationInfo,
     const DxvkBufferImportInfo&       importInfo) {
-    Rc<DxvkResourceAllocation> allocation = m_allocationPool.create(this, nullptr);
+    // The allocation pool is shared with every other allocation and free, all under m_mutex: imports run on any thread
+    // (11on12, the ORG interop) concurrently with the device's own resource creation.
+    Rc<DxvkResourceAllocation> allocation;
+    { std::lock_guard<dxvk::mutex> lock(m_mutex);
+      allocation = m_allocationPool.create(this, nullptr); }
     allocation->m_flags.set(DxvkAllocationFlag::Imported);
     allocation->m_resourceCookie = allocationInfo.resourceCookie;
     allocation->m_size = createInfo.size;
@@ -1325,7 +1329,11 @@ namespace dxvk {
     const VkImageCreateInfo&          createInfo,
     const DxvkAllocationInfo&         allocationInfo,
           VkImage                     imageHandle) {
-    Rc<DxvkResourceAllocation> allocation = m_allocationPool.create(this, nullptr);
+    // The allocation pool is shared with every other allocation and free, all under m_mutex: imports run on any thread
+    // (11on12, the ORG interop) concurrently with the device's own resource creation.
+    Rc<DxvkResourceAllocation> allocation;
+    { std::lock_guard<dxvk::mutex> lock(m_mutex);
+      allocation = m_allocationPool.create(this, nullptr); }
     allocation->m_flags.set(DxvkAllocationFlag::Imported);
     allocation->m_resourceCookie = allocationInfo.resourceCookie;
     allocation->m_image = imageHandle;
@@ -1586,6 +1594,7 @@ namespace dxvk {
   DxvkResourceAllocation* DxvkMemoryAllocator::createAllocation(
           DxvkSparsePageTable*  sparsePageTable,
     const DxvkAllocationInfo&   allocationInfo) {
+    std::lock_guard<dxvk::mutex> lock(m_mutex);  // the pool is shared (see importBufferResource); callers hold no lock
     auto allocation = m_allocationPool.create(this, nullptr);
     allocation->m_resourceCookie = allocationInfo.resourceCookie;
     allocation->m_sparsePageTable = sparsePageTable;
