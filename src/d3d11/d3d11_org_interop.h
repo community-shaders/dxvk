@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define DXVK_ORG_INTEROP_VERSION 3u
+#define DXVK_ORG_INTEROP_VERSION 4u
 
 struct ID3D11Device;
 struct ID3D11Buffer;
@@ -62,6 +62,11 @@ typedef struct DxvkOrgInteropDeviceInfo {
   VkQueue computeQueue;
   uint32_t computeQueueFamily;
   uint32_t computeQueueIndex;
+  /** Version 4: a transfer-capable queue for the client's uploads that neither DXVK nor computeQueue uses, or null. The
+      client submits to it itself, under DXVK's submission lock (LockSubmissionQueue). */
+  VkQueue uploadQueue;
+  uint32_t uploadQueueFamily;
+  uint32_t uploadQueueIndex;
 } DxvkOrgInteropDeviceInfo;
 
 /**

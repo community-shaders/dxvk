@@ -419,6 +419,10 @@ extern "C" {
     pInfo->computeQueue = compute.queueHandle;
     pInfo->computeQueueFamily = compute.queueFamily;
     pInfo->computeQueueIndex = compute.queueIndex;
+    const auto& upload = device->queues().upload;
+    pInfo->uploadQueue = upload.queueHandle;
+    pInfo->uploadQueueFamily = upload.queueFamily;
+    pInfo->uploadQueueIndex = upload.queueIndex;
     return S_OK;
   }
 

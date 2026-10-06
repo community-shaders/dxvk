@@ -812,11 +812,34 @@ namespace dxvk {
         m_queueMapping.compute = { };
     }
 
+    // A queue for interop clients' uploads, never one DXVK or the compute queue uses: the next queue of the transfer-only
+    // family, else the next one of the compute-only family. Without one the client's uploads have no queue of their own.
+    auto nextQueue = [this] (uint32_t family) {
+      DxvkDeviceQueueIndex queue = { family, 0u };
+
+      for (const auto* used : { &m_queueMapping.graphics, &m_queueMapping.transfer, &m_queueMapping.sparse, &m_queueMapping.compute }) {
+        if (used->family == family)
+          queue.index = std::max(queue.index, used->index + 1u);
+      }
+
+      if (family == VK_QUEUE_FAMILY_IGNORED || queue.index >= m_queuesAvailable[family].core.queueFamilyProperties.queueCount)
+        return DxvkDeviceQueueIndex();
+
+      return queue;
+    };
+
+    if (m_queueMapping.transfer.family != m_queueMapping.graphics.family && m_queueMapping.transfer.family != computeQueue)
+      m_queueMapping.upload = nextQueue(m_queueMapping.transfer.family);
+
+    if (m_queueMapping.upload.family == VK_QUEUE_FAMILY_IGNORED && computeQueue != m_queueMapping.graphics.family)
+      m_queueMapping.upload = nextQueue(computeQueue);
+
     // Actually enable all the queues
     enableQueue(m_queueMapping.graphics);
     enableQueue(m_queueMapping.transfer);
     enableQueue(m_queueMapping.sparse);
     enableQueue(m_queueMapping.compute);
+    enableQueue(m_queueMapping.upload);
 
     // Fix up queue priority pointers
     uint32_t maxQueueCount = 0u;
@@ -838,7 +861,7 @@ namespace dxvk {
 
     for (auto& q : m_queuesEnabled) {
       if (q.queueFamilyIndex == queue.family) {
-        q.queueCount = queue.index + 1u;
+        q.queueCount = std::max(q.queueCount, queue.index + 1u);
         return;
       }
     }

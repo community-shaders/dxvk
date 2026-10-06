@@ -228,6 +228,8 @@ namespace dxvk {
     DxvkDeviceQueueIndex sparse;
     /** A compute-only queue for interop clients (dxvkGetInteropDeviceInfo); DXVK never submits to it. */
     DxvkDeviceQueueIndex compute;
+    /** A transfer-capable queue for interop clients' uploads (dxvkGetInteropDeviceInfo); DXVK never submits to it. */
+    DxvkDeviceQueueIndex upload;
   };
 
 
