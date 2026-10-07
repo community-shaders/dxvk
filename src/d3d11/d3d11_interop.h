@@ -108,6 +108,12 @@ namespace dxvk {
             IUnknown*                   pObject,
             DxvkOrgInteropResourceInfo* pInfo);
 
+    HRESULT GetResourceInfos(
+            UINT                        Count,
+            IUnknown* const*            ppObjects,
+            DxvkOrgInteropResourceInfo* pInfos,
+            HRESULT*                    pResults);
+
     Rc<DxvkDevice> GetDXVKDevice() const;
 
     /**

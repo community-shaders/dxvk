@@ -199,6 +199,16 @@ typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfo)(ID3D11Device* pDevic
   IUnknown* pObject, DxvkOrgInteropResourceInfo* pInfo);
 
 /**
+ * dxvkGetInteropResourceInfo for many objects at once. Every buffer that
+ * still needs a stable address is pinned by one chunk on DXVK's worker
+ * thread, so the call synchronizes once rather than once per buffer.
+ * pInfos[i].version must be DXVK_ORG_INTEROP_VERSION; pResults[i] receives
+ * object i's result, as dxvkGetInteropResourceInfo would return it.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfos)(ID3D11Device* pDevice,
+  UINT count, IUnknown* const* pObjects, DxvkOrgInteropResourceInfo* pInfos, HRESULT* pResults);
+
+/**
  * Submits client command buffers to DXVK's graphics queue in D3D11 stream
  * order: they execute after every command issued on the immediate context
  * before this call and before every command issued after it. Nothing is

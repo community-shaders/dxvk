@@ -7,6 +7,7 @@
 #include "d3d11_view_srv.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_device.h"
@@ -186,6 +187,92 @@ namespace dxvk {
 
     FillImageInfo(image, view->info(), pInfo->image);
     pInfo->kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::GetResourceInfos(
+          UINT                        Count,
+          IUnknown* const*            ppObjects,
+          DxvkOrgInteropResourceInfo* pInfos,
+          HRESULT*                    pResults) {
+    if (Count && (!ppObjects || !pInfos || !pResults))
+      return E_INVALIDARG;
+
+    // Buffers are pinned together: one chunk, one synchronization. Everything
+    // else goes through GetResourceInfo.
+    struct Pending {
+      UINT index;
+      D3D11Buffer* buffer;
+      Rc<DxvkBuffer> dxvkBuffer;
+    };
+
+    std::vector<Pending> pending;
+    pending.reserve(Count);
+
+    for (UINT i = 0; i < Count; i++) {
+      pResults[i] = E_INVALIDARG;
+
+      if (!ppObjects[i] || pInfos[i].version != DXVK_ORG_INTEROP_VERSION)
+        continue;
+
+      Com<ID3D11Resource> resource;
+      D3D11_COMMON_RESOURCE_DESC desc = { };
+
+      if (SUCCEEDED(ppObjects[i]->QueryInterface(__uuidof(ID3D11Resource), reinterpret_cast<void**>(&resource)))
+       && SUCCEEDED(GetCommonResourceDesc(resource.ptr(), &desc))
+       && desc.Dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+        auto buffer = GetCommonBuffer(resource.ptr());
+        uint32_t version = pInfos[i].version;
+        pInfos[i] = DxvkOrgInteropResourceInfo();
+        pInfos[i].version = version;
+
+        // Discard maps rename the buffer; nothing about it can be stable.
+        if (buffer->Desc()->Usage == D3D11_USAGE_DYNAMIC || buffer->Desc()->CPUAccessFlags)
+          continue;
+
+        pending.push_back({ i, buffer, buffer->GetBuffer() });
+      } else {
+        pResults[i] = GetResourceInfo(ppObjects[i], &pInfos[i]);
+      }
+    }
+
+    // A full chunk goes ahead unsynchronized; the queue runs them in order, so
+    // the last one's synchronization covers every pin.
+    DxvkCsChunkRef chunk;
+
+    for (const auto& entry : pending) {
+      if (!entry.dxvkBuffer->canRelocate())
+        continue;
+
+      auto command = [cBuffer = entry.dxvkBuffer] (DxvkContext* ctx) {
+        ctx->ensureBufferAddress(cBuffer);
+      };
+
+      if (!chunk || !chunk->push(command)) {
+        if (chunk)
+          m_device->GetContext()->InjectCsChunk(DxvkCsQueue::HighPriority, std::move(chunk), false);
+
+        chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
+        chunk->push(command);
+      }
+    }
+
+    if (chunk)
+      m_device->GetContext()->InjectCsChunk(DxvkCsQueue::HighPriority, std::move(chunk), true);
+
+    for (const auto& entry : pending) {
+      auto slice = entry.dxvkBuffer->getSliceInfo();
+      auto& info = pInfos[entry.index];
+      info.kind = DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+      info.buffer.buffer = slice.buffer;
+      info.buffer.offset = slice.offset;
+      info.buffer.size = entry.buffer->Desc()->ByteWidth;
+      info.buffer.address = slice.gpuAddress;
+      info.buffer.usage = entry.dxvkBuffer->info().usage;
+      pResults[entry.index] = S_OK;
+    }
+
     return S_OK;
   }
 
@@ -508,6 +595,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->GetResourceInfo(pObject, pInfo);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkGetInteropResourceInfos(ID3D11Device* pDevice,
+    UINT count, IUnknown* const* pObjects, DxvkOrgInteropResourceInfo* pInfos, HRESULT* pResults) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->GetResourceInfos(count, pObjects, pInfos, pResults);
   }
 
 

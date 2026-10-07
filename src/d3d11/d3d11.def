@@ -25,3 +25,4 @@ EXPORTS
     dxvkSetCommandBufferBoundaryCallbacks @142
     dxvkResolveCheckpointMarker @143
     dxvkSetDrawCaller @144
+    dxvkGetInteropResourceInfos @145
