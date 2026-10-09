@@ -288,8 +288,9 @@ namespace dxvk {
     // This driver produced repeatable loading-time shader faults with the
     // heavier NVIDIA diagnostics configuration. Keep normal hang checkpoints
     // and device-fault reporting on, and opt in to resource tracking separately.
-    if (m_instance->debugFlags().test(DxvkDebugFlag::Hang)
-     && aftermathDiagnosticFlags) {
+    // The flags are opt-in on their own, without hang mode: a fault that hang
+    // mode's serialised recording hides still needs the shader mapping.
+    if (aftermathDiagnosticFlags) {
       uint32_t supportedCount = 0;
       if (vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, nullptr) == VK_SUCCESS) {
         std::vector<VkExtensionProperties> supported(supportedCount);
