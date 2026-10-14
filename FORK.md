@@ -190,6 +190,19 @@ anything; Reflex sleeps in the render loop before simulation and owns the cap on
 Having a second limiter that could engage at all was a source of frame-time spikes, not a
 safety net, so @103 is retired rather than left as a fallback.
 
+### Interop submissions after a render-graph epoch
+
+Community Shaders' render graph enables `VK_EXT_descriptor_heap` on this device for BasicRHI, and a Streamline plugin requests it
+too, so Streamline's upscalers and frame generation run on the descriptor-heap path. DXVK itself stays on descriptor buffers.
+
+A heap-path consumer's command buffer that executes directly behind a graph epoch's command buffer computes from the wrong
+descriptors on NVIDIA. The output is black, then garbage, then right, from correct inputs. DXVK work that binds image descriptors in
+between avoids it; a flush or an empty interop submission does not.
+
+Community Shaders separates them (`Upscaling::SeparateFromGraphEpochs`). Nothing in DXVK changes for this, but any new interop path
+from a third-party SDK must keep the separation. See Community Shaders' `docs/development/render-graph.md`, "Hazard: external Vulkan
+work directly after a graph epoch".
+
 ### Other exports
 
 `dxvkGetPresenterSurfaceState` reports the live surface format plus requested and effective
