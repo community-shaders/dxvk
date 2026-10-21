@@ -303,5 +303,7 @@ namespace dxvk {
     const void* stack[16]{};
   };
   DxvkDrawCaller TakeDrawCaller() noexcept;
+
+  std::string TakeNextShaderName();
 }
 #endif

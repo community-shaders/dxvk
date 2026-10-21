@@ -500,6 +500,11 @@ namespace dxvk::vk {
     VULKAN_FN(vkCmdBindDescriptorBufferEmbeddedSamplers2EXT);
     #endif
 
+    #ifdef VK_KHR_pipeline_executable_properties
+    VULKAN_FN(vkGetPipelineExecutablePropertiesKHR);
+    VULKAN_FN(vkGetPipelineExecutableStatisticsKHR);
+    #endif
+
     #ifdef VK_KHR_present_wait
     VULKAN_FN(vkWaitForPresentKHR);
     #endif

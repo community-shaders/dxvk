@@ -6,6 +6,8 @@
 #include <dxvk_dummy_frag.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -78,6 +80,82 @@ namespace dxvk {
 
   
 
+  // Capture tools list shaders by entry point and primary source file (Nsight Graphics shows
+  // "main - <hash>" for every module), so under capture a module's entry point (and the entry
+  // function's OpName) and its primary OpSource file name are rewritten to the shader's name.
+  static std::vector<uint32_t> spirvWithCaptureNames(const uint32_t* code, size_t dwords, const std::string& entryName, const std::string& fileName) {
+    auto stringWords = [](const char* str) { return uint32_t((std::strlen(str) + 4u) / 4u); };
+    auto appendString = [](std::vector<uint32_t>& out, const std::string& str) {
+      size_t base = out.size();
+      out.resize(base + (str.size() + 4u) / 4u, 0u);
+      std::memcpy(&out[base], str.data(), str.size());
+    };
+
+    if (dwords < 5u)
+      return { };
+
+    uint32_t entryFunction = 0u, entryPoints = 0u, fileId = 0u;
+
+    for (size_t i = 5u; i < dwords; ) {
+      uint32_t op = code[i] & 0xffffu, count = code[i] >> 16u;
+      if (!count || i + count > dwords)
+        return { };
+      if (op == 15u && count > 3u) { entryFunction = code[i + 2u]; entryPoints++; }
+      if (op == 3u && count > 3u && !fileId) fileId = code[i + 3u];
+      i += count;
+    }
+
+    if (entryPoints != 1u)
+      return { };
+
+    std::vector<uint32_t> out(code, code + 5u);
+    out.reserve(dwords + 64u);
+
+    for (size_t i = 5u; i < dwords; ) {
+      uint32_t op = code[i] & 0xffffu, count = code[i] >> 16u;
+      size_t start = out.size();
+
+      if (op == 15u && count > 3u) {
+        // OpEntryPoint model function "name" interface...
+        uint32_t nameEnd = 3u + stringWords(reinterpret_cast<const char*>(&code[i + 3u]));
+        out.insert(out.end(), { 0u, code[i + 1u], code[i + 2u] });
+        appendString(out, entryName);
+        out.insert(out.end(), &code[i + std::min(nameEnd, count)], &code[i + count]);
+      } else if (op == 5u && count > 2u && code[i + 1u] == entryFunction) {
+        out.insert(out.end(), { 0u, code[i + 1u] });
+        appendString(out, entryName);
+      } else if (op == 7u && count > 2u && fileId && code[i + 1u] == fileId) {
+        out.insert(out.end(), { 0u, code[i + 1u] });
+        appendString(out, fileName);
+      } else {
+        out.insert(out.end(), &code[i], &code[i + count]);
+        i += count;
+        continue;
+      }
+
+      out[start] = uint32_t((out.size() - start) << 16u) | op;
+      i += count;
+    }
+
+    return out;
+  }
+
+
+  void DxvkShader::setCaptureName(const std::string& name) {
+    std::lock_guard lock(m_captureNameMutex);
+
+    if (m_captureName.empty())
+      m_captureName = name;
+  }
+
+
+  std::string DxvkShader::captureName() {
+    std::string name = debugName();
+    std::lock_guard lock(m_captureNameMutex);
+    return m_captureName.empty() ? name : m_captureName + " " + name;
+  }
+
+
   DxvkShaderStageInfo::DxvkShaderStageInfo(const DxvkDevice* device, const DxvkPipelineLayout* layout)
   : m_device(device) {
     if (m_device->canUseDescriptorHeap()) {
@@ -85,6 +163,42 @@ namespace dxvk {
       m_next = &m_mapping;
     }
   }
+
+  void DxvkShaderStageInfo::setStageName(const std::string& name) {
+    if (!m_stageCount || name.empty() || !m_device->debugFlags().test(DxvkDebugFlag::Capture))
+      return;
+
+    uint32_t index = m_stageCount - 1u;
+    m_stageNames[index] = name;
+
+    // Stages created from SPIR-V (not a module identifier) also carry the name as their entry
+    // point, which is what capture tools list them by.
+    auto& moduleInfo = m_moduleInfos[index].moduleInfo;
+    if (m_stageInfos[index].pNext == &moduleInfo && moduleInfo.sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO) {
+      std::string entryName = name;
+      for (char& c : entryName)
+        c = std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
+
+      auto code = spirvWithCaptureNames(m_codeBuffers[index].data(), m_codeBuffers[index].dwords(), entryName, name);
+      if (!code.empty()) {
+        m_codeBuffers[index] = SpirvCodeBuffer(std::move(code));
+        moduleInfo.codeSize = m_codeBuffers[index].size();
+        moduleInfo.pCode = m_codeBuffers[index].data();
+        m_entryNames[index] = std::move(entryName);
+        m_stageInfos[index].pName = m_entryNames[index].c_str();
+      }
+    }
+
+    auto& nameInfo = m_nameInfos[index];
+    nameInfo = { VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
+    nameInfo.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
+    nameInfo.pObjectName = m_stageNames[index].c_str();
+
+    auto& stageInfo = m_stageInfos[index];
+    nameInfo.pNext = stageInfo.pNext;
+    stageInfo.pNext = &nameInfo;
+  }
+
 
   void DxvkShaderStageInfo::addStage(
           VkShaderStageFlagBits   stage,
@@ -295,7 +409,7 @@ namespace dxvk {
     // so that we don't have to decompress our SPIR-V shader again.
     DxvkShaderPipelineLibraryHandle pipeline = { VK_NULL_HANDLE, 0 };
 
-    if (compiledBefore && canUsePipelineCacheControl())
+    if (compiledBefore && canUsePipelineCacheControl() && !m_device->debugFlags().test(DxvkDebugFlag::Capture))
       pipeline = this->compileShaderPipeline(VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
 
     if (!pipeline.handle)
@@ -328,6 +442,8 @@ namespace dxvk {
             return { VK_NULL_HANDLE, 0 };
 
           stageInfo.addStage(stage, *identifier, nullptr);
+          if (auto shader = m_shaders.findShader(stage))
+            stageInfo.setStageName(shader->captureName());
         } else {
           // Decompress code and generate identifier as needed
           SpirvCodeBuffer spirvCode = this->getShaderCode(stage);
@@ -336,6 +452,8 @@ namespace dxvk {
             this->generateModuleIdentifierLocked(identifier, spirvCode);
 
           stageInfo.addStage(stage, std::move(spirvCode), nullptr);
+          if (auto shader = m_shaders.findShader(stage))
+            stageInfo.setStageName(shader->captureName());
         }
 
         stages &= stages - 1;

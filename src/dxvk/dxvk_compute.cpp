@@ -102,6 +102,7 @@ namespace dxvk {
     stageInfo.addStage(VK_SHADER_STAGE_COMPUTE_BIT, 
       m_shaders.cs->getCode(m_layout.getBindingMap(DxvkPipelineLayoutType::Merged), nullptr),
       &scState.scInfo);
+    stageInfo.setStageName(m_shaders.cs->captureName());
 
     VkPipelineCreateFlags2CreateInfo flags = { VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO };
 

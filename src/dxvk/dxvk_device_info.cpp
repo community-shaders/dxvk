@@ -58,6 +58,7 @@ namespace dxvk {
     HANDLE_EXT(khrMaintenance9);                   \
     HANDLE_EXT(khrMaintenance10);                  \
     HANDLE_EXT(khrMaintenance11);                  \
+    HANDLE_EXT(khrPipelineExecutableProperties);       \
     HANDLE_EXT(khrPipelineLibrary);                \
     HANDLE_EXT(khrPresentId);                      \
     HANDLE_EXT(khrPresentId2);                     \
@@ -704,6 +705,10 @@ namespace dxvk {
       m_featuresSupported.extLineRasterization.smoothLines = VK_FALSE;
     }
 
+    // Pipeline statistics (register counts, spills) are only captured on request: DXVK_PIPELINE_STATS logs them per pipeline
+    if (env::getEnvVar("DXVK_PIPELINE_STATS").empty())
+      m_featuresSupported.khrPipelineExecutableProperties.pipelineExecutableInfo = VK_FALSE;
+
     // Apply raw access chain option
     if (!instance.options().enableNvRawAccessChains)
       m_featuresSupported.nvRawAccessChains.shaderRawAccessChains = VK_FALSE;
@@ -1187,6 +1192,9 @@ namespace dxvk {
       ENABLE_EXT_FEATURE(khrMaintenance9, maintenance9, false),
       ENABLE_EXT_FEATURE(khrMaintenance10, maintenance10, false),
       ENABLE_EXT_FEATURE(khrMaintenance11, maintenance11, false),
+
+      /* Pipeline statistics on request (DXVK_PIPELINE_STATS) */
+      ENABLE_EXT_FEATURE(khrPipelineExecutableProperties, pipelineExecutableInfo, false),
 
       /* Dependency for graphics pipeline library */
       ENABLE_EXT(khrPipelineLibrary, false),

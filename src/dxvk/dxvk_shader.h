@@ -338,6 +338,21 @@ namespace dxvk {
     virtual std::string debugName() = 0;
 
     /**
+     * \brief Sets a name for capture tools
+     *
+     * The application's own name for the shader (passed in through
+     * dxvkSetNextShaderName). Only the first name set is kept.
+     * \param [in] name Name, e.g. "Lighting ps 13000019 LANDSCAPE"
+     */
+    void setCaptureName(const std::string& name);
+
+    /**
+     * \brief Name for capture tools
+     * \returns The capture name followed by the debug name, or the debug name
+     */
+    std::string captureName();
+
+    /**
      * \brief Get lookup hash for a shader
      *
      * Convenience method that returns \c 0 for a null
@@ -365,6 +380,9 @@ namespace dxvk {
     std::atomic<bool>             m_needsCompile = { true };
 
     std::optional<DxvkShaderMetadata> m_metadata;
+
+    dxvk::mutex                   m_captureNameMutex;
+    std::string                   m_captureName;
 
   };
   
@@ -427,6 +445,15 @@ namespace dxvk {
       const VkShaderModuleIdentifierEXT& identifier,
       const VkSpecializationInfo*   specInfo);
 
+    /**
+     * \brief Names the last added stage's shader module
+     *
+     * With debug utils enabled, capture tools (Nsight Graphics, RenderDoc) show
+     * the module under this name instead of its entry point. No-op otherwise.
+     * \param [in] name Name, typically the shader's debug name
+     */
+    void setStageName(const std::string& name);
+
   private:
 
     const DxvkDevice* m_device;
@@ -447,6 +474,9 @@ namespace dxvk {
     std::array<SpirvCodeBuffer,                 5>  m_codeBuffers;
     std::array<ShaderModuleInfo,                5>  m_moduleInfos = { };
     std::array<VkPipelineShaderStageCreateInfo, 5>  m_stageInfos  = { };
+    std::array<std::string,                     5>  m_stageNames  = { };
+    std::array<std::string,                     5>  m_entryNames  = { };
+    std::array<VkDebugUtilsObjectNameInfoEXT,   5>  m_nameInfos   = { };
     uint32_t                                        m_stageCount  = 0;
 
   };

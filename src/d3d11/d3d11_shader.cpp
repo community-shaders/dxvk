@@ -6,6 +6,7 @@
 #include <dxbc/dxbc_parser.h>
 
 #include "d3d11_device.h"
+#include "d3d11_org_interop.h"
 #include "d3d11_shader.h"
 
 namespace dxvk {
@@ -228,6 +229,11 @@ namespace dxvk {
       GatherInterefaceInfo(pLinkage, pShaderBytecode, BytecodeLength);
 
     CreateIrShader(pDevice, ShaderKey, ModuleInfo, pShaderBytecode, BytecodeLength, Icb);
+
+    // Named before registration, which may start compiling its pipeline library
+    if (auto name = TakeNextShaderName(); !name.empty())
+      m_shader->setCaptureName(name);
+
     pDevice->GetDXVKDevice()->registerShader(m_shader);
   }
 

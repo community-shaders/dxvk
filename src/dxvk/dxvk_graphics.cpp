@@ -1439,6 +1439,47 @@ namespace dxvk {
   }
 
 
+  /**
+   * Logs a compiled pipeline's executables and their statistics (registers, spills, ...) when DXVK_PIPELINE_STATS
+   * enabled VK_KHR_pipeline_executable_properties: one line per executable, named by the pipeline's shaders.
+   */
+  static void logPipelineStatistics(DxvkDevice* device, VkPipeline pipeline, const std::string& name) {
+    auto vk = device->vkd();
+    VkPipelineInfoKHR info = { VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR };
+    info.pipeline = pipeline;
+    uint32_t count = 0;
+    if (vk->vkGetPipelineExecutablePropertiesKHR(vk->device(), &info, &count, nullptr) || !count)
+      return;
+    std::vector<VkPipelineExecutablePropertiesKHR> executables(count, { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR });
+    if (vk->vkGetPipelineExecutablePropertiesKHR(vk->device(), &info, &count, executables.data()))
+      return;
+    for (uint32_t e = 0; e < count; e++) {
+      VkPipelineExecutableInfoKHR executable = { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR };
+      executable.pipeline = pipeline;
+      executable.executableIndex = e;
+      uint32_t statCount = 0;
+      if (vk->vkGetPipelineExecutableStatisticsKHR(vk->device(), &executable, &statCount, nullptr))
+        continue;
+      std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR });
+      if (vk->vkGetPipelineExecutableStatisticsKHR(vk->device(), &executable, &statCount, stats.data()))
+        continue;
+      std::string line = str::format("PipelineStats: ", name, " | ", executables[e].name, ":");
+      for (const auto& stat : stats) {
+        line += str::format(" ", stat.name, "=");
+        switch (stat.format) {
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:  line += stat.value.b32 ? "true" : "false"; break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:   line += std::to_string(stat.value.i64); break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:  line += std::to_string(stat.value.u64); break;
+          case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: line += std::to_string(stat.value.f64); break;
+          default: line += "?"; break;
+        }
+        line += ";";
+      }
+      Logger::info(line);
+    }
+  }
+
+
   std::pair<VkResult, VkPipeline> DxvkGraphicsPipeline::createOptimizedPipeline(
     const DxvkGraphicsPipelineFastInstanceKey& key) const {
     auto vk = m_device->vkd();
@@ -1446,15 +1487,24 @@ namespace dxvk {
 
     DxvkShaderStageInfo stageInfo(m_device, layout);
     stageInfo.addStage(VK_SHADER_STAGE_VERTEX_BIT, getShaderCode(*m_shaders.vs, key.shState.vsInfo), &key.scState.scInfo);
+    stageInfo.setStageName(m_shaders.vs->captureName());
 
-    if (m_shaders.tcs)
+    if (m_shaders.tcs) {
       stageInfo.addStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, getShaderCode(*m_shaders.tcs, key.shState.tcsInfo), &key.scState.scInfo);
-    if (m_shaders.tes)
+      stageInfo.setStageName(m_shaders.tcs->captureName());
+    }
+    if (m_shaders.tes) {
       stageInfo.addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, getShaderCode(*m_shaders.tes, key.shState.tesInfo), &key.scState.scInfo);
-    if (m_shaders.gs)
+      stageInfo.setStageName(m_shaders.tes->captureName());
+    }
+    if (m_shaders.gs) {
       stageInfo.addStage(VK_SHADER_STAGE_GEOMETRY_BIT, getShaderCode(*m_shaders.gs, key.shState.gsInfo), &key.scState.scInfo);
-    if (m_shaders.fs)
+      stageInfo.setStageName(m_shaders.gs->captureName());
+    }
+    if (m_shaders.fs) {
       stageInfo.addStage(VK_SHADER_STAGE_FRAGMENT_BIT, getShaderCode(*m_shaders.fs, key.shState.fsInfo), &key.scState.scInfo);
+      stageInfo.setStageName(m_shaders.fs->captureName());
+    }
 
     VkPipelineCreateFlags2CreateInfo flags = { VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO };
 
@@ -1493,6 +1543,11 @@ namespace dxvk {
       info.pColorBlendState       = &key.foState.cbInfo;
     }
 
+    const bool captureStatistics = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStatistics)
+      flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     if (flags.flags)
       flags.pNext = std::exchange(info.pNext, &flags);
 
@@ -1503,6 +1558,9 @@ namespace dxvk {
       Logger::err(str::format("DxvkGraphicsPipeline: Failed to compile pipeline: ", vr));
       return std::make_pair(vr, VK_NULL_HANDLE);
     }
+
+    if (captureStatistics)
+      logPipelineStatistics(m_device, pipeline, str::format(m_shaders.vs ? m_shaders.vs->captureName() : "-", " ", m_shaders.fs ? m_shaders.fs->captureName() : "-"));
 
     return std::make_pair(vr, pipeline);
   }

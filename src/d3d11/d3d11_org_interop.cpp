@@ -19,6 +19,17 @@ namespace dxvk {
 
   namespace {
     thread_local DxvkDrawCaller g_nextDrawCaller;
+    thread_local std::string    g_nextShaderName;
+  }
+
+  std::string TakeNextShaderName() {
+    return std::exchange(g_nextShaderName, std::string());
+  }
+
+  // Names the next shader this thread creates (CreateVertexShader, CreatePixelShader, ...) for
+  // capture tools; null clears it. The name only reaches the driver under debug utils.
+  extern "C" DLLEXPORT void __stdcall dxvkSetNextShaderName(const char* name) {
+    g_nextShaderName = name ? name : "";
   }
 
   DxvkDrawCaller TakeDrawCaller() noexcept {

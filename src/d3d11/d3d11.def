@@ -26,3 +26,4 @@ EXPORTS
     dxvkResolveCheckpointMarker @143
     dxvkSetDrawCaller @144
     dxvkGetInteropResourceInfos @145
+    dxvkSetNextShaderName @146
