@@ -27,3 +27,5 @@ EXPORTS
     dxvkSetDrawCaller @144
     dxvkGetInteropResourceInfos @145
     dxvkSetNextShaderName @146
+    dxvkEmitExternalCommands @147
+    dxvkSetBindingModelCallback @148

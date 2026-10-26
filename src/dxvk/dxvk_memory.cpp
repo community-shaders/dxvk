@@ -2763,6 +2763,39 @@ namespace dxvk {
     // Re-query current memory budgets
     updateMemoryHeapBudgets();
 
+    // Fork diagnostic: DXVK_MEMORY_STATS_LOG=<seconds> logs each memory type's allocated and used memory
+    // and its pools' chunks that often (finding host memory growth).
+    static const uint32_t statsInterval = uint32_t(std::atoi(env::getEnvVar("DXVK_MEMORY_STATS_LOG").c_str()));
+    static high_resolution_clock::time_point statsDeadline = { };
+
+    if (statsInterval && currentTime >= statsDeadline) {
+      statsDeadline = currentTime + std::chrono::seconds(statsInterval);
+
+      std::stringstream sstr;
+      sstr << "Memory stats (MiB): type heap flags allocated used devicePoolChunks mappedPoolChunks";
+
+      for (uint32_t i = 0; i < m_memTypeCount; i++) {
+        const auto& type = m_memTypes[i];
+
+        if (!type.stats.memoryAllocated)
+          continue;
+
+        sstr << std::endl << "  " << i << " " << type.properties.heapIndex << " " << std::hex << type.properties.propertyFlags << std::dec
+             << " " << (type.stats.memoryAllocated >> 20) << " " << (type.stats.memoryUsed >> 20)
+             << " " << type.devicePool.chunks.size() << " " << type.mappedPool.chunks.size();
+      }
+
+      // The process's usage of each heap (VK_EXT_memory_budget): every client's allocations, not only DXVK's.
+      if (m_device->features().extMemoryBudget) {
+        DxvkAdapterMemoryInfo heapInfo = m_device->adapter()->getMemoryHeapInfo();
+
+        for (uint32_t i = 0; i < m_memHeapCount; i++)
+          sstr << std::endl << "  heap " << i << " process usage " << (heapInfo.heaps[i].memoryAllocated >> 20) << " budget " << (heapInfo.heaps[i].memoryBudget >> 20);
+      }
+
+      Logger::info(sstr.str());
+    }
+
     // Periodically free unused memory chunks and update
     // memory allocation statistics for the adapter.
     for (uint32_t i = 0; i < m_memHeapCount; i++)

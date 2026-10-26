@@ -1449,6 +1449,75 @@ namespace dxvk {
       return m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)];
     }
 
+    /**
+     * \brief Adds an interop client's semaphore wait
+     *
+     * Joins the graphics queue submission that will execute the
+     * command buffers being recorded now, so it blocks the client's
+     * commands recorded into them (and DXVK's own in the same
+     * submission), but no earlier submission of this command list.
+     * \param [in] wait Semaphore, value and stages to block
+     */
+    void waitSemaphoreForInterop(const VkSemaphoreSubmitInfo& wait) {
+      addInteropSemaphore(m_interopWaits, wait);
+    }
+
+    /**
+     * \brief Adds an interop client's semaphore signal
+     *
+     * Joins the graphics queue submission that will execute the
+     * command buffers being recorded now: it signals once everything
+     * up to the end of that submission completed, the commands the
+     * client recorded into them included. Signals of one timeline
+     * semaphore in one submission fold into the highest value.
+     * \param [in] signal Semaphore, value and stages to signal on
+     */
+    void signalSemaphoreForInterop(const VkSemaphoreSubmitInfo& signal) {
+      addInteropSemaphore(m_interopSignals, signal);
+    }
+
+    /**
+     * rief Rebinds DXVK's descriptor heaps or buffers after interop commands
+     *
+     * An interop client that binds its own descriptor heaps or descriptor
+     * buffers into the execution command buffer replaces DXVK's. Binds
+     * DXVK's again on that buffer right away; the caller must also dirty
+     * every descriptor set, since rebinding descriptor buffers invalidates
+     * their offsets. No secondary command buffer may be active.
+     */
+    void rebindDescriptorsAfterInterop();
+
+  private:
+
+    struct InteropSemaphore {
+      uint32_t              submission;
+      VkSemaphoreSubmitInfo info;
+    };
+
+    small_vector<InteropSemaphore, 4> m_interopWaits;
+    small_vector<InteropSemaphore, 4> m_interopSignals;
+
+    void addInteropSemaphore(
+            small_vector<InteropSemaphore, 4>& list,
+      const VkSemaphoreSubmitInfo&      info) {
+      uint32_t submission = uint32_t(m_cmdSubmissions.size());
+
+      for (auto& entry : list) {
+        if (entry.submission == submission && entry.info.semaphore == info.semaphore) {
+          entry.info.value = std::max(entry.info.value, info.value);
+          entry.info.stageMask |= info.stageMask;
+          return;
+        }
+      }
+
+      auto& entry = list.emplace_back();
+      entry.submission = submission;
+      entry.info = info;
+      entry.info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+      entry.info.pNext = nullptr;
+      entry.info.deviceIndex = 0u;
+    }
+
   private:
 
     force_inline VkCommandBuffer getCmdBuffer() const {

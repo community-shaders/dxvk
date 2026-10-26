@@ -1101,6 +1101,32 @@ namespace dxvk {
   }
 
 
+  void D3D11ImmediateContext::EmitExternalCommands(
+          std::function<void (VkCommandBuffer)> Callback,
+          std::vector<VkSemaphoreSubmitInfo> Waits,
+          std::vector<VkSemaphoreSubmitInfo> Signals,
+          bool                                BindsState,
+          bool                                FullBarrier,
+          std::string                         Label) {
+    D3D10DeviceLock lock = LockContext();
+
+    EmitCs([
+      cCallback     = std::move(Callback),
+      cWaits        = std::move(Waits),
+      cSignals      = std::move(Signals),
+      cBindsState   = BindsState,
+      cFullBarrier  = FullBarrier,
+      cLabel        = std::move(Label)
+    ] (DxvkContext* ctx) {
+      ctx->recordExternalCommands(cCallback,
+        uint32_t(cWaits.size()), cWaits.data(),
+        uint32_t(cSignals.size()), cSignals.data(),
+        cBindsState, cFullBarrier,
+        cLabel.empty() ? nullptr : cLabel.c_str());
+    });
+  }
+
+
   void D3D11ImmediateContext::SetExternalCommandBufferHooks(
           std::function<void (VkCommandBuffer)> OnEnd,
           std::function<void (VkCommandBuffer)> OnBegin) {

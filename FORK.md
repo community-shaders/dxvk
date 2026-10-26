@@ -192,8 +192,9 @@ safety net, so @103 is retired rather than left as a fallback.
 
 ### Interop submissions after a render-graph epoch
 
-Community Shaders' render graph enables `VK_EXT_descriptor_heap` on this device for BasicRHI, and a Streamline plugin requests it
-too, so Streamline's upscalers and frame generation run on the descriptor-heap path. DXVK itself stays on descriptor buffers.
+When DXVK runs on descriptor heaps, Community Shaders' render graph is granted `VK_EXT_descriptor_heap` for BasicRHI (see
+"Descriptor model" below), and a Streamline plugin requests it too, so Streamline's upscalers and frame generation run on the
+descriptor-heap path. The hazard below was observed in that configuration.
 
 A heap-path consumer's command buffer that executes directly behind a graph epoch's command buffer computes from the wrong
 descriptors on NVIDIA. The output is black, then garbage, then right, from correct inputs. DXVK work that binds image descriptors in
@@ -240,16 +241,51 @@ accepted.
 
 *File: `src/dxvk/dxvk_presenter.cpp`*
 
-### Descriptor heap disabled on NVIDIA
+### Descriptor model, negotiated with the interop client
 
-NGX 310.7 writes a combined D24S8 descriptor through the experimental descriptor-heap path,
-violating `VUID-VkImageDescriptorInfoEXT-pView-11430`, and records no DLSS output. Streamline
-interop stays on the established descriptor-set implementation.
+Community Shaders' render graph records BasicRHI work into DXVK's own command buffers
+(`dxvkEmitExternalCommands`), so BasicRHI must bind descriptors the way DXVK does. Two models in
+one command buffer (BasicRHI on heaps, DXVK on descriptor buffers) fetched garbage descriptors on
+an RTX 5080: MMU faults with no owning resource, depending only on where in DXVK's stream the
+interop's draws landed. Three pieces keep the two on one model:
 
-This is a workaround for a driver/NGX bug and should be re-tested against new drivers.
-`dxvk.enableDescriptorHeap` overrides it.
+- **Negotiation** (`dxvkSetBindingModelCallback`). During `DxvkAdapter::createDevice`, each
+  attempt (normal and safe mode), the capabilities make DXVK's usual choice, then call the
+  client's callback with the physical device and that choice. The callback returns the models it
+  accepts (heap = 1, buffer = 2, the values of BasicRHI's `BindingModelBits`; CS answers with
+  `rhi::vulkan::EvaluateBindingModels`). DXVK keeps its choice if accepted. If DXVK chose heaps
+  or descriptor buffers and the client accepts only the other, DXVK switches to it if the device
+  supports it, judged on raw support (descriptor buffers also need
+  `VK_EXT_mutable_descriptor_type`); else it keeps its choice and the client gets nothing. Legacy
+  descriptor sets (DXVK's choice on RDNA2, Pascal and most Intel, for fmask and performance) are
+  never switched away from: the client gets nothing until an update-after-bind sets backend
+  exists, and CS's graph disables itself. A user can force a model with the options below.
+  `dxvk.enableDescriptorHeap` / `dxvk.enableDescriptorBuffer` keep precedence: a model forced
+  `True` is never switched away from, one forced `False` is never switched to. The outcome is
+  logged as `Binding model: ...`.
+- **Grant exactly DXVK's model** (`applyInteropRequest`). `descriptorHeap` is granted only while
+  DXVK runs on heaps; `descriptorBuffer` and `mutableDescriptorType` only while it runs on
+  descriptor buffers. Otherwise the request is denied with the reason logged. This holds with or
+  without a callback, so an older client can no longer end up on a model DXVK does not use. On
+  legacy descriptor sets the client gets neither.
+- **The interop device record** chains `VkPhysicalDeviceDescriptorBufferFeaturesEXT` and
+  `VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT` (after the descriptor heap struct), so
+  BasicRHI reads the model from what the device was created with. The chain is walked by sType,
+  so `DXVK_ORG_INTEROP_VERSION` did not change.
 
-Descriptor *buffers* follow upstream behaviour unchanged.
+`VK_EXT_mutable_descriptor_type` is in DXVK's capability tables (`mutableDescriptorType`) for this
+only: DXVK never enables it for itself.
+
+**NVIDIA follows upstream: descriptor buffers, not heaps** (since 2026-10-25). The fork forced heaps
+on NVIDIA while BasicRHI could only bind heaps (the mixing above); with the model negotiated and
+BasicRHI's descriptor-buffer backend, that override is gone. Costs of heaps on NVIDIA:
+
+- NGX 310.7 wrote a combined D24S8 descriptor through the heap path, violating
+  `VUID-VkImageDescriptorInfoEXT-pView-11430`, and recorded no DLSS output; on an RTX 5080 (driver
+  621.01) DLSS rendered black on heaps again on 2026-10-25 (descriptor buffers fine).
+- Performance on an RTX 4080 was level to ~3% slower than descriptor buffers.
+
+`dxvk.enableDescriptorHeap = True` opts back in, and BasicRHI follows.
 
 *File: `src/dxvk/dxvk_device_info.cpp`*
 
@@ -279,8 +315,8 @@ undo or invalidate fork behaviour:
 - [ ] **`include/cs_dxvk_api.h` vs `src/d3d11/d3d11.def`** still agree, in both directions.
 - [ ] **`dxvk_name_prefix`** is still `'dxvk_'` and `d3d11_dxgi_deps` still uses `dxgi_dep`.
 - [ ] **`allowFse`** still defaults to false and **`fakeFullscreen`** still defaults to true.
-- [ ] **`enableDescriptorHeap`** is still forced off for NVIDIA, and descriptor *buffers* still
-      match upstream.
+- [ ] **`enableDescriptorHeap`** and descriptor *buffers* still match upstream (NVIDIA on buffers), and the negotiation step
+      after both policies in `disableUnusedFeatures` still sees upstream's final choice.
 - [ ] `sync_signal.h` — if upstream has taken the callback-fence fix, drop the fork's version.
 
 ---

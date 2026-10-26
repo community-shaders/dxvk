@@ -3342,6 +3342,118 @@ namespace dxvk {
   }
 
 
+  void DxvkContext::recordExternalCommands(
+    const std::function<void (VkCommandBuffer)>& callback,
+          uint32_t                    waitCount,
+    const VkSemaphoreSubmitInfo*      waits,
+          uint32_t                    signalCount,
+    const VkSemaphoreSubmitInfo*      signals,
+          bool                        bindsState,
+          bool                        fullBarrier,
+    const char*                       label) {
+    // Not suspended: a suspended pass leaves its attachments in their
+    // render layouts and its clears deferred, and the client must find
+    // every image in its default layout with its contents complete.
+    this->endCurrentPass(false);
+    this->flushBarriers();
+
+    // Every barrier DXVK emits releases an access to the resource's full
+    // set of stages, so the flush above makes all of DXVK's prior work
+    // visible to the client's commands. Its barrier tracker is empty now.
+    VkCommandBuffer cmdBuffer = m_cmd->getExecCmdBufferForInterop();
+
+    // DXVK does not see which of its resources the client uses, so it can no
+    // longer prove a transfer to an interop resource safe to reorder: the
+    // resource's tracking IDs miss the client's use, here and in every later
+    // command list (see prepareOutOfOrderTransfer).
+    m_untrackedExternalAccess = true;
+
+    for (uint32_t i = 0; i < waitCount; i++)
+      m_cmd->waitSemaphoreForInterop(waits[i]);
+
+    for (uint32_t i = 0; i < signalCount; i++)
+      m_cmd->signalSemaphoreForInterop(signals[i]);
+
+    bool hasLabel = label && label[0] && m_features.test(DxvkContextFeature::DebugUtils);
+
+    if (hasLabel)
+      m_cmd->cmdBeginDebugUtilsLabel(DxvkCmdBuffer::ExecBuffer, vk::makeLabel(0xdcf0dc, label));
+
+    callback(cmdBuffer);
+
+    if (hasLabel)
+      m_cmd->cmdEndDebugUtilsLabel(DxvkCmdBuffer::ExecBuffer);
+
+    if (fullBarrier) {
+      // DXVK's next access to anything the client wrote finds no hazard in
+      // the (empty) barrier tracker, so it emits no barrier of its own.
+      VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+      barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+      barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+
+      VkDependencyInfo depInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+      depInfo.memoryBarrierCount = 1u;
+      depInfo.pMemoryBarriers = &barrier;
+
+      m_cmd->cmdPipelineBarrier(DxvkCmdBuffer::ExecBuffer, &depInfo);
+    }
+
+    if (bindsState)
+      this->invalidateExternalCommandState();
+  }
+
+
+  void DxvkContext::invalidateExternalCommandState() {
+    // Same as at the start of a command buffer (beginCurrentCommands):
+    // the client may have changed any of it.
+    this->unbindComputePipeline();
+    this->unbindGraphicsPipeline();
+
+    m_flags.clr(
+      DxvkContextFlag::GpIndependentSets);
+
+    m_flags.set(
+      DxvkContextFlag::GpDirtyRenderTargets,
+      DxvkContextFlag::GpDirtyPipeline,
+      DxvkContextFlag::GpDirtyPipelineState,
+      DxvkContextFlag::GpDirtyVertexBuffers,
+      DxvkContextFlag::GpDirtyIndexBuffer,
+      DxvkContextFlag::GpDirtyXfbBuffers,
+      DxvkContextFlag::GpDirtyBlendConstants,
+      DxvkContextFlag::GpDirtyDepthBias,
+      DxvkContextFlag::GpDirtyDepthBounds,
+      DxvkContextFlag::GpDirtyDepthClip,
+      DxvkContextFlag::GpDirtyDepthTest,
+      DxvkContextFlag::GpDirtyStencilTest,
+      DxvkContextFlag::GpDirtyStencilRef,
+      DxvkContextFlag::GpDirtyMultisampleState,
+      DxvkContextFlag::GpDirtyRasterizerState,
+      DxvkContextFlag::GpDirtySampleLocations,
+      DxvkContextFlag::GpDirtyViewport,
+      DxvkContextFlag::GpDirtySpecConstants,
+      DxvkContextFlag::GpDirtySpecDataBlock,
+      DxvkContextFlag::CpDirtyPipelineState,
+      DxvkContextFlag::CpDirtySpecConstants,
+      DxvkContextFlag::DirtyDrawBuffer,
+      DxvkContextFlag::DirtyPushData);
+
+    // Descriptor sets, and with descriptor buffers their offsets, which
+    // rebinding the buffers below invalidates.
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    // The client may have bound its own descriptor heaps or buffers. DXVK
+    // otherwise binds its own only when a command buffer begins or its
+    // descriptor range moves, so bind them again now.
+    if (m_features.any(DxvkContextFeature::DescriptorHeap,
+                       DxvkContextFeature::DescriptorBuffer))
+      m_cmd->rebindDescriptorsAfterInterop();
+  }
+
+
   void DxvkContext::endExternalCommands() {
     if (likely(!m_externalCmdEnd))
       return;
@@ -10636,6 +10748,10 @@ namespace dxvk {
     if (unlikely(buffer.info().flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
 
+    // Interop clients may use it without DXVK tracking that use
+    if (unlikely(m_untrackedExternalAccess && buffer.hasStableAddress()))
+      return DxvkCmdBuffer::ExecBuffer;
+
     // If the buffer hasn't been used in the previous submission, we're
     // good. Force proper synchronization, but allow for some overlap.
     if (cmdBuffer == DxvkCmdBuffer::SdmaBuffer && buffer.getTrackId() < m_submitLastId) {
@@ -10704,6 +10820,10 @@ namespace dxvk {
     if (unlikely(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
 
+    // Interop clients may use it without DXVK tracking that use
+    if (unlikely(m_untrackedExternalAccess && image.isOrgInteropImage()))
+      return DxvkCmdBuffer::ExecBuffer;
+
     // Reject any images that use non-default image layouts since
     // per-subresource layout tracking relies on proper ordering
     if (unlikely(!image.hasUnifiedLayout()))
@@ -10769,9 +10889,11 @@ namespace dxvk {
 
   bool DxvkContext::prepareOutOfOrderTransition(
           DxvkImage&                image) {
-    // Sparse resources can alias, need to ignore.
+    // Sparse resources can alias, need to ignore. Interop clients may have
+    // used an interop image earlier in this command buffer, untracked.
     return !(image.isTracked(m_trackingId, DxvkAccess::Write))
-        && !(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+        && !(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)
+        && !(m_untrackedExternalAccess && image.isOrgInteropImage());
   }
 
 

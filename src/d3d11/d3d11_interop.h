@@ -6,6 +6,7 @@
 
 struct DxvkOrgInteropSubmission;
 struct DxvkOrgInteropSubmissionBatch;
+struct DxvkOrgInteropExternalCommands;
 struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
 
@@ -92,6 +93,12 @@ namespace dxvk {
     HRESULT EmitCommandBufferCallback(
             void                          (*pCallback)(void*, VkCommandBuffer),
             void*                                   pUser);
+
+    /**
+     * \brief Runs a client recording that may bind state, in stream order (see d3d11_org_interop.h)
+     */
+    HRESULT EmitExternalCommands(
+      const DxvkOrgInteropExternalCommands* pCommands);
 
     /**
      * rief Client callbacks at DXVK's command buffer boundaries (see d3d11_org_interop.h)

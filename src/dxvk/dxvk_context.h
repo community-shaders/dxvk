@@ -1329,6 +1329,38 @@ namespace dxvk {
     void recordExternalCommands(const std::function<void (VkCommandBuffer)>& callback);
 
     /**
+     * \brief Records an interop client's commands that bind their own state
+     *
+     * Ends the current render pass without suspending it, so that every
+     * image is back in its default layout and deferred clears are done,
+     * flushes pending barriers, then hands the client the execution
+     * command buffer. The waits and signals join the graphics submission
+     * that will execute it. Afterwards, with \p bindsState, DXVK forgets
+     * everything it tracks about the command buffer's state, as if it had
+     * just begun: pipelines, descriptor heap or buffer bindings, descriptor
+     * sets, push data, vertex and index buffers, and all dynamic state.
+     * With \p fullBarrier it also records a full memory barrier, making
+     * the client's writes available to every later command.
+     * \param [in] callback Records the client's commands
+     * \param [in] waitCount Number of semaphore waits
+     * \param [in] waits Semaphore waits
+     * \param [in] signalCount Number of semaphore signals
+     * \param [in] signals Semaphore signals
+     * \param [in] bindsState Whether the client binds state
+     * \param [in] fullBarrier Whether to emit a full barrier after
+     * \param [in] label Debug label around the commands, may be null
+     */
+    void recordExternalCommands(
+      const std::function<void (VkCommandBuffer)>& callback,
+            uint32_t                    waitCount,
+      const VkSemaphoreSubmitInfo*      waits,
+            uint32_t                    signalCount,
+      const VkSemaphoreSubmitInfo*      signals,
+            bool                        bindsState,
+            bool                        fullBarrier,
+      const char*                       label);
+
+    /**
      * \brief Interop hooks at the execution command buffer's boundaries
      *
      * \p onEnd records into each execution command buffer right before it
@@ -1376,6 +1408,12 @@ namespace dxvk {
 
     std::function<void (VkCommandBuffer)> m_externalCmdEnd;
     std::function<void (VkCommandBuffer)> m_externalCmdBegin;
+
+    // Set by the first recordExternalCommands with real work, for the context's
+    // lifetime: interop resources (images described to clients, buffers with a
+    // stable address) may then have accesses DXVK cannot track, so transfers
+    // to them are never moved ahead of the execution command buffer.
+    bool                    m_untrackedExternalAccess = false;
 
     uint64_t                m_trackingId = 0u;
     uint64_t                m_submitWaitId = 0u;
@@ -1957,6 +1995,16 @@ namespace dxvk {
     void endCurrentCommands();
 
     void splitCommands();
+
+    /**
+     * rief Forgets all command buffer state DXVK tracks
+     *
+     * Marks every binding and every piece of dynamic state dirty and
+     * rebinds DXVK's descriptor heaps or buffers, so that the next draw
+     * or dispatch sets up everything again. Used after interop commands
+     * that bound their own state. Must be called outside of any pass.
+     */
+    void invalidateExternalCommandState();
 
     void discardRenderTarget(
       const DxvkImage&                image,

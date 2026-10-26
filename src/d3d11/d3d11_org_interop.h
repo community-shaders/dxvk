@@ -161,7 +161,62 @@ typedef struct DxvkOrgInteropSubmission {
  */
 typedef HRESULT (__stdcall *PFN_dxvkRequestDeviceFeatures)(const DxvkOrgInteropFeatureRequest* pRequest);
 
-/** Describes the Vulkan device behind a DXVK D3D11 device. */
+/**
+ * Descriptor binding models (DxvkOrgInteropBindingModelNegotiation). The values equal BasicRHI's
+ * rhi::vulkan::BindingModelBits, so a BasicRHI client can return EvaluateBindingModels' mask as is.
+ */
+typedef enum DxvkOrgInteropBindingModelBits {
+  /** VK_EXT_descriptor_heap: the client is granted descriptorHeap. */
+  DXVK_ORG_BINDING_MODEL_DESCRIPTOR_HEAP   = 1u << 0,
+  /** VK_EXT_descriptor_buffer: the client is granted descriptorBuffer and mutableDescriptorType. */
+  DXVK_ORG_BINDING_MODEL_DESCRIPTOR_BUFFER = 1u << 1,
+} DxvkOrgInteropBindingModelBits;
+
+/**
+ * Called during the next device creation (each attempt: DXVK retries in a safe mode), once DXVK
+ * picked its physical device and its own descriptor model (dxvkPreferredModel: one
+ * DxvkOrgInteropBindingModelBits value, or 0 for legacy descriptor sets), before the VkDevice
+ * exists. Returns the mask of models the client can record with. Instance-level Vulkan queries on
+ * physicalDevice only; must not call into D3D11 or DXVK, and must not throw.
+ */
+typedef uint32_t (*PFN_dxvkOrgInteropBindingModelCallback)(void* user, VkInstance instance,
+  VkPhysicalDevice physicalDevice, PFN_vkGetInstanceProcAddr getInstanceProcAddr, uint32_t dxvkPreferredModel);
+
+#define DXVK_ORG_BINDING_MODEL_NEGOTIATION_VERSION 1u
+
+typedef struct DxvkOrgInteropBindingModelNegotiation {
+  /** DXVK_ORG_BINDING_MODEL_NEGOTIATION_VERSION. */
+  uint32_t version;
+  /** Null clears the callback. */
+  PFN_dxvkOrgInteropBindingModelCallback callback;
+  void* user;
+} DxvkOrgInteropBindingModelNegotiation;
+
+/**
+ * dxvkSetBindingModelCallback: a client that records into DXVK's command buffers
+ * (dxvkEmitExternalCommands) must bind descriptors the way DXVK does. Call before the device is
+ * created, alongside dxvkRequestDeviceFeatures. DXVK then runs on:
+ *
+ * - its own choice, if the callback accepts it;
+ * - else, if DXVK chose heaps or descriptor buffers, the other one if the callback accepts it,
+ *   the device supports it (descriptor buffers also need VK_EXT_mutable_descriptor_type) and
+ *   dxvk.enableDescriptorHeap / dxvk.enableDescriptorBuffer do not forbid it. A model forced on
+ *   with those options is never switched away from;
+ * - else its own choice. Legacy descriptor sets (0) are never switched away from.
+ *
+ * Whatever DXVK runs on, a request for descriptorHeap is granted only on heaps, and descriptorBuffer
+ * and mutableDescriptorType only on descriptor buffers (denied features are counted in
+ * DxvkOrgInteropDeviceInfo::deniedFeatureCount), with or without a callback. On legacy descriptor
+ * sets the client gets neither model. The outcome is in the device's enabledFeatures chain.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkSetBindingModelCallback)(const DxvkOrgInteropBindingModelNegotiation* pNegotiation);
+
+/**
+ * Describes the Vulkan device behind a DXVK D3D11 device. enabledFeatures chains
+ * VkPhysicalDeviceVulkan11/12/13Features and the descriptor heap, descriptor buffer, mutable
+ * descriptor type, device-generated commands and robustness2 feature structs; walk it by sType
+ * (structs may be added without a version change).
+ */
 typedef HRESULT (__stdcall *PFN_dxvkGetInteropDeviceInfo)(ID3D11Device* pDevice, DxvkOrgInteropDeviceInfo* pInfo);
 
 /**
@@ -239,6 +294,73 @@ typedef struct DxvkOrgInteropSubmissionBatch {
 /** As dxvkEnqueueInteropSubmission, for a batch of submissions (same ordering and lifetime rules). */
 typedef HRESULT (__stdcall *PFN_dxvkEnqueueInteropSubmissions)(ID3D11Device* pDevice,
   const DxvkOrgInteropSubmissionBatch* pBatch);
+
+/** DxvkOrgInteropExternalCommands::flags */
+typedef enum DxvkOrgInteropExternalCommandsFlagBits {
+  /**
+   * The callback binds state of its own: pipelines, pipeline layouts, descriptor heaps or
+   * descriptor buffers, push constants or push data, vertex and index buffers, dynamic state.
+   * Afterwards DXVK forgets every binding it tracks and sets up everything again before its
+   * next draw or dispatch, its descriptor heaps or buffers included.
+   */
+  DXVK_ORG_EXTERNAL_COMMANDS_BINDS_STATE   = 1u << 0,
+  /**
+   * DXVK records a full memory barrier after the callback (all commands, memory writes to all
+   * commands, memory reads and writes). Without it the client must release its own accesses,
+   * see dxvkEmitExternalCommands.
+   */
+  DXVK_ORG_EXTERNAL_COMMANDS_FULL_BARRIER  = 1u << 1,
+} DxvkOrgInteropExternalCommandsFlagBits;
+
+#define DXVK_ORG_EXTERNAL_COMMANDS_VERSION 1u
+
+typedef struct DxvkOrgInteropExternalCommands {
+  /** DXVK_ORG_EXTERNAL_COMMANDS_VERSION. */
+  uint32_t version;
+  /** DxvkOrgInteropExternalCommandsFlagBits. */
+  uint32_t flags;
+  PFN_dxvkOrgInteropCommandBufferCallback callback;
+  void* user;
+  /**
+   * Timeline semaphore waits joined to the graphics queue submission that executes
+   * the command buffer the commands land in, so they block DXVK's commands in that submission
+   * too, at the given stages (0 means all commands). Copied at the call; pNext and deviceIndex
+   * are ignored.
+   */
+  uint32_t waitCount;
+  const VkSemaphoreSubmitInfo* waits;
+  /**
+   * Timeline semaphore signals joined to that same submission: each signals once everything up
+   * to the end of the submission completed, the client's commands included, which is when the
+   * client may release what they use. Values must grow in stream order per semaphore; signals of
+   * one semaphore landing in one submission fold into the highest. Stages 0 means all commands.
+   * Copied at the call; pNext and deviceIndex are ignored.
+   */
+  uint32_t signalCount;
+  const VkSemaphoreSubmitInfo* signals;
+  /** Optional: a debug label region around the commands under a capture tool. Copied at the call. */
+  const char* label;
+} DxvkOrgInteropExternalCommands;
+
+/**
+ * dxvkEmitExternalCommands: like dxvkEmitCommandBufferCallback, for a client that records real
+ * work into DXVK's command buffer. The callback runs on DXVK's worker thread in D3D11 stream
+ * order, once, with the execution command buffer DXVK is recording:
+ *
+ * - Outside any render pass: DXVK ended its pass (not suspended), so every image is in the
+ *   layout DXVK keeps it in (DxvkOrgInteropImageInfo::layout) and deferred clears are done.
+ * - After DXVK flushed its barriers: every access DXVK made before is visible to the stages
+ *   the resource can be used in.
+ * - The client must leave every image it touched in that layout, end every render pass and
+ *   query it began, and cover its own accesses with barriers: DXVK does not see them, and its
+ *   barrier tracker is empty after the callback, so its next access to a resource the client
+ *   wrote emits no barrier. Either release them (an exit barrier from the client's stages and
+ *   accesses to all commands, memory reads and writes) or set
+ *   DXVK_ORG_EXTERNAL_COMMANDS_FULL_BARRIER.
+ * - Without DXVK_ORG_EXTERNAL_COMMANDS_BINDS_STATE the callback must bind nothing.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkEmitExternalCommands)(ID3D11Device* pDevice,
+  const DxvkOrgInteropExternalCommands* pCommands);
 
 /**
  * Returns the address of the immediate context's submission counter, which

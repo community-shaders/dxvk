@@ -35,6 +35,7 @@ namespace dxvk {
     HANDLE_EXT(extMemoryBudget);                   \
     HANDLE_EXT(extMemoryPriority);                 \
     HANDLE_EXT(extMultiDraw);                      \
+    HANDLE_EXT(extMutableDescriptorType);          \
     HANDLE_EXT(extNonSeamlessCubeMap);             \
     HANDLE_EXT(extPageableDeviceLocalMemory);      \
     HANDLE_EXT(extRobustness2);                    \
@@ -104,7 +105,8 @@ namespace dxvk {
     const DxvkInstance&               instance,
           VkPhysicalDevice            adapter,
     const VkDeviceCreateInfo*         deviceInfo,
-          bool                        safeMode) {
+          bool                        safeMode,
+    const DxvkInteropBindingModelNegotiation* negotiation) {
     // Can't query anything on a Vulkan 1.0 device
     auto vk = instance.vki();
     vk->vkGetPhysicalDeviceProperties(adapter, &m_properties.core.properties);
@@ -121,7 +123,7 @@ namespace dxvk {
     m_featuresRawSupported = m_featuresSupported;
     m_extensionsRawSupported = m_extensionsSupported;
 
-    disableUnusedFeatures(instance, safeMode);
+    disableUnusedFeatures(instance, adapter, safeMode, negotiation);
 
     enableFeaturesAndExtensions();
     enableQueues();
@@ -211,6 +213,32 @@ namespace dxvk {
       return reinterpret_cast<T*>(reinterpret_cast<char*>(to) + offset);
     }
 
+    const char* bindingModelName(uint32_t model) {
+      switch (model) {
+        case DxvkInteropBindingModelHeap:   return "descriptor heap";
+        case DxvkInteropBindingModelBuffer: return "descriptor buffer";
+        case 0u:                            return "legacy descriptor sets";
+        default:                            return "unknown";
+      }
+    }
+
+    std::string bindingModelMaskName(uint32_t mask) {
+      if (!mask)
+        return "none";
+
+      std::string result;
+
+      for (uint32_t bit : { uint32_t(DxvkInteropBindingModelHeap), uint32_t(DxvkInteropBindingModelBuffer) }) {
+        if (mask & bit)
+          result += str::format(result.empty() ? "" : ", ", bindingModelName(bit));
+      }
+
+      if (mask & ~uint32_t(DxvkInteropBindingModelHeap | DxvkInteropBindingModelBuffer))
+        result += str::format(result.empty() ? "" : ", ", "unknown bits");
+
+      return result;
+    }
+
   }
 
 
@@ -229,6 +257,20 @@ namespace dxvk {
     auto features = getFeatureList();
 
     for (const auto& r : request) {
+      // The client binds descriptors inside DXVK's command buffers, so it gets exactly the
+      // model DXVK runs on: two models in one command buffer fetched garbage descriptors on
+      // NVIDIA. Descriptor buffers come with mutable descriptors for the client's heaps.
+      bool heapFeature = r.feature == "descriptorHeap";
+      bool bufferFeature = r.feature == "descriptorBuffer" || r.feature == "mutableDescriptorType";
+
+      if ((heapFeature && m_bindingModel != DxvkInteropBindingModelHeap)
+       || (bufferFeature && m_bindingModel != DxvkInteropBindingModelBuffer)) {
+        auto& entry = denied.emplace_back(r);
+        entry.reason = str::format("DXVK runs on ", bindingModelName(m_bindingModel),
+          ", and an interop client only gets DXVK's own binding model");
+        continue;
+      }
+
       bool enabled = false;
 
       for (const auto& f : features) {
@@ -570,7 +612,9 @@ namespace dxvk {
 
   void DxvkDeviceCapabilities::disableUnusedFeatures(
     const DxvkInstance&               instance,
-          bool                        safeMode) {
+          VkPhysicalDevice            adapter,
+          bool                        safeMode,
+    const DxvkInteropBindingModelNegotiation* negotiation) {
     // DXVK does not use Device-scope memory semantics itself. Listed only so an interop
     // client (whose DXC atomics use Device scope) can request it; see applyInteropRequest.
     m_featuresSupported.vk12.vulkanMemoryModelDeviceScope = VK_FALSE;
@@ -591,25 +635,13 @@ namespace dxvk {
                                || m_properties.vk12.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA
                                || m_properties.vk12.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
 
-      // Heap regresses performance on the initial NV driver releases.
-      if (m_properties.vk12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        // NGX 310.7 writes a combined D24S8 descriptor through the experimental heap path,
-        // violating VUID-VkImageDescriptorInfoEXT-pView-11430 and recording no DLSS output.
-        // Keep Streamline interop off the heap path.
-        //
-        // Re-measured 2026-09-09 on an RTX 4080, in case the correctness cost bought speed.
-        // It does not: with the heap forced on via dxvk.enableDescriptorHeap, the fallback
-        // path (which is descriptor BUFFER here, not descriptor sets) is level or ahead.
-        // Median fps, uncapped Whiterun bench, binding model confirmed per run from the log:
-        //
-        //     pair 3   buffer 153.94   heap 153.28
-        //     pair 4   buffer 155.62   heap 150.40
-        //
-        // Two earlier pairs favoured the heap by 3-6%, but their buffer runs were drifting --
-        // one still warming up, one declining through the windows -- and neither survives the
-        // rule that only a run stable across its sample windows counts. Nothing to gain, so
-        // the correctness workaround costs nothing to keep.
-        enableDescriptorHeap = false;
+      // NVIDIA keeps upstream's choice (descriptor buffers on Turing and newer). Drawcall Limit Fix's
+      // CPU pipeline records BasicRHI work into DXVK's own command buffer, so the two must bind
+      // descriptors the same way; that is negotiated with the client (negotiateBindingModel) and
+      // the client gets exactly DXVK's model (applyInteropRequest), BasicRHI running on either.
+      // Heaps stay off here for upstream's reasons, and one of ours: on an RTX 5080 (driver
+      // 621.01, 2026-10-25) DLSS rendered black on heaps (fine on descriptor buffers; FSR fine on
+      // both). dxvk.enableDescriptorHeap = True still opts in.
 
       applyTristate(enableDescriptorHeap, instance.options().enableDescriptorHeap);
 
@@ -647,6 +679,20 @@ namespace dxvk {
       if (!enableDescriptorBuffer)
         m_featuresSupported.extDescriptorBuffer.descriptorBuffer = VK_FALSE;
     }
+
+    // An interop client recording into DXVK's command buffers must bind descriptors the way
+    // DXVK does, so it gets a say in the model before anything is enabled.
+    uint32_t preferredModel = m_featuresSupported.extDescriptorHeap.descriptorHeap ? DxvkInteropBindingModelHeap
+      : m_featuresSupported.extDescriptorBuffer.descriptorBuffer ? DxvkInteropBindingModelBuffer : 0u;
+
+    m_bindingModel = negotiateBindingModel(instance, adapter, negotiation, preferredModel);
+
+    m_featuresSupported.extDescriptorHeap.descriptorHeap = VkBool32(m_bindingModel == DxvkInteropBindingModelHeap);
+    m_featuresSupported.extDescriptorBuffer.descriptorBuffer = VkBool32(m_bindingModel == DxvkInteropBindingModelBuffer);
+
+    // Mutable descriptors are for interop clients whose bindless heaps live in descriptor
+    // buffers (granted only while DXVK runs on them, see applyInteropRequest); DXVK does not use them.
+    m_featuresSupported.extMutableDescriptorType.mutableDescriptorType = VK_FALSE;
 
     // Disable unified layouts if disabled via config
     if (!instance.options().enableUnifiedImageLayout)
@@ -739,6 +785,76 @@ namespace dxvk {
       m_featuresSupported.amdBufferMarker = VK_FALSE;
       m_featuresSupported.nvDeviceDiagnosticCheckpoints = VK_FALSE;
     }
+  }
+
+
+  uint32_t DxvkDeviceCapabilities::negotiateBindingModel(
+    const DxvkInstance&               instance,
+          VkPhysicalDevice            adapter,
+    const DxvkInteropBindingModelNegotiation* negotiation,
+          uint32_t                    preferredModel) const {
+    if (!negotiation || !negotiation->callback)
+      return preferredModel;
+
+    auto vki = instance.vki();
+
+    uint32_t accepted = negotiation->callback(negotiation->user, vki->instance(),
+      adapter, vki->getLoaderProc(), preferredModel);
+
+    if (accepted & preferredModel) {
+      Logger::info(str::format("Binding model: ", bindingModelName(preferredModel),
+        " (DXVK's choice, accepted by the interop client)"));
+      return preferredModel;
+    }
+
+    // Legacy sets are DXVK's choice for its own performance (fmask on RDNA2, Pascal, most
+    // Intel), and DXVK keeps them: switching applies only between heaps and descriptor
+    // buffers. A user can still force a model with the options, which the policy applied.
+    if (!preferredModel) {
+      Logger::warn(str::format("Binding model: legacy descriptor sets (DXVK's policy or the device "
+        "declined heaps and descriptor buffers, or dxvk.enableDescriptorHeap/enableDescriptorBuffer "
+        "turned them off); the interop client accepts ", bindingModelMaskName(accepted),
+        ", which needs heap or buffer; the update-after-bind sets backend is not available yet, "
+        "so the client gets none"));
+      return preferredModel;
+    }
+
+    // A model the user forced on stays, and one forced off is never switched to. Judge
+    // support on the raw device features: DXVK's policy declined the other model only for
+    // its own performance, and a client that cannot run on DXVK's choice gets nothing at all.
+    // The client's descriptor-buffer heaps also need mutable descriptors.
+    const auto& options = instance.options();
+
+    bool preferredForced = (preferredModel == DxvkInteropBindingModelHeap   && options.enableDescriptorHeap   == Tristate::True)
+                        || (preferredModel == DxvkInteropBindingModelBuffer && options.enableDescriptorBuffer == Tristate::True);
+
+    bool heapAllowed = m_featuresRawSupported.extDescriptorHeap.descriptorHeap
+                    && options.enableDescriptorHeap != Tristate::False;
+
+    bool bufferAllowed = m_featuresRawSupported.extDescriptorBuffer.descriptorBuffer
+                      && m_featuresRawSupported.extMutableDescriptorType.mutableDescriptorType
+                      && options.enableDescriptorBuffer != Tristate::False;
+
+    uint32_t model = preferredModel;
+
+    if (!preferredForced) {
+      if ((accepted & DxvkInteropBindingModelHeap) && heapAllowed)
+        model = DxvkInteropBindingModelHeap;
+      else if ((accepted & DxvkInteropBindingModelBuffer) && bufferAllowed)
+        model = DxvkInteropBindingModelBuffer;
+    }
+
+    if (model != preferredModel) {
+      Logger::info(str::format("Binding model: ", bindingModelName(model), " (DXVK prefers ",
+        bindingModelName(preferredModel), ", the interop client accepts ", bindingModelMaskName(accepted), ")"));
+    } else {
+      Logger::warn(str::format("Binding model: ", bindingModelName(model), " (DXVK's choice",
+        preferredForced ? ", forced by dxvk.enableDescriptorHeap/enableDescriptorBuffer" : "",
+        "); the interop client accepts ", bindingModelMaskName(accepted),
+        ", and no model both support is allowed, so the client gets none"));
+    }
+
+    return model;
   }
 
 
@@ -1037,6 +1153,7 @@ namespace dxvk {
       ENABLE_FEATURE(vk12, descriptorBindingSampledImageUpdateAfterBind, true),
       ENABLE_FEATURE(vk12, descriptorBindingUpdateUnusedWhilePending, true),
       ENABLE_FEATURE(vk12, descriptorBindingPartiallyBound, true),
+      ENABLE_FEATURE(vk12, descriptorBindingVariableDescriptorCount, false),
       ENABLE_FEATURE(vk12, drawIndirectCount, false),
       ENABLE_FEATURE(vk12, hostQueryReset, true),
       ENABLE_FEATURE(vk12, runtimeDescriptorArray, true),
@@ -1130,6 +1247,9 @@ namespace dxvk {
 
       /* Optionally used to batch consecutive draws */
       ENABLE_EXT_FEATURE(extMultiDraw, multiDraw, false),
+
+      /* Interop only (disabled for DXVK in disableUnusedFeatures): a client's bindless heaps on descriptor buffers */
+      ENABLE_EXT_FEATURE(extMutableDescriptorType, mutableDescriptorType, false),
 
       /* Legacy cubemap for older client APIs */
       ENABLE_EXT_FEATURE(extNonSeamlessCubeMap, nonSeamlessCubeMap, false),

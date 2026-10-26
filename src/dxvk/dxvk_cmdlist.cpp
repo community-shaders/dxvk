@@ -331,6 +331,16 @@ namespace dxvk {
           0, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
       }
 
+      // Interop clients' waits join the graphics submission that executes
+      // the command buffers their commands were recorded into. Added after
+      // the transfer submission, whose queue may not support their stages.
+      for (const auto& entry : m_interopWaits) {
+        if (entry.submission == i) {
+          m_commandSubmission.waitSemaphore(entry.info.semaphore,
+            entry.info.value, entry.info.stageMask);
+        }
+      }
+
       // Submit initialization commands, if any
       for (auto cmdBuffer : InitCmdBuffers) {
         if (cmd.cmdBuffers[uint32_t(cmdBuffer)])
@@ -352,6 +362,15 @@ namespace dxvk {
         if (m_wsiSemaphores.present) {
           m_commandSubmission.signalSemaphore(m_wsiSemaphores.present,
             0, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+        }
+      }
+
+      // Interop clients' signals, likewise on the graphics submission
+      // that executes their commands
+      for (const auto& entry : m_interopSignals) {
+        if (entry.submission == i) {
+          m_commandSubmission.signalSemaphore(entry.info.semaphore,
+            entry.info.value, entry.info.stageMask);
         }
       }
 
@@ -497,6 +516,8 @@ namespace dxvk {
 
     m_waitSemaphores.clear();
     m_signalSemaphores.clear();
+    m_interopWaits.clear();
+    m_interopSignals.clear();
 
     m_cmdSubmissions.clear();
     m_cmdSparseBinds.clear();
@@ -979,6 +1000,19 @@ namespace dxvk {
     // Secondary command buffer must not be active when this gets called
     for (uint32_t i = uint32_t(DxvkCmdBuffer::ExecBuffer); i <= uint32_t(DxvkCmdBuffer::InitBuffer); i++)
       bindDescriptorBuffers(m_cmd.cmdBuffers[i]);
+  }
+
+
+  void DxvkCommandList::rebindDescriptorsAfterInterop() {
+    // Only the execution buffer: interop clients record into nothing else
+    VkCommandBuffer cmdBuffer = m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)];
+
+    if (m_device->canUseDescriptorHeap()) {
+      bindSamplerHeap(cmdBuffer);
+      bindResourceHeap(cmdBuffer);
+    } else if (m_device->canUseDescriptorBuffer()) {
+      bindDescriptorBuffers(cmdBuffer);
+    }
   }
 
 

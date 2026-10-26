@@ -122,6 +122,20 @@ namespace dxvk {
     void EmitExternalCommands(
             std::function<void (VkCommandBuffer)> Callback);
 
+    /**
+     * \brief Runs an interop client's recording that binds its own state, in stream order
+     *
+     * See DxvkContext::recordExternalCommands. The waits, signals and the label are
+     * copied into the command stream.
+     */
+    void EmitExternalCommands(
+            std::function<void (VkCommandBuffer)> Callback,
+            std::vector<VkSemaphoreSubmitInfo> Waits,
+            std::vector<VkSemaphoreSubmitInfo> Signals,
+            bool                                BindsState,
+            bool                                FullBarrier,
+            std::string                         Label);
+
     void EnqueueExternalSubmission(
             DxvkExternalSubmitInfo&&    SubmitInfo);
 

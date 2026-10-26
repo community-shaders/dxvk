@@ -394,6 +394,35 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D11VkInterop::EmitExternalCommands(
+    const DxvkOrgInteropExternalCommands* pCommands) {
+    if (!pCommands || pCommands->version != DXVK_ORG_EXTERNAL_COMMANDS_VERSION
+     || !pCommands->callback
+     || (pCommands->waitCount && !pCommands->waits)
+     || (pCommands->signalCount && !pCommands->signals))
+      return E_INVALIDARG;
+
+    std::vector<VkSemaphoreSubmitInfo> waits(pCommands->waits, pCommands->waits + pCommands->waitCount);
+    std::vector<VkSemaphoreSubmitInfo> signals(pCommands->signals, pCommands->signals + pCommands->signalCount);
+
+    for (auto* list : { &waits, &signals }) {
+      for (auto& info : *list) {
+        if (!info.stageMask)
+          info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      }
+    }
+
+    m_device->GetContext()->EmitExternalCommands(
+      [cb = pCommands->callback, user = pCommands->user] (VkCommandBuffer commandBuffer) {
+        cb(user, commandBuffer);
+      }, std::move(waits), std::move(signals),
+      (pCommands->flags & DXVK_ORG_EXTERNAL_COMMANDS_BINDS_STATE) != 0u,
+      (pCommands->flags & DXVK_ORG_EXTERNAL_COMMANDS_FULL_BARRIER) != 0u,
+      pCommands->label ? std::string(pCommands->label) : std::string());
+    return S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::SetCommandBufferBoundaryCallbacks(
           void                          (*pOnEnd)(void*, VkCommandBuffer),
           void                          (*pOnBegin)(void*, VkCommandBuffer),
@@ -476,6 +505,19 @@ extern "C" {
     }
 
     setInteropFeatureRequest(std::move(features));
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetBindingModelCallback(const DxvkOrgInteropBindingModelNegotiation* pNegotiation) {
+    if (!pNegotiation || pNegotiation->version != DXVK_ORG_BINDING_MODEL_NEGOTIATION_VERSION)
+      return E_INVALIDARG;
+
+    DxvkInteropBindingModelNegotiation negotiation;
+    negotiation.callback = pNegotiation->callback;
+    negotiation.user = pNegotiation->callback ? pNegotiation->user : nullptr;
+
+    setInteropBindingModelNegotiation(negotiation);
     return S_OK;
   }
 
@@ -582,6 +624,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->EmitCommandBufferCallback(pCallback, pUser);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkEmitExternalCommands(ID3D11Device* pDevice,
+    const DxvkOrgInteropExternalCommands* pCommands) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->EmitExternalCommands(pCommands);
   }
 
 

@@ -79,6 +79,7 @@ namespace dxvk {
     VkBool32                                                  extMemoryBudget                 = VK_FALSE;
     VkPhysicalDeviceMemoryPriorityFeaturesEXT                 extMemoryPriority               = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
     VkPhysicalDeviceMultiDrawFeaturesEXT                      extMultiDraw                    = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT };
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT          extMutableDescriptorType        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
     VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT             extNonSeamlessCubeMap           = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT };
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT      extPageableDeviceLocalMemory    = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
     VkPhysicalDeviceRobustness2FeaturesEXT                    extRobustness2                  = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
@@ -157,6 +158,7 @@ namespace dxvk {
     VkExtensionProperties extMemoryBudget                   = vk::makeExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     VkExtensionProperties extMemoryPriority                 = vk::makeExtension(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
     VkExtensionProperties extMultiDraw                      = vk::makeExtension(VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+    VkExtensionProperties extMutableDescriptorType          = vk::makeExtension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
     VkExtensionProperties extNonSeamlessCubeMap             = vk::makeExtension(VK_EXT_NON_SEAMLESS_CUBE_MAP_EXTENSION_NAME);
     VkExtensionProperties extPageableDeviceLocalMemory      = vk::makeExtension(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
     VkExtensionProperties extRobustness2                    = vk::makeExtension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -249,7 +251,8 @@ namespace dxvk {
       const DxvkInstance&               instance,
             VkPhysicalDevice            adapter,
       const VkDeviceCreateInfo*         deviceInfo,
-            bool                        safeMode = false);
+            bool                        safeMode = false,
+      const DxvkInteropBindingModelNegotiation* negotiation = nullptr);
 
     DxvkDeviceCapabilities(const DxvkDeviceCapabilities&) = delete;
 
@@ -429,6 +432,8 @@ namespace dxvk {
     DxvkDeviceExtensionInfo               m_extensionsCreate       = { };
     std::vector<const VkExtensionProperties*> m_extensionListCreate;
     bool                                  m_interopActive = false;
+    // The descriptor model DXVK runs on (DxvkInteropBindingModelBits, 0 for legacy sets).
+    uint32_t                              m_bindingModel = 0u;
 
     DxvkDeviceMemoryInfo                  m_memory = { };
 
@@ -469,7 +474,15 @@ namespace dxvk {
 
     void disableUnusedFeatures(
       const DxvkInstance&               instance,
-            bool                        safeMode);
+            VkPhysicalDevice            adapter,
+            bool                        safeMode,
+      const DxvkInteropBindingModelNegotiation* negotiation);
+
+    uint32_t negotiateBindingModel(
+      const DxvkInstance&               instance,
+            VkPhysicalDevice            adapter,
+      const DxvkInteropBindingModelNegotiation* negotiation,
+            uint32_t                    preferredModel) const;
 
     void enableFeaturesAndExtensions();
 

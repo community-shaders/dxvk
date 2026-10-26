@@ -214,7 +214,12 @@ namespace dxvk {
   Rc<DxvkDevice> DxvkAdapter::createDevice(bool safeMode) {
     auto vk = m_instance->vki();
 
-    DxvkDeviceCapabilities caps(*m_instance, m_handle, nullptr, safeMode);
+    // An in-process interop client recording into DXVK's command buffers answers which
+    // descriptor models it can bind with; the capabilities settle on one both share.
+    DxvkInteropBindingModelNegotiation negotiation = getInteropBindingModelNegotiation();
+
+    DxvkDeviceCapabilities caps(*m_instance, m_handle, nullptr, safeMode,
+      negotiation.callback ? &negotiation : nullptr);
 
     Logger::info("Creating device:");
     caps.logDeviceInfo();
@@ -230,8 +235,10 @@ namespace dxvk {
       for (const auto& f : interopGranted)
         Logger::info(str::format("  Interop feature enabled: ", f.extension.empty() ? "core" : f.extension, ".", f.feature));
 
-      for (const auto& f : interopDenied)
-        Logger::warn(str::format("  Interop feature unsupported: ", f.extension.empty() ? "core" : f.extension, ".", f.feature));
+      for (const auto& f : interopDenied) {
+        Logger::warn(str::format("  Interop feature ", f.reason.empty() ? "unsupported" : "denied", ": ",
+          f.extension.empty() ? "core" : f.extension, ".", f.feature, f.reason.empty() ? "" : " (", f.reason, f.reason.empty() ? "" : ")"));
+      }
     }
 
     // Get device features to enable
@@ -399,6 +406,8 @@ namespace dxvk {
     record->vk12 = createFeatures.vk12;
     record->vk13 = createFeatures.vk13;
     record->descriptorHeap = createFeatures.extDescriptorHeap;
+    record->descriptorBuffer = createFeatures.extDescriptorBuffer;
+    record->mutableDescriptorType = createFeatures.extMutableDescriptorType;
     record->deviceGeneratedCommands = createFeatures.extDeviceGeneratedCommands;
     record->robustness2 = createFeatures.extRobustness2;
     record->grantedFeatures = std::move(interopGranted);

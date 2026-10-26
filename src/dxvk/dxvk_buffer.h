@@ -360,6 +360,16 @@ namespace dxvk {
     }
 
     /**
+     * \brief Whether the buffer's GPU address was handed out
+     *
+     * Such a buffer may be accessed by code DXVK does not track,
+     * e.g. interop clients recording into DXVK's command buffer.
+     */
+    bool hasStableAddress() const {
+      return m_stableAddress;
+    }
+
+    /**
      * \brief Creates or retrieves a buffer view
      *
      * \param [in] info Buffer view create info

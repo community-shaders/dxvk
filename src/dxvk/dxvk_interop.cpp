@@ -10,6 +10,7 @@ namespace dxvk {
     struct InteropState {
       std::mutex mutex;
       std::vector<DxvkInteropFeature> request;
+      DxvkInteropBindingModelNegotiation negotiation;
       std::unordered_map<VkDevice, std::shared_ptr<DxvkInteropDeviceRecord>> devices;
       DxvkInteropTeardownCallback teardown = nullptr;
       void* teardownUser = nullptr;
@@ -35,12 +36,26 @@ namespace dxvk {
   }
 
 
+  void setInteropBindingModelNegotiation(DxvkInteropBindingModelNegotiation negotiation) {
+    std::lock_guard lock(state().mutex);
+    state().negotiation = negotiation;
+  }
+
+
+  DxvkInteropBindingModelNegotiation getInteropBindingModelNegotiation() {
+    std::lock_guard lock(state().mutex);
+    return state().negotiation;
+  }
+
+
   void DxvkInteropDeviceRecord::chain() {
     features.pNext = &vk11;
     vk11.pNext = &vk12;
     vk12.pNext = &vk13;
     vk13.pNext = &descriptorHeap;
-    descriptorHeap.pNext = &deviceGeneratedCommands;
+    descriptorHeap.pNext = &descriptorBuffer;
+    descriptorBuffer.pNext = &mutableDescriptorType;
+    mutableDescriptorType.pNext = &deviceGeneratedCommands;
     deviceGeneratedCommands.pNext = &robustness2;
     robustness2.pNext = nullptr;
 
