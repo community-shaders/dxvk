@@ -289,13 +289,19 @@ namespace dxvk {
 
 
   bool D3D11VkInterop::LockImage(const Rc<DxvkImage>& image) {
+    // The client imports an image in the layout it rests in between commands (FillImageInfo), and expects GENERAL: without
+    // VK_KHR_unified_image_layouts (AMD's legacy Windows driver) an image rests in its usage's optimal layout, so it is moved to
+    // GENERAL, which becomes its resting layout (ensureImageCompatibility: a barrier, no new storage).
+    const VkImageLayout layout = image->hasUnifiedLayout() || image->info().layout == VK_IMAGE_LAYOUT_GENERAL
+      ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
+
     // Same condition as D3D11DeviceExt::LockImage: nothing to do for an image that cannot move.
-    if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+    if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT) && layout == VK_IMAGE_LAYOUT_UNDEFINED) {
       image->markOrgInteropImage();
       return true;
     }
 
-    const bool locked = m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT);
+    const bool locked = m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT, layout);
     if (locked)
       image->markOrgInteropImage();
     return locked;

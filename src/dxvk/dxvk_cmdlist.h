@@ -660,14 +660,29 @@ namespace dxvk {
     void cmdBindDescriptorSets(
             DxvkCmdBuffer             cmdBuffer,
       const VkBindDescriptorSetsInfo* info) {
-      m_vkd->vkCmdBindDescriptorSets2KHR(getCmdBuffer(cmdBuffer), info);
+      if (likely(m_maintenance6)) {
+        m_vkd->vkCmdBindDescriptorSets2KHR(getCmdBuffer(cmdBuffer), info);
+      } else {
+        forEachBindPoint(info->stageFlags, [&] (VkPipelineBindPoint bindPoint) {
+          m_vkd->vkCmdBindDescriptorSets(getCmdBuffer(cmdBuffer), bindPoint, info->layout,
+            info->firstSet, info->descriptorSetCount, info->pDescriptorSets,
+            info->dynamicOffsetCount, info->pDynamicOffsets);
+        });
+      }
     }
 
 
     void cmdSetDescriptorBufferOffsetsEXT(
             DxvkCmdBuffer             cmdBuffer,
       const VkSetDescriptorBufferOffsetsInfoEXT* info) {
-      m_vkd->vkCmdSetDescriptorBufferOffsets2EXT(getCmdBuffer(cmdBuffer), info);
+      if (likely(m_maintenance6)) {
+        m_vkd->vkCmdSetDescriptorBufferOffsets2EXT(getCmdBuffer(cmdBuffer), info);
+      } else {
+        forEachBindPoint(info->stageFlags, [&] (VkPipelineBindPoint bindPoint) {
+          m_vkd->vkCmdSetDescriptorBufferOffsetsEXT(getCmdBuffer(cmdBuffer), bindPoint, info->layout,
+            info->firstSet, info->setCount, info->pBufferIndices, info->pOffsets);
+        });
+      }
     }
 
 
@@ -676,8 +691,14 @@ namespace dxvk {
             VkDeviceSize            offset,
             VkDeviceSize            size,
             VkIndexType             indexType) {
-      m_vkd->vkCmdBindIndexBuffer2KHR(getCmdBuffer(),
-        buffer, offset, size, indexType);
+      if (likely(m_maintenance5)) {
+        // A null index buffer needs maintenance6: without it, the last binding stays
+        // (a draw reading it reads the app's own undefined state, as on native D3D).
+        if (likely(buffer || m_maintenance6))
+          m_vkd->vkCmdBindIndexBuffer2KHR(getCmdBuffer(), buffer, offset, size, indexType);
+      } else if (buffer) {
+        m_vkd->vkCmdBindIndexBuffer(getCmdBuffer(), buffer, offset, indexType);
+      }
     }
 
 
@@ -1065,7 +1086,12 @@ namespace dxvk {
     void cmdPushConstants(
             DxvkCmdBuffer           cmdBuffer,
       const VkPushConstantsInfo*    info) {
-      m_vkd->vkCmdPushConstants2KHR(getCmdBuffer(cmdBuffer), info);
+      if (likely(m_maintenance6)) {
+        m_vkd->vkCmdPushConstants2KHR(getCmdBuffer(cmdBuffer), info);
+      } else {
+        m_vkd->vkCmdPushConstants(getCmdBuffer(cmdBuffer), info->layout,
+          info->stageFlags, info->offset, info->size, info->pValues);
+      }
     }
 
 
@@ -1397,6 +1423,20 @@ namespace dxvk {
     Rc<vk::InstanceFn>        m_vki;
 
     DxvkCheckpointBuffer*     m_checkpoints = nullptr;
+
+    // The device's maintenance5 and maintenance6: without them (AMD's legacy Polaris
+    // driver) the commands above take their legacy forms.
+    bool                      m_maintenance5 = false;
+    bool                      m_maintenance6 = false;
+
+    // The pipeline bind points a maintenance6 command's stage flags name (graphics, compute).
+    template<typename Fn>
+    static void forEachBindPoint(VkShaderStageFlags stageFlags, const Fn& fn) {
+      if (stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
+        fn(VK_PIPELINE_BIND_POINT_GRAPHICS);
+      if (stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+        fn(VK_PIPELINE_BIND_POINT_COMPUTE);
+    }
     
     Rc<DxvkCommandPool>       m_graphicsPool;
     Rc<DxvkCommandPool>       m_transferPool;

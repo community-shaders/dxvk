@@ -143,6 +143,9 @@ namespace dxvk {
     /// with a smaller guaranteed alignment must be demoted
     /// to typed buffers.
     uint32_t minStorageBufferAlignment = 0u;
+    /// The device's push data space, which sizes each stage's
+    /// push data budget (DxvkPushDataBlock::computeBlockSizeForStage)
+    uint32_t maxPushDataSize = MaxTotalPushDataSize;
   };
 
 

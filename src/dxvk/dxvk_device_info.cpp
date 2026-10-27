@@ -52,6 +52,7 @@ namespace dxvk {
     HANDLE_EXT(khrExternalSemaphoreWin32);         \
     HANDLE_EXT(khrIncrementalPresent);             \
     HANDLE_EXT(khrLoadStoreOpNone);                \
+    HANDLE_EXT(extLoadStoreOpNone);                \
     HANDLE_EXT(khrMaintenance5);                   \
     HANDLE_EXT(khrMaintenance6);                   \
     HANDLE_EXT(khrMaintenance7);                   \
@@ -694,6 +695,17 @@ namespace dxvk {
     // buffers (granted only while DXVK runs on them, see applyInteropRequest); DXVK does not use them.
     m_featuresSupported.extMutableDescriptorType.mutableDescriptorType = VK_FALSE;
 
+    // Below MaxTotalPushDataSize of push constants, shaders get smaller push data budgets
+    // (DxvkShaderOptions::maxPushDataSize) and merged pipeline layouts pack what they use.
+    // Independent layouts reserve every stage's full block, so no pipeline libraries.
+    if (!m_featuresSupported.extDescriptorHeap.descriptorHeap
+     && m_properties.core.properties.limits.maxPushConstantsSize < MaxTotalPushDataSize)
+      m_featuresSupported.extGraphicsPipelineLibrary.graphicsPipelineLibrary = VK_FALSE;
+
+    // The EXT's load and store ops are the KHR's: the EXT only where the KHR is missing.
+    if (m_featuresSupported.khrLoadStoreOpNone)
+      m_featuresSupported.extLoadStoreOpNone = VK_FALSE;
+
     // Disable unified layouts if disabled via config
     if (!instance.options().enableUnifiedImageLayout)
       m_featuresSupported.khrUnifiedImageLayouts.unifiedImageLayouts = VK_FALSE;
@@ -807,9 +819,28 @@ namespace dxvk {
       return preferredModel;
     }
 
-    // Legacy sets are DXVK's choice for its own performance (fmask on RDNA2, Pascal, most
-    // Intel), and DXVK keeps them: switching applies only between heaps and descriptor
-    // buffers. A user can still force a model with the options, which the policy applied.
+    const auto& options = instance.options();
+
+    bool bufferAllowed = m_featuresRawSupported.extDescriptorBuffer.descriptorBuffer
+                      && m_featuresRawSupported.extMutableDescriptorType.mutableDescriptorType
+                      && options.enableDescriptorBuffer != Tristate::False;
+
+    // On RDNA2 and older, DXVK's policy keeps legacy sets on amdvlk only because descriptor
+    // buffers implicitly disable fmask there (MSAA becomes slow). A client that needs
+    // descriptor buffers takes them anyway: the client blocks MSAA where that matters
+    // (Community Shaders while Drawcall Limit Fix is on).
+    bool fmaskOnly = (m_properties.vk12.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE
+                   || m_properties.vk12.driverID == VK_DRIVER_ID_AMD_PROPRIETARY) && m_hasFmask;
+
+    if (!preferredModel && fmaskOnly && (accepted & DxvkInteropBindingModelBuffer) && bufferAllowed) {
+      Logger::warn("Binding model: descriptor buffer (DXVK prefers legacy descriptor sets to keep fmask; "
+        "the interop client requires descriptor buffers, which turn fmask off: MSAA is slower)");
+      return DxvkInteropBindingModelBuffer;
+    }
+
+    // Legacy sets are otherwise DXVK's choice for its own performance (Pascal, most Intel),
+    // and DXVK keeps them: switching applies only between heaps and descriptor buffers. A
+    // user can still force a model with the options, which the policy applied.
     if (!preferredModel) {
       Logger::warn(str::format("Binding model: legacy descriptor sets (DXVK's policy or the device "
         "declined heaps and descriptor buffers, or dxvk.enableDescriptorHeap/enableDescriptorBuffer "
@@ -819,37 +850,34 @@ namespace dxvk {
       return preferredModel;
     }
 
-    // A model the user forced on stays, and one forced off is never switched to. Judge
-    // support on the raw device features: DXVK's policy declined the other model only for
-    // its own performance, and a client that cannot run on DXVK's choice gets nothing at all.
-    // The client's descriptor-buffer heaps also need mutable descriptors.
-    const auto& options = instance.options();
-
+    // A model forced off is never switched to. One the user forced on yields to what the
+    // client accepts: a client that cannot run on DXVK's model would get nothing at all.
+    // Judge support on the raw device features: DXVK's policy declined the other model only
+    // for its own performance. The client's descriptor-buffer heaps also need mutable descriptors.
     bool preferredForced = (preferredModel == DxvkInteropBindingModelHeap   && options.enableDescriptorHeap   == Tristate::True)
                         || (preferredModel == DxvkInteropBindingModelBuffer && options.enableDescriptorBuffer == Tristate::True);
 
     bool heapAllowed = m_featuresRawSupported.extDescriptorHeap.descriptorHeap
                     && options.enableDescriptorHeap != Tristate::False;
 
-    bool bufferAllowed = m_featuresRawSupported.extDescriptorBuffer.descriptorBuffer
-                      && m_featuresRawSupported.extMutableDescriptorType.mutableDescriptorType
-                      && options.enableDescriptorBuffer != Tristate::False;
-
     uint32_t model = preferredModel;
 
-    if (!preferredForced) {
-      if ((accepted & DxvkInteropBindingModelHeap) && heapAllowed)
-        model = DxvkInteropBindingModelHeap;
-      else if ((accepted & DxvkInteropBindingModelBuffer) && bufferAllowed)
-        model = DxvkInteropBindingModelBuffer;
+    if ((accepted & DxvkInteropBindingModelHeap) && heapAllowed)
+      model = DxvkInteropBindingModelHeap;
+    else if ((accepted & DxvkInteropBindingModelBuffer) && bufferAllowed)
+      model = DxvkInteropBindingModelBuffer;
+
+    if (model != preferredModel && preferredForced) {
+      Logger::warn(str::format("Binding model: ", bindingModelName(preferredModel), " was forced by "
+        "dxvk.enableDescriptorHeap/enableDescriptorBuffer, but the interop client accepts only ",
+        bindingModelMaskName(accepted), ": using ", bindingModelName(model)));
     }
 
     if (model != preferredModel) {
       Logger::info(str::format("Binding model: ", bindingModelName(model), " (DXVK prefers ",
         bindingModelName(preferredModel), ", the interop client accepts ", bindingModelMaskName(accepted), ")"));
     } else {
-      Logger::warn(str::format("Binding model: ", bindingModelName(model), " (DXVK's choice",
-        preferredForced ? ", forced by dxvk.enableDescriptorHeap/enableDescriptorBuffer" : "",
+      Logger::warn(str::format("Binding model: ", bindingModelName(model), " (DXVK's choice"
         "); the interop client accepts ", bindingModelMaskName(accepted),
         ", and no model both support is allowed, so the client gets none"));
     }
@@ -1028,8 +1056,11 @@ namespace dxvk {
       }
     }
 
-    if (!m_featuresEnabled.extDescriptorHeap.descriptorHeap && m_properties.core.properties.limits.maxPushConstantsSize < MaxTotalPushDataSize)
-      return str::format("Device does not support ", MaxTotalPushDataSize, " of push data");
+    if (!m_featuresEnabled.khrLoadStoreOpNone && !m_featuresEnabled.extLoadStoreOpNone)
+      return std::string("Device does not support required extension VK_KHR_load_store_op_none (or VK_EXT_load_store_op_none)");
+
+    if (!m_featuresEnabled.extDescriptorHeap.descriptorHeap && m_properties.core.properties.limits.maxPushConstantsSize < MinTotalPushDataSize)
+      return str::format("Device does not support ", MinTotalPushDataSize, " of push data");
 
     return std::nullopt;
   }
@@ -1301,12 +1332,18 @@ namespace dxvk {
       ENABLE_EXT(khrIncrementalPresent, false),
 
       /* LOAD_OP_NONE for certain tiler optimizations. Core feature
-       * in Vulkan 1.4, so probably supported by everything we need. */
-      ENABLE_EXT(khrLoadStoreOpNone, true),
+       * in Vulkan 1.4. Drivers without it (AMD's legacy Polaris driver)
+       * have the EXT, whose ops have the same values; one of the two is
+       * required (checkDeviceCompatibility). */
+      ENABLE_EXT(khrLoadStoreOpNone, false),
+      ENABLE_EXT(extLoadStoreOpNone, false),
 
-      /* Maintenance features, relied on in various parts of the code */
-      ENABLE_EXT_FEATURE(khrMaintenance5, maintenance5, true),
-      ENABLE_EXT_FEATURE(khrMaintenance6, maintenance6, true),
+      /* Maintenance features, relied on in various parts of the code. Not
+       * required: without them (AMD's legacy Polaris driver), the device's
+       * creation functions (vk::DeviceFn::installMaintenance5Fallbacks) and
+       * the command list's commands take their legacy forms. */
+      ENABLE_EXT_FEATURE(khrMaintenance5, maintenance5, false),
+      ENABLE_EXT_FEATURE(khrMaintenance6, maintenance6, false),
       ENABLE_EXT_FEATURE(khrMaintenance7, maintenance7, false),
       ENABLE_EXT_FEATURE(khrMaintenance8, maintenance8, false),
       ENABLE_EXT_FEATURE(khrMaintenance9, maintenance9, false),

@@ -771,6 +771,12 @@ namespace dxvk {
     m_shaderOptions.minStorageBufferAlignment =
       m_properties.core.properties.limits.minStorageBufferOffsetAlignment;
 
+    // Push data budgets: descriptor heaps push their own push data, everything else push constants
+    if (!m_features.extDescriptorHeap.descriptorHeap) {
+      m_shaderOptions.maxPushDataSize = std::min<uint32_t>(MaxTotalPushDataSize,
+        m_properties.core.properties.limits.maxPushConstantsSize);
+    }
+
     if (m_features.vk12.shaderFloat16)
       m_shaderOptions.flags.set(DxvkShaderCompileFlag::Supports16BitArithmetic);
 
@@ -818,8 +824,10 @@ namespace dxvk {
       ? int32_t(m_properties.core.properties.limits.maxPerStageDescriptorUniformBuffers)
       : -1;
 
-    // ANV up to mesa 25.0.2 breaks when we *don't* explicitly write point size
-    if (m_adapter->matchesDriver(VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA, Version(), Version(25, 0, 3)))
+    // ANV up to mesa 25.0.2 breaks when we *don't* explicitly write point size. Without
+    // maintenance5, point size must be written for point topologies (default 1.0 only with it).
+    if (m_adapter->matchesDriver(VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA, Version(), Version(25, 0, 3))
+     || !m_features.khrMaintenance5.maintenance5)
       m_shaderOptions.spirv.set(DxvkShaderSpirvFlag::ExportPointSize);
 
     if (m_features.nvRawAccessChains.shaderRawAccessChains)

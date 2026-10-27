@@ -734,15 +734,27 @@ namespace dxvk {
      * For graphics pipelines, fragment shaders will be able to use all
      * data from the block offset to the reserved block. This is useful
      * because fragment shaders will often have a lot of sampler indices.
+     * With less than \c MaxTotalPushDataSize of push data (128 bytes on
+     * AMD's legacy Polaris driver), the graphics stages share what is
+     * left past the shared and reserved blocks: the fragment stage 2/5
+     * of it, every other stage 3/10, so that a vertex and fragment pair
+     * fits with room for one more stage.
      * \param [in] stageMask Shader stage mask
+     * \param [in] totalSize The device's push data space
      * \returns Push data size that the given stage can use
      */
-    static uint32_t computeBlockSizeForStage(VkShaderStageFlags stageMask) {
+    static uint32_t computeBlockSizeForStage(VkShaderStageFlags stageMask, uint32_t totalSize = MaxTotalPushDataSize) {
       if (stageMask & VK_SHADER_STAGE_COMPUTE_BIT)
-        return MaxTotalPushDataSize - MaxReservedPushDataSize;
+        return totalSize - MaxReservedPushDataSize;
 
       if (stageMask & (stageMask - 1u))
         return MaxSharedPushDataSize;
+
+      if (totalSize < MaxTotalPushDataSize) {
+        uint32_t stages = totalSize - MaxReservedPushDataSize - MaxSharedPushDataSize;
+        uint32_t size = stageMask == VK_SHADER_STAGE_FRAGMENT_BIT ? stages * 2u / 5u : stages * 3u / 10u;
+        return size & ~uint32_t(sizeof(uint64_t) - 1u);
+      }
 
       if (stageMask == VK_SHADER_STAGE_FRAGMENT_BIT) {
         uint32_t size = MaxTotalPushDataSize - MaxReservedPushDataSize;

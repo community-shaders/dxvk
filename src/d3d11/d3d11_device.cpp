@@ -2710,7 +2710,8 @@ namespace dxvk {
 
   bool D3D11Device::LockImage(
     const Rc<DxvkImage>&            Image,
-          VkImageUsageFlags         Usage) {
+          VkImageUsageFlags         Usage,
+          VkImageLayout             Layout) {
     bool feedback = false;
 
     auto chunk = AllocCsChunk(DxvkCsChunkFlag::SingleUse);
@@ -2718,10 +2719,12 @@ namespace dxvk {
     chunk->push([
       cImage  = Image,
       cUsage  = Usage,
+      cLayout = Layout,
       &feedback
     ] (DxvkContext* ctx) {
       DxvkImageUsageInfo usageInfo;
       usageInfo.usage = cUsage;
+      usageInfo.layout = cLayout;
       usageInfo.stableGpuAddress = VK_TRUE;
 
       feedback = ctx->ensureImageCompatibility(cImage, usageInfo);

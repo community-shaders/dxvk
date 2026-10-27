@@ -187,7 +187,21 @@ namespace dxvk::vk {
   struct DeviceFn : DeviceLoader {
     DeviceFn(const Rc<InstanceLoader>& library, bool owned, VkDevice device);
     ~DeviceFn();
+
+    /**
+     * \brief Gives the creation functions that need maintenance5 legacy forms
+     *
+     * For a device without VK_KHR_maintenance5 (AMD's legacy Polaris driver):
+     * pipeline creation takes VkPipelineCreateFlags2CreateInfo's flags into the
+     * legacy flags and makes shader modules of inline VkShaderModuleCreateInfo
+     * stages, buffer views drop VkBufferUsageFlags2CreateInfo, and image
+     * subresource layouts are queried on a temporary image. The command list
+     * takes the commands' legacy forms itself (DxvkCommandList).
+     */
+    void installMaintenance5Fallbacks();
     
+    bool m_maintenance5Fallbacks = false;
+
     VULKAN_FN(vkDestroyDevice);
     VULKAN_FN(vkGetDeviceQueue);
     VULKAN_FN(vkQueueSubmit);

@@ -96,6 +96,7 @@ namespace dxvk {
     VkBool32                                                  khrExternalSemaphoreWin32       = VK_FALSE;
     VkBool32                                                  khrIncrementalPresent           = VK_FALSE;
     VkBool32                                                  khrLoadStoreOpNone              = VK_FALSE;
+    VkBool32                                                  extLoadStoreOpNone              = VK_FALSE;
     VkPhysicalDeviceMaintenance5FeaturesKHR                   khrMaintenance5                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
     VkPhysicalDeviceMaintenance6FeaturesKHR                   khrMaintenance6                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR };
     VkPhysicalDeviceMaintenance7FeaturesKHR                   khrMaintenance7                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR };
@@ -175,6 +176,7 @@ namespace dxvk {
     VkExtensionProperties khrExternalSemaphoreWin32         = vk::makeExtension(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
     VkExtensionProperties khrIncrementalPresent             = vk::makeExtension(VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME);
     VkExtensionProperties khrLoadStoreOpNone                = vk::makeExtension(VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+    VkExtensionProperties extLoadStoreOpNone                = vk::makeExtension(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
     VkExtensionProperties khrMaintenance5                   = vk::makeExtension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     VkExtensionProperties khrMaintenance6                   = vk::makeExtension(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
     VkExtensionProperties khrMaintenance7                   = vk::makeExtension(VK_KHR_MAINTENANCE_7_EXTENSION_NAME);

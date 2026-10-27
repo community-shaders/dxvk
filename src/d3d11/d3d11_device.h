@@ -471,7 +471,8 @@ namespace dxvk {
 
     bool LockImage(
       const Rc<DxvkImage>&            Image,
-            VkImageUsageFlags         Usage);
+            VkImageUsageFlags         Usage,
+            VkImageLayout             Layout = VK_IMAGE_LAYOUT_UNDEFINED);
 
     static D3D_FEATURE_LEVEL GetMaxFeatureLevel(const DxvkDevice& Device);
     

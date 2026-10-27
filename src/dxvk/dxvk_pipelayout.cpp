@@ -728,6 +728,13 @@ namespace dxvk {
       }
     }
 
+    // Sampler indices take push data past a stage's budget, so a pipeline using many stages
+    // can exceed a small device's push constant space (128 bytes on AMD's legacy Polaris driver).
+    if (!device->canUseDescriptorHeap() && pushDataSize > device->properties().core.properties.limits.maxPushConstantsSize) {
+      Logger::err(str::format("Pipeline layout needs ", pushDataSize, " bytes of push data, the device has ",
+        device->properties().core.properties.limits.maxPushConstantsSize));
+    }
+
     for (auto i : bit::BitMask(builder.getPushDataMask()))
       layout.bindingMap.addPushData(builder.getPushDataBlock(i), pushDataBlocks[i].getOffset());
 

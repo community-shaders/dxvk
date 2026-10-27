@@ -7,6 +7,9 @@
 
 namespace dxvk {
 
+  // DXVK's version, and this fork's revision of the cache format (DxvkShaderOptions::maxPushDataSize).
+  static const char* const CacheVersion = DXVK_VERSION "+cs.1";
+
   DxvkShaderCache::Instance DxvkShaderCache::s_instance;
 
   DxvkShaderCache::DxvkShaderCache()
@@ -186,7 +189,7 @@ namespace dxvk {
 
     LutHeader header = { };
     header.magic = { 'D', 'X', 'V', 'K' };
-    header.versionString = DXVK_VERSION;
+    header.versionString = CacheVersion;
 
     if (!writeHeader(m_lutFile, header)) {
       Logger::warn(str::format("Failed to write cache header: ", path + m_filePaths.lutFile));
@@ -209,9 +212,9 @@ namespace dxvk {
       return false;
     }
 
-    if (header.versionString != DXVK_VERSION) {
+    if (header.versionString != CacheVersion) {
       Logger::warn(str::format("Cache was created with DXVK version ", header.versionString,
-        ", but current version is ", DXVK_VERSION, ". Discarding old cache."));
+        ", but current version is ", CacheVersion, ". Discarding old cache."));
       return false;
     }
 

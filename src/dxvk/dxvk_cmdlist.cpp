@@ -232,7 +232,9 @@ namespace dxvk {
   : m_device        (device),
     m_vkd           (device->vkd()),
     m_vki           (device->vki()),
-    m_checkpoints   (device->getCheckpointBuffer()) {
+    m_checkpoints   (device->getCheckpointBuffer()),
+    m_maintenance5  (device->features().khrMaintenance5.maintenance5),
+    m_maintenance6  (device->features().khrMaintenance6.maintenance6) {
     const auto& graphicsQueue = m_device->queues().graphics;
     const auto& transferQueue = m_device->queues().transfer;
 
