@@ -763,8 +763,9 @@ namespace dxvk {
       m_featuresSupported.extLineRasterization.smoothLines = VK_FALSE;
     }
 
-    // Pipeline statistics (register counts, spills) are only captured on request: DXVK_PIPELINE_STATS logs them per pipeline
-    if (env::getEnvVar("DXVK_PIPELINE_STATS").empty())
+    // Pipeline statistics (register counts, spills) and internal representations (the driver's ISA) are only captured on request:
+    // DXVK_PIPELINE_STATS logs statistics per pipeline, BASICRHI_VK_DUMP_ISA=<dir> has BasicRHI write its pipelines' ISA there
+    if (env::getEnvVar("DXVK_PIPELINE_STATS").empty() && env::getEnvVar("BASICRHI_VK_DUMP_ISA").empty())
       m_featuresSupported.khrPipelineExecutableProperties.pipelineExecutableInfo = VK_FALSE;
 
     // Apply raw access chain option

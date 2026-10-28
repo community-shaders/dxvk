@@ -96,11 +96,13 @@ namespace dxvk {
     VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutableDescriptorType = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommands = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
     VkPhysicalDeviceRobustness2FeaturesEXT robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+    /// Enabled only on request (DXVK_PIPELINE_STATS, BASICRHI_VK_DUMP_ISA): the adopter's pipeline statistics and ISA dumps.
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipelineExecutableProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR };
     std::vector<DxvkInteropFeature> grantedFeatures;
     std::vector<DxvkInteropFeature> deniedFeatures;
 
     /// Links features -> vk11 -> vk12 -> vk13 -> descriptorHeap -> descriptorBuffer -> mutableDescriptorType
-    /// -> deviceGeneratedCommands -> robustness2. Adopters find structs by sType, so appending to the chain
+    /// -> deviceGeneratedCommands -> robustness2 -> pipelineExecutableProperties. Adopters find structs by sType, so appending to the chain
     /// keeps older ones working.
     void chain();
   };
