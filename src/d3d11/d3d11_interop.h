@@ -9,10 +9,13 @@ struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropExternalCommands;
 struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
+struct DxvkOrgInteropTrackedResource;
+struct DxvkOrgInteropRelocation;
 
 namespace dxvk {
 
   class D3D11Device;
+  class D3D11Buffer;
   
   class D3D11VkInterop : public ComObject<IDXGIVkInteropDevice1> {
     
@@ -121,6 +124,28 @@ namespace dxvk {
             DxvkOrgInteropResourceInfo* pInfos,
             HRESULT*                    pResults);
 
+    /**
+     * \brief Describes resources and counts an import of each, unpinned (see d3d11_org_interop.h)
+     */
+    HRESULT TrackResources(
+            UINT                            Count,
+            IUnknown* const*                ppObjects,
+            DxvkOrgInteropTrackedResource*  pResources,
+            HRESULT*                        pResults);
+
+    HRESULT UntrackResources(
+            UINT                        Count,
+            IUnknown* const*            ppObjects);
+
+    HRESULT PollRelocations(
+            DxvkOrgInteropRelocation*   pRelocations,
+            uint32_t                    Capacity,
+            uint32_t*                   pCount);
+
+    HRESULT ReleaseStorage(
+            UINT                        Count,
+            void* const*                ppStorages);
+
     Rc<DxvkDevice> GetDXVKDevice() const;
 
     /**
@@ -131,6 +156,11 @@ namespace dxvk {
   private:
 
     bool LockImage(const Rc<DxvkImage>& image);
+
+    /**
+     * \brief The image or buffer behind a buffer, texture or SRV, and the view an image is described with
+     */
+    static Rc<DxvkPagedResource> ResolveResource(IUnknown* pObject, DxvkImageViewKey* pKey, D3D11Buffer** ppBuffer);
 
     static void FillImageInfo(const Rc<DxvkImage>& image, const DxvkImageViewKey& view, DxvkOrgInteropImageInfo& out);
     

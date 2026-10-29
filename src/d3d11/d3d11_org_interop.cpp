@@ -49,6 +49,27 @@ namespace dxvk {
 
   namespace {
 
+    // The view a texture (not a view of it) is described with: the whole image.
+    DxvkImageViewKey WholeImageViewKey(const DxvkImage& image) {
+      const auto& info = image.info();
+
+      DxvkImageViewKey key = { };
+      key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+
+      if (info.type == VK_IMAGE_TYPE_1D)
+        key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
+      else if (info.type == VK_IMAGE_TYPE_3D)
+        key.viewType = VK_IMAGE_VIEW_TYPE_3D;
+
+      key.format = info.format;
+      key.aspects = image.formatInfo()->aspectMask;
+      key.mipIndex = 0u;
+      key.mipCount = info.mipLevels;
+      key.layerIndex = 0u;
+      key.layerCount = info.numLayers;
+      return key;
+    }
+
     D3D11VkInterop* GetInterop(ID3D11Device* pDevice, Com<IDXGIVkInteropDevice1>& ref) {
       if (!pDevice || FAILED(pDevice->QueryInterface(__uuidof(IDXGIVkInteropDevice1), reinterpret_cast<void**>(&ref))))
         return nullptr;
@@ -165,22 +186,7 @@ namespace dxvk {
         return E_INVALIDARG;
 
       Rc<DxvkImage> image = texture->GetImage();
-      const auto& info = image->info();
-
-      DxvkImageViewKey key = { };
-      key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-
-      if (info.type == VK_IMAGE_TYPE_1D)
-        key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
-      else if (info.type == VK_IMAGE_TYPE_3D)
-        key.viewType = VK_IMAGE_VIEW_TYPE_3D;
-
-      key.format = info.format;
-      key.aspects = image->formatInfo()->aspectMask;
-      key.mipIndex = 0u;
-      key.mipCount = info.mipLevels;
-      key.layerIndex = 0u;
-      key.layerCount = info.numLayers;
+      DxvkImageViewKey key = WholeImageViewKey(*image);
       view = nullptr;
 
       if (!LockImage(image))
@@ -305,6 +311,251 @@ namespace dxvk {
     if (locked)
       image->markOrgInteropImage();
     return locked;
+  }
+
+
+  Rc<DxvkPagedResource> D3D11VkInterop::ResolveResource(IUnknown* pObject, DxvkImageViewKey* pKey, D3D11Buffer** ppBuffer) {
+    if (ppBuffer)
+      *ppBuffer = nullptr;
+
+    if (!pObject)
+      return nullptr;
+
+    // A shader resource view selects the image view; otherwise the resource itself.
+    Com<ID3D11ShaderResourceView> srv;
+
+    if (SUCCEEDED(pObject->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv)))) {
+      Rc<DxvkImageView> view = static_cast<D3D11ShaderResourceView*>(srv.ptr())->GetImageView();
+
+      if (view == nullptr)
+        return nullptr;  // buffer view
+
+      if (pKey)
+        *pKey = view->info();
+
+      return view->image();
+    }
+
+    Com<ID3D11Resource> resource;
+    D3D11_COMMON_RESOURCE_DESC desc = { };
+
+    if (FAILED(pObject->QueryInterface(__uuidof(ID3D11Resource), reinterpret_cast<void**>(&resource)))
+     || FAILED(GetCommonResourceDesc(resource.ptr(), &desc)))
+      return nullptr;
+
+    if (desc.Dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+      auto buffer = GetCommonBuffer(resource.ptr());
+
+      if (ppBuffer)
+        *ppBuffer = buffer;
+
+      return buffer->GetBuffer();
+    }
+
+    auto texture = GetCommonTexture(resource.ptr());
+
+    if (!texture)
+      return nullptr;
+
+    Rc<DxvkImage> image = texture->GetImage();
+
+    if (pKey)
+      *pKey = WholeImageViewKey(*image);
+
+    return image;
+  }
+
+
+  HRESULT D3D11VkInterop::TrackResources(
+          UINT                            Count,
+          IUnknown* const*                ppObjects,
+          DxvkOrgInteropTrackedResource*  pResources,
+          HRESULT*                        pResults) {
+    if (Count && (!ppObjects || !pResources || !pResults))
+      return E_INVALIDARG;
+
+    struct Item {
+      UINT index = 0u;
+      Rc<DxvkBuffer> buffer;
+      VkDeviceSize byteWidth = 0u;
+      Rc<DxvkImage> image;
+      DxvkImageViewKey key = { };
+    };
+
+    std::vector<Item> items;
+    items.reserve(Count);
+
+    for (UINT i = 0; i < Count; i++) {
+      pResults[i] = E_INVALIDARG;
+
+      auto& out = pResources[i];
+
+      if (!ppObjects[i] || out.version != DXVK_ORG_TRACKED_RESOURCE_VERSION || out.info.version != DXVK_ORG_INTEROP_VERSION)
+        continue;
+
+      out = DxvkOrgInteropTrackedResource();
+      out.version = DXVK_ORG_TRACKED_RESOURCE_VERSION;
+      out.info.version = DXVK_ORG_INTEROP_VERSION;
+
+      Item item;
+      item.index = i;
+
+      D3D11Buffer* buffer = nullptr;
+      Rc<DxvkPagedResource> resource = ResolveResource(ppObjects[i], &item.key, &buffer);
+
+      if (resource == nullptr)
+        continue;
+
+      if (buffer) {
+        // Discard maps rename the buffer: it cannot be imported at all.
+        if (buffer->Desc()->Usage == D3D11_USAGE_DYNAMIC || buffer->Desc()->CPUAccessFlags)
+          continue;
+
+        item.buffer = buffer->GetBuffer();
+        item.byteWidth = buffer->Desc()->ByteWidth;
+      } else {
+        item.image = static_cast<DxvkImage*>(resource.ptr());
+      }
+
+      items.push_back(std::move(item));
+    }
+
+    if (items.empty())
+      return S_OK;
+
+    // On the CS thread, in order with every relocation: the description and the import's count
+    // name the same storage, and a later move of it is reported.
+    auto chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
+    auto allocator = &m_device->GetDXVKDevice()->getMemoryAllocator();
+
+    chunk->push([cItems = std::move(items), pResources, pResults, allocator] (DxvkContext* ctx) {
+      for (const auto& item : cItems) {
+        auto& out = pResources[item.index];
+
+        if (item.buffer != nullptr) {
+          // One the GPU writes stays pinned: after a move, the client would read the old storage's stale contents.
+          constexpr VkBufferUsageFlags writable = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
+            | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
+
+          if (item.buffer->info().usage & writable) {
+            ctx->ensureBufferAddress(item.buffer);
+            out.flags |= DXVK_ORG_TRACKED_PINNED;
+          }
+
+          item.buffer->markOrgInterop();
+          item.buffer->addOrgTrack();
+
+          auto slice = item.buffer->getSliceInfo();
+          out.info.kind = DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+          out.info.buffer.buffer = slice.buffer;
+          out.info.buffer.offset = slice.offset;
+          out.info.buffer.size = item.byteWidth;
+          out.info.buffer.address = slice.gpuAddress;
+          out.info.buffer.usage = item.buffer->info().usage;
+          out.cookie = item.buffer->cookie();
+          out.storageSerial = item.buffer->orgStorageSerial();
+        } else {
+          // As LockImage: the client samples the image in GENERAL, which becomes its resting
+          // layout without VK_KHR_unified_image_layouts. No stable address: it may move.
+          DxvkImageUsageInfo usageInfo;
+          usageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+          usageInfo.layout = item.image->hasUnifiedLayout() || item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL
+            ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
+
+          // One the GPU writes stays pinned, as for buffers.
+          constexpr VkImageUsageFlags writable = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+            | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+
+          if (item.image->info().usage & writable) {
+            usageInfo.stableGpuAddress = VK_TRUE;
+            out.flags |= DXVK_ORG_TRACKED_PINNED;
+          }
+
+          if (!ctx->ensureImageCompatibility(item.image, usageInfo)) {
+            pResults[item.index] = E_FAIL;
+            continue;
+          }
+
+          item.image->markOrgInterop();
+          item.image->addOrgTrack();
+
+          FillImageInfo(item.image, item.key, out.info.image);
+          out.info.kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+          out.cookie = item.image->cookie();
+          out.storageSerial = item.image->orgStorageSerial();
+        }
+
+        allocator->noteOrgTrack(1);
+        pResults[item.index] = S_OK;
+      }
+    });
+
+    m_device->GetContext()->InjectCsChunk(DxvkCsQueue::HighPriority, std::move(chunk), true);
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::UntrackResources(
+          UINT                        Count,
+          IUnknown* const*            ppObjects) {
+    if (Count && !ppObjects)
+      return E_INVALIDARG;
+
+    auto& allocator = m_device->GetDXVKDevice()->getMemoryAllocator();
+
+    for (UINT i = 0; i < Count; i++) {
+      Rc<DxvkPagedResource> resource = ResolveResource(ppObjects[i], nullptr, nullptr);
+
+      if (resource != nullptr && resource->removeOrgTrack())
+        allocator.noteOrgTrack(-1);
+    }
+
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::PollRelocations(
+          DxvkOrgInteropRelocation*   pRelocations,
+          uint32_t                    Capacity,
+          uint32_t*                   pCount) {
+    if (!pCount || (Capacity && !pRelocations))
+      return E_INVALIDARG;
+
+    *pCount = 0u;
+
+    if (!Capacity)
+      return S_OK;
+
+    std::vector<DxvkOrgRelocation> entries(Capacity);
+    size_t count = m_device->GetDXVKDevice()->getMemoryAllocator().pollOrgRelocations(entries.data(), Capacity);
+
+    for (size_t i = 0u; i < count; i++) {
+      auto& dst = pRelocations[i];
+      dst.cookie = entries[i].cookie;
+      dst.storageSerial = entries[i].serial;
+      dst.kind = entries[i].image ? DXVK_ORG_INTEROP_RESOURCE_IMAGE : DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+      dst.reserved = 0u;
+      // The client's reference, given back by ReleaseStorage.
+      dst.storage = entries[i].storage.unsafeExtract();
+    }
+
+    *pCount = uint32_t(count);
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::ReleaseStorage(
+          UINT                        Count,
+          void* const*                ppStorages) {
+    if (Count && !ppStorages)
+      return E_INVALIDARG;
+
+    auto& allocator = m_device->GetDXVKDevice()->getMemoryAllocator();
+
+    for (UINT i = 0; i < Count; i++)
+      allocator.releaseOrgStorage(static_cast<DxvkResourceAllocation*>(ppStorages[i]));
+
+    return S_OK;
   }
 
 
@@ -678,6 +929,54 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->GetResourceInfos(count, pObjects, pInfos, pResults);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkTrackInteropResources(ID3D11Device* pDevice,
+    UINT count, IUnknown* const* pObjects, DxvkOrgInteropTrackedResource* pResources, HRESULT* pResults) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->TrackResources(count, pObjects, pResources, pResults);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkUntrackInteropResources(ID3D11Device* pDevice,
+    UINT count, IUnknown* const* pObjects) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->UntrackResources(count, pObjects);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkPollInteropRelocations(ID3D11Device* pDevice,
+    DxvkOrgInteropRelocation* pRelocations, uint32_t capacity, uint32_t* pCount) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->PollRelocations(pRelocations, capacity, pCount);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkReleaseInteropStorage(ID3D11Device* pDevice,
+    UINT count, void* const* pStorages) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->ReleaseStorage(count, pStorages);
   }
 
 

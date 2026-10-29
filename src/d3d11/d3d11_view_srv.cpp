@@ -15,6 +15,11 @@ namespace dxvk {
     m_destructionNotifier(this) {
     ResourceAddRefPrivate(m_resource);
 
+    if (unlikely(D3D11AllocTraceHandle::RefsEnabled())) {
+      if (auto texture = GetCommonTexture(m_resource); texture && texture->GetAllocTrace().TracesRefs())
+        m_allocTrace = &texture->GetAllocTrace();
+    }
+
     D3D11_COMMON_RESOURCE_DESC resourceDesc;
     GetCommonResourceDesc(pResource, &resourceDesc);
 
@@ -182,6 +187,23 @@ namespace dxvk {
   }
   
   
+  ULONG STDMETHODCALLTYPE D3D11ShaderResourceView::AddRef() {
+    if (unlikely(m_allocTrace != nullptr))
+      m_allocTrace->TraceRef(1, true);
+
+    return D3D11DeviceChild<ID3D11ShaderResourceView1>::AddRef();
+  }
+
+
+  ULONG STDMETHODCALLTYPE D3D11ShaderResourceView::Release() {
+    // Before the release: the last one destroys the view.
+    if (unlikely(m_allocTrace != nullptr))
+      m_allocTrace->TraceRef(-1, true);
+
+    return D3D11DeviceChild<ID3D11ShaderResourceView1>::Release();
+  }
+
+
   D3D11ShaderResourceView::~D3D11ShaderResourceView() {
     m_destructionNotifier.Notify();
 

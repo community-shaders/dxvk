@@ -25,6 +25,10 @@ namespace dxvk {
     
     ~D3D11ShaderResourceView();
     
+    ULONG STDMETHODCALLTYPE AddRef();
+
+    ULONG STDMETHODCALLTYPE Release();
+
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) final;
     
     void STDMETHODCALLTYPE GetResource(ID3D11Resource** ppResource) final;
@@ -88,6 +92,9 @@ namespace dxvk {
     Rc<DxvkBufferView>                m_bufferView;
     Rc<DxvkImageView>                 m_imageView;
     D3D10ShaderResourceView           m_d3d10;
+
+    // The viewed texture's (DXVK_ALLOC_TRACE_REFS): this view's references are recorded there.
+    D3D11AllocTraceHandle*            m_allocTrace = nullptr;
 
     D3DDestructionNotifier            m_destructionNotifier;
 

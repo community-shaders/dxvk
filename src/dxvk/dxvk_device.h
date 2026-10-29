@@ -558,6 +558,18 @@ namespace dxvk {
     DxvkMemoryStats getMemoryStats(uint32_t heap);
 
     /**
+     * rief Describes the device-local pools' chunks (DxvkMemoryAllocator::describeDevicePoolChunks)
+     */
+    std::string describeDevicePoolChunks();
+
+    /**
+     * \brief The memory allocator (ORG interop: relocations of tracked resources)
+     */
+    DxvkMemoryAllocator& getMemoryAllocator() {
+      return m_objects.memoryManager();
+    }
+
+    /**
      * \brief Queries detailed memory allocation statistics
      *
      * Expensive, should be used with caution.

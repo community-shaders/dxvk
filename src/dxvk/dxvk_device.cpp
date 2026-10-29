@@ -567,6 +567,11 @@ namespace dxvk {
   }
 
 
+  std::string DxvkDevice::describeDevicePoolChunks() {
+    return m_objects.memoryManager().describeDevicePoolChunks();
+  }
+
+
   DxvkSharedAllocationCacheStats DxvkDevice::getMemoryAllocationStats(DxvkMemoryAllocationStats& stats) {
     m_objects.memoryManager().getAllocationStats(stats);
     return m_objects.memoryManager().getAllocationCacheStats();

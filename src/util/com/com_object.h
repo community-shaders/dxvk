@@ -72,6 +72,10 @@ namespace dxvk {
       return m_refPrivate.load();
     }
 
+    ULONG GetPublicRefCount() const {
+      return m_refCount.load();
+    }
+
     bool HasLiveReferences() const {
       return bool(m_refCount.load() | (m_refPrivate.load() & 0x7FFFFFFF));
     }

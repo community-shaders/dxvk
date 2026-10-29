@@ -29,3 +29,7 @@ EXPORTS
     dxvkSetNextShaderName @146
     dxvkEmitExternalCommands @147
     dxvkSetBindingModelCallback @148
+    dxvkTrackInteropResources @149
+    dxvkUntrackInteropResources @150
+    dxvkPollInteropRelocations @151
+    dxvkReleaseInteropStorage @152

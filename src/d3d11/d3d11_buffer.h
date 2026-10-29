@@ -5,6 +5,7 @@
 
 #include "../d3d10/d3d10_buffer.h"
 
+#include "d3d11_alloc_trace.h"
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_on_12.h"
@@ -196,6 +197,8 @@ namespace dxvk {
     uint64_t                      m_seq = 0ull;
 
     void*                         m_mapPtr = nullptr;
+
+    D3D11AllocTraceHandle         m_allocTrace;
 
     D3D11DXGIResource             m_resource;
     D3D10Buffer                   m_d3d10;

@@ -85,9 +85,13 @@ namespace dxvk {
     high_resolution_clock::time_point unusedTime = { };
     /// Unordered list of resources suballocated from this chunk.
     DxvkResourceAllocation* allocationList = nullptr;
-    /// Whether defragmentation can be performed on this chunk.
-    /// Only relevant for chunks in non-mappable device memory.
-    VkBool32 canMove = true;
+    /// Allocations in this chunk whose GPU address is locked
+    /// (lockResourceGpuAddress). Defragmentation can only move
+    /// resources out of the chunk while there are none, so the
+    /// chunk becomes movable again once the last of them is freed
+    /// rather than only once the chunk is empty. Only relevant for
+    /// chunks in non-mappable device memory.
+    uint32_t lockedAllocations = 0u;
 
     void addAllocation(DxvkResourceAllocation* allocation);
     void removeAllocation(DxvkResourceAllocation* allocation);
@@ -496,6 +500,11 @@ namespace dxvk {
     /// Memory must be cleared to zero when the allocation
     /// is freed. Only used to work around app bugs.
     ClearOnFree = 6,
+    /// The allocation's GPU address is locked and counted
+    /// by its chunk (DxvkMemoryChunk::lockedAllocations).
+    GpuAddressLocked = 7,
+    /// An ORG client's retired storage (pushOrgRelocation): no resource's any more
+    OrgRetired = 8,
   };
 
   using DxvkAllocationFlags = Flags<DxvkAllocationFlag>;
@@ -1039,6 +1048,24 @@ namespace dxvk {
 
 
   /**
+   * \brief A storage replacement of an ORG-tracked resource
+   *
+   * The old storage stays alive while the entry holds it (and, after a poll,
+   * while the client holds it: DxvkMemoryAllocator::releaseOrgStorage).
+   */
+  struct DxvkOrgRelocation {
+    /// The resource's cookie (DxvkPagedResource::cookie)
+    uint64_t cookie = 0u;
+    /// The new storage's serial (DxvkPagedResource::orgStorageSerial)
+    uint64_t serial = 0u;
+    /// The resource is an image (else a buffer)
+    bool image = false;
+    /// The replaced storage
+    Rc<DxvkResourceAllocation> storage;
+  };
+
+
+  /**
    * \brief Resource relocation helper
    *
    * Simple thread-safe data structure used to pass a list of
@@ -1270,6 +1297,16 @@ namespace dxvk {
     DxvkMemoryStats getMemoryStats(uint32_t heap) const;
 
     /**
+     * rief Describes the device-local pools' chunks
+     *
+     * For each device-local memory type with chunks: how many, how
+     * many are empty, how many hold allocations with a locked GPU
+     * address, and the pages used against the pages of the chunks
+     * with and without locks (CS allocation trace).
+     */
+    std::string describeDevicePoolChunks();
+
+    /**
      * \brief Retrieves detailed memory statistics
      *
      * Queries statistics for each memory type and each allocated chunk.
@@ -1364,6 +1401,75 @@ namespace dxvk {
       return m_relocations.poll(count, size);
     }
 
+    /**
+     * \brief Reports a storage replacement of an ORG-tracked resource
+     *
+     * Called on the CS thread with the resource's new storage assigned. The
+     * entry keeps the old storage alive until the client releases it.
+     * \param [in] resource The resource
+     * \param [in] storage Its old storage
+     * \param [in] image Whether the resource is an image
+     */
+    void pushOrgRelocation(
+      const DxvkPagedResource&          resource,
+            Rc<DxvkResourceAllocation>  storage,
+            bool                        image);
+
+    /**
+     * \brief Takes reported relocations, oldest first
+     *
+     * Each taken entry's storage is handed to the caller with one reference,
+     * which it gives back with \c releaseOrgStorage.
+     * \param [out] entries Up to \c capacity entries
+     * \returns The number taken
+     */
+    size_t pollOrgRelocations(
+            DxvkOrgRelocation*          entries,
+            size_t                      capacity);
+
+    /**
+     * \brief Releases a polled relocation's old storage (any thread)
+     */
+    void releaseOrgStorage(
+            DxvkResourceAllocation*     storage);
+
+    /**
+     * \brief Counts imports begun and ended (the alloc trace's report)
+     */
+    void noteOrgTrack(int32_t delta) {
+      m_orgTracked.fetch_add(delta, std::memory_order_relaxed);
+    }
+
+    /**
+     * \brief Counts a transfer write to an ORG-tracked resource
+     */
+    void noteOrgTransferWrite() {
+      m_orgTransferWrites.fetch_add(1u, std::memory_order_relaxed);
+    }
+
+    /**
+     * \brief Counts a polled relocation the CS thread attempted, and whether its resource refused it (no new storage)
+     */
+    void noteRelocationAttempt(bool refused) {
+      m_relocationsAttempted.fetch_add(1u, std::memory_order_relaxed);
+
+      if (refused)
+        m_relocationsRefused.fetch_add(1u, std::memory_order_relaxed);
+    }
+
+    /**
+     * \brief Queues tracked resources for relocation (DXVK_ORG_RELOCATE_STRESS)
+     *
+     * Exercises the client's relocation path: each call adds up to \c count
+     * ORG-tracked resources, round robin, to the relocation list.
+     */
+    void queueOrgStressRelocations(uint32_t count);
+
+    /**
+     * \brief The ORG relocation counters, for the alloc trace
+     */
+    std::string describeOrgRelocations() const;
+
   private:
 
     DxvkDevice* m_device;
@@ -1399,6 +1505,31 @@ namespace dxvk {
 
     alignas(CACHE_LINE_SIZE)
     DxvkRelocationList        m_relocations;
+
+    alignas(CACHE_LINE_SIZE)
+    dxvk::mutex                     m_orgMutex;
+    std::vector<DxvkOrgRelocation>  m_orgRelocations;
+    uint64_t                        m_orgStressCursor = 0u;
+
+    std::atomic<int64_t>      m_orgTracked = { 0 };
+    std::atomic<uint64_t>     m_orgRelocationsPushed = { 0u };
+    std::atomic<uint64_t>     m_orgRelocationsPolled = { 0u };
+    std::atomic<int64_t>      m_orgStorageHeld = { 0 };
+    std::atomic<uint64_t>     m_orgTransferWrites = { 0u };
+
+    // Defragmentation's work, for the alloc trace (describeDevicePoolChunks)
+    std::atomic<uint64_t>     m_defragPicked = { 0u };
+    std::atomic<uint64_t>     m_defragQueued = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedUnmovable = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedLocked = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedRetired = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedOwned = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedMapped = { 0u };
+    std::atomic<uint64_t>     m_lockUncounted = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedUnknown = { 0u };
+    std::atomic<uint64_t>     m_defragSkippedUnreferenced = { 0u };
+    std::atomic<uint64_t>     m_relocationsAttempted = { 0u };
+    std::atomic<uint64_t>     m_relocationsRefused = { 0u };
 
     DxvkDeviceMemory allocateDeviceMemory(
             DxvkMemoryType&       type,

@@ -474,11 +474,11 @@ namespace dxvk {
     }
 
     void markOrgInteropImage() {
-      m_orgInteropImage.store(true, std::memory_order_release);
+      markOrgInterop();
     }
 
     bool isOrgInteropImage() const {
-      return m_orgInteropImage.load(std::memory_order_acquire);
+      return isOrgInterop();
     }
     
     /**
@@ -858,7 +858,6 @@ namespace dxvk {
 
     DxvkImageCreateInfo         m_info        = { };
 
-    std::atomic<bool>           m_orgInteropImage = { false };
 
     uint32_t                    m_version     = 0u;
     bool                        m_shared      = false;

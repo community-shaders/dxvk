@@ -212,8 +212,10 @@ namespace dxvk {
     }
 
     // Skip image creation if possible
-    if (m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING)
+    if (m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING) {
+      TraceAllocation();
       return;
+    }
 
     // We must keep LINEAR images in GENERAL layout, but we
     // can choose a better layout for the image based on how
@@ -259,9 +261,41 @@ namespace dxvk {
 
       ExportImageInfo();
     }
+
+    TraceAllocation();
   }
   
   
+  void D3D11CommonTexture::TraceAllocation() {
+    if (!D3D11AllocTraceHandle::Enabled())
+      return;
+
+    const char* kind = m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D ? "tex1d"
+                     : m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D ? "tex3d" : "tex2d";
+    uint64_t bytes = 0u;
+
+    if (m_image != nullptr)
+      bytes = m_image->getMemoryInfo().size;
+
+    for (const auto& mapped : m_buffers) {
+      if (mapped.buffer != nullptr)
+        bytes += mapped.buffer->info().size;
+    }
+
+    m_allocTrace.Register(m_device->GetDXVKDevice().ptr(), kind, m_desc.BindFlags, m_desc.Format, bytes,
+      m_image != nullptr && (m_image->memFlags() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+
+    // Only 2D textures record their references (D3D11Texture2D's AddRef and Release, and their views').
+    if (m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D && D3D11AllocTraceHandle::RefsEnabled()) {
+      m_allocTrace.SetObject(static_cast<D3D11Texture2D*>(m_interface), [] (const void* object, uint32_t& pub, uint32_t& priv) {
+        auto texture = static_cast<const D3D11Texture2D*>(object);
+        pub  = texture->GetPublicRefCount();
+        priv = texture->GetPrivateRefCount();
+      });
+    }
+  }
+
+
   D3D11CommonTexture::~D3D11CommonTexture() {
     
   }
@@ -1445,6 +1479,9 @@ namespace dxvk {
   
   
   ULONG STDMETHODCALLTYPE D3D11Texture2D::AddRef() {
+    if (unlikely(m_texture.GetAllocTrace().TracesRefs()))
+      m_texture.GetAllocTrace().TraceRef(1, false);
+
     uint32_t refCount = D3D11DeviceChild<ID3D11Texture2D1>::AddRef();
 
     if (unlikely(m_swapChain != nullptr)) {
@@ -1457,6 +1494,10 @@ namespace dxvk {
   
 
   ULONG STDMETHODCALLTYPE D3D11Texture2D::Release() {
+    // Before the release: the last one destroys the texture.
+    if (unlikely(m_texture.GetAllocTrace().TracesRefs()))
+      m_texture.GetAllocTrace().TraceRef(-1, false);
+
     IUnknown* swapChain = m_swapChain;
     uint32_t refCount = D3D11DeviceChild<ID3D11Texture2D1>::Release();
 

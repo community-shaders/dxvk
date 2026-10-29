@@ -7,6 +7,7 @@
 
 #include "../d3d10/d3d10_texture.h"
 
+#include "d3d11_alloc_trace.h"
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_on_12.h"
@@ -587,6 +588,18 @@ namespace dxvk {
     small_vector<MappedInfo, 6>   m_mapInfo;
 
     void*                         m_mapPtr = nullptr;
+
+    D3D11AllocTraceHandle         m_allocTrace;
+
+    void TraceAllocation();
+
+  public:
+
+    D3D11AllocTraceHandle& GetAllocTrace() {
+      return m_allocTrace;
+    }
+
+  private:
 
     void CreateMappedBuffer(
             UINT                  Subresource);

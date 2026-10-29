@@ -1537,7 +1537,7 @@ namespace dxvk {
     pool.chunks.resize(std::max<size_t>(pool.chunks.size(), chunkIndex + 1u));
     pool.chunks[chunkIndex].memory = chunk;
     pool.chunks[chunkIndex].unusedTime = high_resolution_clock::time_point();
-    pool.chunks[chunkIndex].canMove = true;
+    pool.chunks[chunkIndex].lockedAllocations = 0u;
     return true;
   }
 
@@ -1675,11 +1675,14 @@ namespace dxvk {
           if (!allocation->m_mapPtr) {
             uint32_t chunkIndex = allocation->m_address >> DxvkPageAllocator::ChunkAddressBits;
             pool.chunks[chunkIndex].removeAllocation(allocation);
+
+            if (allocation->m_flags.test(DxvkAllocationFlag::GpuAddressLocked))
+              pool.chunks[chunkIndex].lockedAllocations -= 1u;
           }
 
           if (unlikely(pool.free(allocation->m_address, allocation->m_size))) {
             uint32_t chunkIndex = allocation->m_address >> DxvkPageAllocator::ChunkAddressBits;
-            pool.chunks[chunkIndex].canMove = true;
+            pool.chunks[chunkIndex].lockedAllocations = 0u;
 
             if (freeEmptyChunksInPool(*allocation->m_type, pool, 0, high_resolution_clock::now()))
               updateMemoryHeapStats(allocation->m_type->properties.heapIndex);
@@ -1720,6 +1723,9 @@ namespace dxvk {
       // Cached allocations may have a reference count of 0, but they
       // still own the memory, so make sure to release it here.
       allocation->m_type->stats.memoryUsed -= allocation->m_size;
+
+      if (!allocation->m_mapPtr && allocation->m_flags.test(DxvkAllocationFlag::GpuAddressLocked))
+        pool.chunks[allocation->m_address >> DxvkPageAllocator::ChunkAddressBits].lockedAllocations -= 1u;
 
       if (unlikely(pool.free(allocation->m_address, allocation->m_size))) {
         if (freeEmptyChunksInPool(*allocation->m_type, pool, 0, high_resolution_clock::now()))
@@ -2222,6 +2228,173 @@ namespace dxvk {
   }
 
 
+  std::string DxvkMemoryAllocator::describeDevicePoolChunks() {
+    std::lock_guard lock(m_mutex);
+    std::stringstream str;
+    constexpr uint64_t PagesPerMiB = (1u << 20) / DxvkPageAllocator::PageSize;
+
+    for (uint32_t t = 0; t < m_memTypeCount; t++) {
+      auto& type = m_memTypes[t];
+
+      if (!(type.properties.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        continue;
+
+      auto& pool = type.devicePool;
+      uint32_t chunks = 0u, empty = 0u, locked = 0u, lockedAllocations = 0u, dead = 0u;
+      uint64_t lockedUsed = 0u, lockedTotal = 0u, freeUsed = 0u, freeTotal = 0u;
+
+      for (uint32_t i = 0; i < pool.chunks.size(); i++) {
+        if (!pool.chunks[i].memory.memory)
+          continue;
+
+        chunks += 1u;
+        uint32_t used = pool.pageAllocator.pagesUsed(i);
+        uint32_t total = pool.pageAllocator.pageCount(i);
+
+        if (!used)
+          empty += 1u;
+        else if (!pool.pageAllocator.chunkIsAvailable(i))
+          dead += 1u;
+
+        if (pool.chunks[i].lockedAllocations) {
+          locked += 1u;
+          lockedAllocations += pool.chunks[i].lockedAllocations;
+          lockedUsed += used;
+          lockedTotal += total;
+        } else {
+          freeUsed += used;
+          freeTotal += total;
+        }
+      }
+
+      if (!chunks)
+        continue;
+
+      str << " type " << t << ": " << chunks << " chunks (" << empty << " empty, " << dead << " dead in use), "
+          << locked << " with " << lockedAllocations << " locked allocations using "
+          << (lockedUsed / PagesPerMiB) << " of " << (lockedTotal / PagesPerMiB) << " MiB, the rest "
+          << (freeUsed / PagesPerMiB) << " of " << (freeTotal / PagesPerMiB) << " MiB;";
+    }
+
+    str << " defragmentation " << (enableDefrag() ? "on" : "off") << ": " << m_defragPicked.load() << " chunks picked, "
+        << m_defragQueued.load() << " resources queued (skipped " << m_defragSkippedUnmovable.load() << " unmovable: "
+        << m_defragSkippedLocked.load() << " locked, " << m_defragSkippedRetired.load() << " retired, " << m_defragSkippedOwned.load()
+        << " dedicated, " << m_defragSkippedMapped.load() << " mapped, the rest other; " << m_lockUncounted.load() << " locks uncounted; "
+        << m_defragSkippedUnknown.load() << " unknown, " << m_defragSkippedUnreferenced.load() << " unreferenced); "
+        << m_relocationsAttempted.load() << " relocations attempted, " << m_relocationsRefused.load() << " refused";
+    return str.str();
+  }
+
+
+  void DxvkMemoryAllocator::pushOrgRelocation(
+    const DxvkPagedResource&          resource,
+          Rc<DxvkResourceAllocation>  storage,
+          bool                        image) {
+    // The old storage no longer backs its resource: defragmentation and eviction find the resource by
+    // its cookie, and would move it (its new storage) again for an allocation the client is releasing.
+    // Counted as a lock while held, so that defragmentation does not keep picking a chunk it cannot
+    // empty until the client lets the storage go.
+    if (storage->m_flags.test(DxvkAllocationFlag::CanMove)) {
+      std::lock_guard lock(m_mutex);
+      std::lock_guard resourceLock(m_resourceMutex);
+      storage->m_flags.clr(DxvkAllocationFlag::CanMove);
+      storage->m_flags.set(DxvkAllocationFlag::OrgRetired);
+
+      if (!storage->m_flags.test(DxvkAllocationFlag::OwnsMemory) && !storage->m_mapPtr) {
+        uint32_t chunkIndex = storage->m_address >> DxvkPageAllocator::ChunkAddressBits;
+        storage->m_type->devicePool.chunks[chunkIndex].lockedAllocations += 1u;
+        storage->m_flags.set(DxvkAllocationFlag::GpuAddressLocked);
+      }
+    }
+
+    DxvkOrgRelocation entry;
+    entry.cookie = resource.cookie();
+    entry.serial = resource.orgStorageSerial();
+    entry.image = image;
+    entry.storage = std::move(storage);
+
+    m_orgRelocationsPushed.fetch_add(1u, std::memory_order_relaxed);
+    m_orgStorageHeld.fetch_add(1, std::memory_order_relaxed);
+
+    std::lock_guard lock(m_orgMutex);
+    m_orgRelocations.push_back(std::move(entry));
+  }
+
+
+  size_t DxvkMemoryAllocator::pollOrgRelocations(
+          DxvkOrgRelocation*          entries,
+          size_t                      capacity) {
+    std::lock_guard lock(m_orgMutex);
+    size_t count = std::min(capacity, m_orgRelocations.size());
+
+    for (size_t i = 0u; i < count; i++)
+      entries[i] = std::move(m_orgRelocations[i]);
+
+    m_orgRelocations.erase(m_orgRelocations.begin(), m_orgRelocations.begin() + count);
+    m_orgRelocationsPolled.fetch_add(count, std::memory_order_relaxed);
+    return count;
+  }
+
+
+  void DxvkMemoryAllocator::releaseOrgStorage(
+          DxvkResourceAllocation*     storage) {
+    if (!storage)
+      return;
+
+    // Takes back the reference the poll handed out; the last one frees the allocation (under m_mutex).
+    Rc<DxvkResourceAllocation>::unsafeCreate(storage);
+    m_orgStorageHeld.fetch_sub(1, std::memory_order_relaxed);
+  }
+
+
+  void DxvkMemoryAllocator::queueOrgStressRelocations(uint32_t count) {
+    std::vector<Rc<DxvkPagedResource>> resources;
+
+    { std::lock_guard lock(m_resourceMutex);
+      std::vector<std::pair<uint64_t, DxvkPagedResource*>> tracked;
+
+      for (const auto& e : m_resourceMap) {
+        if (e.second->isOrgTracked())
+          tracked.emplace_back(e.first, e.second);
+      }
+
+      if (tracked.empty())
+        return;
+
+      // Round robin by cookie: the ones after the last queued.
+      std::sort(tracked.begin(), tracked.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+      auto next = std::upper_bound(tracked.begin(), tracked.end(), m_orgStressCursor,
+        [] (uint64_t cookie, const auto& e) { return cookie < e.first; });
+
+      for (uint32_t i = 0u; i < count && i < tracked.size(); i++) {
+        if (next == tracked.end())
+          next = tracked.begin();
+
+        m_orgStressCursor = next->first;
+
+        if (auto resource = next->second->tryAcquire())
+          resources.push_back(std::move(resource));
+
+        ++next;
+      }
+    }
+
+    for (auto& resource : resources)
+      m_relocations.addResource(std::move(resource), nullptr, DxvkAllocationMode::NoFallback);
+  }
+
+
+  std::string DxvkMemoryAllocator::describeOrgRelocations() const {
+    std::stringstream str;
+    str << "ORG imports " << m_orgTracked.load(std::memory_order_relaxed) << " tracked, "
+        << m_orgRelocationsPushed.load(std::memory_order_relaxed) << " relocations reported ("
+        << m_orgRelocationsPolled.load(std::memory_order_relaxed) << " polled), "
+        << m_orgStorageHeld.load(std::memory_order_relaxed) << " old storages held, "
+        << m_orgTransferWrites.load(std::memory_order_relaxed) << " transfer writes to tracked resources";
+    return str.str();
+  }
+
+
   DxvkMemoryStats DxvkMemoryAllocator::getMemoryStats(uint32_t heap) const {
     DxvkMemoryStats result = { };
 
@@ -2329,12 +2502,22 @@ namespace dxvk {
   void DxvkMemoryAllocator::lockResourceGpuAddress(
     const Rc<DxvkResourceAllocation>& allocation) {
     if (allocation->m_flags.test(DxvkAllocationFlag::CanMove)) {
-      std::lock_guard lock(m_resourceMutex);
+      // The chunk's count is the allocator's (freeAllocation, defragmentation),
+      // taken in its order: the allocator's lock, then the resource map's.
+      std::lock_guard lock(m_mutex);
+      std::lock_guard resourceLock(m_resourceMutex);
+
+      if (!allocation->m_flags.test(DxvkAllocationFlag::CanMove))
+        return;
+
       allocation->m_flags.clr(DxvkAllocationFlag::CanMove);
 
       if (!allocation->m_flags.test(DxvkAllocationFlag::OwnsMemory) && !allocation->m_mapPtr) {
         uint32_t chunkIndex = allocation->m_address >> DxvkPageAllocator::ChunkAddressBits;
-        allocation->m_type->devicePool.chunks[chunkIndex].canMove = false;
+        allocation->m_type->devicePool.chunks[chunkIndex].lockedAllocations += 1u;
+        allocation->m_flags.set(DxvkAllocationFlag::GpuAddressLocked);
+      } else {
+        m_lockUncounted.fetch_add(1u, std::memory_order_relaxed);
       }
     }
   }
@@ -2514,24 +2697,45 @@ namespace dxvk {
     std::unique_lock lock(m_resourceMutex);
 
     for (auto a = pool.chunks[chunkIndex].allocationList; a; a = a->m_nextInChunk) {
+      // An allocation that cannot move (an ORG client's retired storage, notably) names a resource
+      // whose current storage is elsewhere, or one that cannot be relocated anyway.
+      if (!a->flags().test(DxvkAllocationFlag::CanMove)) {
+        m_defragSkippedUnmovable.fetch_add(1u, std::memory_order_relaxed);
+
+        if (a->flags().test(DxvkAllocationFlag::GpuAddressLocked))
+          m_defragSkippedLocked.fetch_add(1u, std::memory_order_relaxed);
+        else if (a->flags().test(DxvkAllocationFlag::OrgRetired))
+          m_defragSkippedRetired.fetch_add(1u, std::memory_order_relaxed);
+        else if (a->flags().test(DxvkAllocationFlag::OwnsMemory))
+          m_defragSkippedOwned.fetch_add(1u, std::memory_order_relaxed);
+        else if (a->m_mapPtr)
+          m_defragSkippedMapped.fetch_add(1u, std::memory_order_relaxed);
+        continue;
+      }
+
       // If we can't find the resource by its cookie, it has probably
       // already been destroyed. This is fine since the allocation will
       // likely get freed soon anyway.
       auto entry = m_resourceMap.find(a->m_resourceCookie);
 
-      if (entry == m_resourceMap.end())
+      if (entry == m_resourceMap.end()) {
+        m_defragSkippedUnknown.fetch_add(1u, std::memory_order_relaxed);
         continue;
+      }
 
       // Same if there are no external references. There is a small chance
       // that we pick up a newly created resource here that has no public
       // references yet, but skipping that will not affect correctness.
       auto resource = entry->second->tryAcquire();
 
-      if (!resource)
+      if (!resource) {
+        m_defragSkippedUnreferenced.fetch_add(1u, std::memory_order_relaxed);
         continue;
+      }
 
       // Acquired the resource, add it to the relocation list.
       m_relocations.addResource(std::move(resource), a, mode);
+      m_defragQueued.fetch_add(1u, std::memory_order_relaxed);
     }
   }
 
@@ -2588,7 +2792,7 @@ namespace dxvk {
       }
 
       // Move on if the chunk cannot be relocated anyway
-      if (!pool.chunks[i].canMove)
+      if (pool.chunks[i].lockedAllocations)
         continue;
 
       // If there's a non-empty chunk already marked as dead and we haven't
@@ -2640,6 +2844,7 @@ namespace dxvk {
     // will queue all live resources for relocation.
     pool.pageAllocator.killChunk(chunkIndex);
     pool.nextDefragChunk = chunkIndex;
+    m_defragPicked.fetch_add(1u, std::memory_order_relaxed);
   }
 
 

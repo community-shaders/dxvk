@@ -630,6 +630,10 @@ namespace dxvk {
      * \returns \c true if the resource can be evicted
      */
     bool requestEviction() {
+      // An ORG import is used by the client's own work, which DXVK does not track: never demoted.
+      if (unlikely(isOrgTracked()))
+        return false;
+
       DxvkResourceResidency status = m_residency.load();
 
       if (status == DxvkResourceResidency::Resident
@@ -669,6 +673,63 @@ namespace dxvk {
      * \returns Sparse page table, if defined
      */
     virtual DxvkSparsePageTable* getSparsePageTable() = 0;
+
+    /**
+     * \brief Marks the resource as used by an ORG interop client
+     *
+     * Sticky: the client may use the resource outside DXVK's tracking at any later
+     * point, so transfers to it stay in order and its contents are never renamed.
+     */
+    void markOrgInterop() {
+      m_orgInterop.store(true, std::memory_order_release);
+    }
+
+    bool isOrgInterop() const {
+      return m_orgInterop.load(std::memory_order_acquire);
+    }
+
+    /**
+     * \brief Counts an ORG import of the resource (dxvkTrackInteropResources)
+     *
+     * While any import lives, every replacement of the resource's storage is
+     * reported to the client with the old storage (DxvkMemoryAllocator::pushOrgRelocation).
+     */
+    void addOrgTrack() {
+      m_orgTracks.fetch_add(1u, std::memory_order_acq_rel);
+    }
+
+    /**
+     * \brief Ends one ORG import
+     * \returns \c false if the resource had none
+     */
+    bool removeOrgTrack() {
+      uint32_t count = m_orgTracks.load(std::memory_order_acquire);
+
+      do {
+        if (!count)
+          return false;
+      } while (!m_orgTracks.compare_exchange_weak(count, count - 1u, std::memory_order_acq_rel));
+
+      return true;
+    }
+
+    bool isOrgTracked() const {
+      return m_orgTracks.load(std::memory_order_acquire) != 0u;
+    }
+
+    /**
+     * \brief Serial of the resource's current storage
+     *
+     * Advanced on the CS thread with every storage replacement, so that a client
+     * matches a relocation against the storage its import described.
+     */
+    uint64_t orgStorageSerial() const {
+      return m_orgStorageSerial;
+    }
+
+    uint64_t advanceOrgStorageSerial() {
+      return ++m_orgStorageSerial;
+    }
 
     /**
      * \brief Allocates new backing storage with constraints
@@ -729,6 +790,10 @@ namespace dxvk {
     std::atomic<DxvkResourceResidency> m_residency = { DxvkResourceResidency::Resident };
 
     bool                  m_hasGfxStores = false;
+
+    std::atomic<bool>     m_orgInterop = { false };
+    std::atomic<uint32_t> m_orgTracks = { 0u };
+    uint64_t              m_orgStorageSerial = 0u;
 
     void makeResourceResident();
 

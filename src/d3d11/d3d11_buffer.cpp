@@ -120,6 +120,11 @@ namespace dxvk {
     // For Stream Output buffers we need a counter
     if (pDesc->BindFlags & D3D11_BIND_STREAM_OUTPUT)
       m_soCounter = CreateSoCounterBuffer();
+
+    if (D3D11AllocTraceHandle::Enabled() && m_buffer != nullptr) {
+      m_allocTrace.Register(m_parent->GetDXVKDevice().ptr(), "buffer", m_desc.BindFlags, DXGI_FORMAT_UNKNOWN, m_buffer->info().size,
+        bool(m_buffer->memFlags() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+    }
   }
   
   

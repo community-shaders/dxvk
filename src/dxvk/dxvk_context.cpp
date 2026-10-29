@@ -1347,6 +1347,12 @@ namespace dxvk {
     const Rc<DxvkBuffer>&           buffer,
           Rc<DxvkResourceAllocation>&& slice) {
     Rc<DxvkResourceAllocation> prevAllocation = buffer->assignStorage(std::move(slice));
+    buffer->advanceOrgStorageSerial();
+
+    // An ORG import keeps using the old storage until the client takes the new one
+    if (unlikely(buffer->isOrgTracked()))
+      m_common->memoryManager().pushOrgRelocation(*buffer, prevAllocation, false);
+
     m_cmd->track(std::move(prevAllocation));
 
     buffer->resetTracking();
@@ -1450,6 +1456,15 @@ namespace dxvk {
 
     // Actually replace backing storage and make sure to keep the old one alive
     Rc<DxvkResourceAllocation> prevAllocation = image->assignStorageWithUsage(std::move(slice), usageInfo);
+
+    if (prevAllocation != image->storage()) {
+      image->advanceOrgStorageSerial();
+
+      // An ORG import keeps using the old storage until the client takes the new one
+      if (unlikely(image->isOrgTracked()))
+        m_common->memoryManager().pushOrgRelocation(*image, prevAllocation, true);
+    }
+
     m_cmd->track(std::move(prevAllocation));
 
     if (usageInfo.stableGpuAddress)
@@ -1502,7 +1517,9 @@ namespace dxvk {
 
       if (needsUpdate) {
         image->assignStorageWithUsage(image->storage(), usageInfo);
-        m_common->memoryManager().lockResourceGpuAddress(image->storage());
+
+        if (usageInfo.stableGpuAddress)
+          m_common->memoryManager().lockResourceGpuAddress(image->storage());
       }
 
       return true;
@@ -2474,7 +2491,7 @@ namespace dxvk {
       if (needsNewBackingStorage) {
         auto imageSubresource = dstImage->getAvailableSubresources();
 
-        if (dstSubresource != imageSubresource || !isFullWrite || !dstImage->canRelocate())
+        if (dstSubresource != imageSubresource || !isFullWrite || !dstImage->canRelocate() || dstImage->isOrgInterop())
           continue;
 
         // On desktop there's no real point in allocating extra memory, just do
@@ -9025,6 +9042,17 @@ namespace dxvk {
       memoryBarrier.srcAccessMask |= info.buffer->info().access;
     }
 
+    // An ORG import keeps sampling the old storage in its resting layout until the client takes
+    // the new one, so a tracked image is copied from that layout and left in it. Decided once:
+    // the client may end its import meanwhile.
+    small_vector<VkImageLayout, 16> srcLayouts(imageCount);
+
+    for (size_t i = 0; i < imageCount; i++) {
+      const auto& info = imageInfos[i];
+      srcLayouts[i] = info.image->isOrgTracked() ? info.image->info().layout
+        : info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    }
+
     for (size_t i = 0; i < imageCount; i++) {
       const auto& info = imageInfos[i];
       auto oldStorage = info.image->storage();
@@ -9073,7 +9101,7 @@ namespace dxvk {
             srcBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             srcBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
             srcBarrier.oldLayout = info.image->info().layout;
-            srcBarrier.newLayout = info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            srcBarrier.newLayout = srcLayouts[i];
             srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             srcBarrier.image = oldStorage->getImageInfo().image;
@@ -9227,7 +9255,7 @@ namespace dxvk {
       copy.dstImage = dstInfo.image;
       copy.dstImageLayout = info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
       copy.srcImage = srcInfo.image;
-      copy.srcImageLayout = info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      copy.srcImageLayout = srcLayouts[i];
       copy.regionCount = imageRegions.size();
       copy.pRegions = imageRegions.data();
 
@@ -9257,6 +9285,12 @@ namespace dxvk {
     constexpr static uint32_t MaxRelocationsPerSubmission = 128u;
     constexpr static uint32_t MaxRelocatedMemoryPerSubmission = 16u << 20;
 
+    // DXVK_ORG_RELOCATE_STRESS=N: also move N ORG-tracked resources per submission (the client's relocation path, on demand)
+    static const uint32_t orgStress = uint32_t(std::max(0, std::atoi(env::getEnvVar("DXVK_ORG_RELOCATE_STRESS").c_str())));
+
+    if (unlikely(orgStress))
+      m_common->memoryManager().queueOrgStressRelocations(orgStress);
+
     auto resourceList = m_common->memoryManager().pollRelocationList(
       MaxRelocationsPerSubmission, MaxRelocatedMemoryPerSubmission);
 
@@ -9271,6 +9305,7 @@ namespace dxvk {
     // not fatal, but may lead to weird behaviour down the line - ignore for now.
     for (const auto& e : resourceList) {
       auto storage = e.resource->relocateStorage(e.mode);
+      m_common->memoryManager().noteRelocationAttempt(!storage);
 
       if (!storage)
         continue;
@@ -10748,8 +10783,11 @@ namespace dxvk {
     if (unlikely(buffer.info().flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
 
+    if (unlikely(access == DxvkAccess::Write && buffer.isOrgTracked()))
+      m_common->memoryManager().noteOrgTransferWrite();
+
     // Interop clients may use it without DXVK tracking that use
-    if (unlikely(m_untrackedExternalAccess && buffer.hasStableAddress()))
+    if (unlikely(m_untrackedExternalAccess && (buffer.hasStableAddress() || buffer.isOrgInterop())))
       return DxvkCmdBuffer::ExecBuffer;
 
     // If the buffer hasn't been used in the previous submission, we're
@@ -10767,8 +10805,9 @@ namespace dxvk {
     // Otherwise, our only option is to discard, which we can only do if we're
     // writing the full buffer. Therefore, the resource being read should always
     // be checked first so that unnecessary discards are avoided.
+    // An ORG resource's contents are never renamed: the client reads its current storage.
     bool canDiscard = access == DxvkAccess::Write && !offset
-      && size == buffer.info().size && buffer.canRelocate();
+      && size == buffer.info().size && buffer.canRelocate() && !buffer.isOrgInterop();
 
     if (!canDiscard && cmdBuffer == DxvkCmdBuffer::SdmaBuffer)
       cmdBuffer = DxvkCmdBuffer::InitBuffer;
@@ -10819,6 +10858,9 @@ namespace dxvk {
     // Sparse resources can alias, need to ignore.
     if (unlikely(image.info().flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT))
       return DxvkCmdBuffer::ExecBuffer;
+
+    if (unlikely(access == DxvkAccess::Write && image.isOrgTracked()))
+      m_common->memoryManager().noteOrgTransferWrite();
 
     // Interop clients may use it without DXVK tracking that use
     if (unlikely(m_untrackedExternalAccess && image.isOrgInteropImage()))

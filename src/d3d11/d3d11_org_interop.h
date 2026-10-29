@@ -263,6 +263,88 @@ typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfo)(ID3D11Device* pDevic
 typedef HRESULT (__stdcall *PFN_dxvkGetInteropResourceInfos)(ID3D11Device* pDevice,
   UINT count, IUnknown* const* pObjects, DxvkOrgInteropResourceInfo* pInfos, HRESULT* pResults);
 
+#define DXVK_ORG_TRACKED_RESOURCE_VERSION 1u
+
+/**
+ * A tracked import: the resource's current storage, and what names it in
+ * relocation events. info.version must be DXVK_ORG_INTEROP_VERSION.
+ */
+typedef enum DxvkOrgInteropTrackedFlagBits {
+  /**
+   * The resource is pinned as by dxvkGetInteropResourceInfo (it never moves, no
+   * relocation is reported): one the GPU writes (a render target, depth, or
+   * storage image or buffer), whose old storage would read stale after a move.
+   */
+  DXVK_ORG_TRACKED_PINNED = 1u << 0,
+} DxvkOrgInteropTrackedFlagBits;
+
+typedef struct DxvkOrgInteropTrackedResource {
+  /** DXVK_ORG_TRACKED_RESOURCE_VERSION. */
+  uint32_t version;
+  /** DxvkOrgInteropTrackedFlagBits. */
+  uint32_t flags;
+  /** Names the resource (not the view) in relocation events; never reused. */
+  uint64_t cookie;
+  /** The storage info describes: a relocation with a greater serial replaced it. */
+  uint64_t storageSerial;
+  DxvkOrgInteropResourceInfo info;
+} DxvkOrgInteropTrackedResource;
+
+/**
+ * Describes resources like dxvkGetInteropResourceInfos, without pinning them.
+ *
+ * Each call counts one import of each resource (the image behind a texture or
+ * view, or the buffer). While a resource has any, DXVK may still move it
+ * (defragmentation, eviction, a usage change), but only with moves that copy
+ * its contents; renames that discard them are suppressed, the writes happen in
+ * place. Each move is reported as a relocation (dxvkPollInteropRelocations)
+ * holding the old storage, which stays valid, and in the layout described,
+ * until the client releases it. Tracked resources are never evicted.
+ *
+ * Images are moved to VK_IMAGE_LAYOUT_GENERAL as with dxvkGetInteropResourceInfo.
+ * Buffers the application can map are rejected with E_INVALIDARG. The client
+ * must keep a reference on each object until it ends the import
+ * (dxvkUntrackInteropResources). Synchronizes once with DXVK's worker thread.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkTrackInteropResources)(ID3D11Device* pDevice,
+  UINT count, IUnknown* const* pObjects, DxvkOrgInteropTrackedResource* pResources, HRESULT* pResults);
+
+/**
+ * Ends one import of each object's resource (the objects passed to
+ * dxvkTrackInteropResources), once the client's work no longer uses it. Any
+ * thread; does not synchronize. Relocations reported before still arrive.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkUntrackInteropResources)(ID3D11Device* pDevice,
+  UINT count, IUnknown* const* pObjects);
+
+/** One storage replacement of a tracked resource. */
+typedef struct DxvkOrgInteropRelocation {
+  /** The resource's cookie (DxvkOrgInteropTrackedResource::cookie). */
+  uint64_t cookie;
+  /** The new storage's serial: imports describing an older one use the old storage. */
+  uint64_t storageSerial;
+  /** The old storage, alive until dxvkReleaseInteropStorage. */
+  void* storage;
+  /** DxvkOrgInteropResourceKind. */
+  uint32_t kind;
+  uint32_t reserved;
+} DxvkOrgInteropRelocation;
+
+/**
+ * Takes up to capacity relocations, oldest first. Any thread. Every one taken
+ * must be released with dxvkReleaseInteropStorage, including those of
+ * resources the client no longer imports.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkPollInteropRelocations)(ID3D11Device* pDevice,
+  DxvkOrgInteropRelocation* pRelocations, uint32_t capacity, uint32_t* pCount);
+
+/**
+ * Releases relocations' old storage, once the client's work no longer uses
+ * it. Any thread.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkReleaseInteropStorage)(ID3D11Device* pDevice,
+  UINT count, void* const* pStorages);
+
 /**
  * Submits client command buffers to DXVK's graphics queue in D3D11 stream
  * order: they execute after every command issued on the immediate context
