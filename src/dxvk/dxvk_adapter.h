@@ -182,6 +182,20 @@ namespace dxvk {
      * \returns Memory heap info
      */
     DxvkAdapterMemoryInfo getMemoryHeapInfo() const;
+
+    /**
+     * \brief Queries raw heap usage and budget
+     *
+     * Unlike getMemoryHeapInfo, reports VK_EXT_memory_budget's
+     * process-wide figures as they are, DXVK's allocations included.
+     * \param [out] properties Memory properties
+     * \param [out] budget Usage and budget per heap
+     * \returns \c false if VK_EXT_memory_budget is not supported,
+     *    in which case only \c properties is filled
+     */
+    bool getRawMemoryBudget(
+            VkPhysicalDeviceMemoryProperties&         properties,
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT& budget) const;
     
     /**
      * \brief Queries format feature support

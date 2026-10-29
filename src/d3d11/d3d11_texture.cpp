@@ -262,6 +262,9 @@ namespace dxvk {
       ExportImageInfo();
     }
 
+    if (m_image != nullptr)
+      m_device->GetDXVKDevice()->getMemoryAllocator().setResourceOrigin(m_image->cookie(), "D3D11 texture");
+
     TraceAllocation();
   }
   
@@ -420,6 +423,16 @@ namespace dxvk {
 
 
   void D3D11CommonTexture::SetDebugName(const char* pName) {
+    auto& allocator = m_device->GetDXVKDevice()->getMemoryAllocator();
+
+    if (m_image)
+      allocator.setResourceName(m_image->cookie(), pName);
+
+    for (const auto& entry : m_buffers) {
+      if (entry.buffer != nullptr)
+        allocator.setResourceName(entry.buffer->cookie(), pName);
+    }
+
     if (m_image) {
       m_device->GetContext()->InjectCs(DxvkCsQueue::HighPriority, [
         cImage  = m_image,
@@ -914,6 +927,9 @@ namespace dxvk {
     auto& entry = m_buffers[Subresource];
     entry.buffer = m_device->GetDXVKDevice()->createBuffer(info, memType);
     entry.slice = entry.buffer->storage();
+
+    m_device->GetDXVKDevice()->getMemoryAllocator().setResourceOrigin(
+      entry.buffer->cookie(), "D3D11 mapped subresource", m_image != nullptr ? m_image->cookie() : 0u);
   }
 
 

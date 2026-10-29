@@ -4,6 +4,10 @@
 
 #include "d3d11_include.h"
 
+#include "../util/thread.h"
+
+#include <memory>
+
 struct DxvkOrgInteropSubmission;
 struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropExternalCommands;
@@ -11,11 +15,15 @@ struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
 struct DxvkOrgInteropTrackedResource;
 struct DxvkOrgInteropRelocation;
+struct DxvkMemoryResourceRow;
+struct DxvkMemoryHeapReport;
 
 namespace dxvk {
 
   class D3D11Device;
   class D3D11Buffer;
+
+  struct D3D11MemorySnapshot;
   
   class D3D11VkInterop : public ComObject<IDXGIVkInteropDevice1> {
     
@@ -152,6 +160,27 @@ namespace dxvk {
      * \brief The immediate context's submission counter (see d3d11_org_interop.h)
      */
     const uint64_t* GetSubmissionCounter() const;
+
+    /**
+     * \brief VRAM attribution (see d3d11_org_interop.h)
+     */
+    HRESULT RequestMemorySnapshot();
+
+    HRESULT ReadMemorySnapshot(
+            DxvkMemoryResourceRow*      pRows,
+            uint32_t                    capacity,
+            uint32_t*                   pCount,
+            uint64_t*                   pSerial);
+
+    HRESULT GetMemoryHeapReports(
+            DxvkMemoryHeapReport*       pReports,
+            uint32_t                    capacity,
+            uint32_t*                   pCount);
+
+    HRESULT SetResourceOwner(
+            IUnknown*                   pObject,
+      const char*                       pOwner,
+            BOOL                        overwrite);
     
   private:
 
@@ -164,8 +193,13 @@ namespace dxvk {
 
     static void FillImageInfo(const Rc<DxvkImage>& image, const DxvkImageViewKey& view, DxvkOrgInteropImageInfo& out);
     
+    std::shared_ptr<D3D11MemorySnapshot> GetMemorySnapshot();
+
     IDXGIObject* m_container;
     D3D11Device* m_device;
+
+    dxvk::mutex                          m_memorySnapshotMutex;
+    std::shared_ptr<D3D11MemorySnapshot> m_memorySnapshot;
     
   };
   

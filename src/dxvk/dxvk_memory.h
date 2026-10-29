@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <unordered_set>
 
 #include "dxvk_access.h"
 #include "dxvk_adapter.h"
@@ -227,6 +228,104 @@ namespace dxvk {
     std::vector<DxvkMemoryChunkStats> chunks;
     std::vector<uint32_t> pageMasks;
   };
+
+
+  /**
+   * \brief What a resource's creator said about it (VRAM attribution)
+   *
+   * Kept for every registered resource, independent of debug flags. The
+   * strings are interned by the allocator and live as long as it does.
+   */
+  struct DxvkResourceLabel {
+    /// Owner scope active on the creating thread (pushResourceOwner), or null
+    const char* owner = nullptr;
+    /// Create-info debug name: DXVK's internal kind ("Staging buffer", ...), or null
+    const char* kind = nullptr;
+    /// API object the resource backs ("D3D11 buffer", ...), or null for internal ones
+    const char* origin = nullptr;
+    /// Resource whose memory this is part of (a texture's mapped buffers), or 0
+    uint64_t parentCookie = 0u;
+    /// Debug name the application gave the API object
+    std::string name;
+    /// Return addresses of the creating thread, innermost first, under DxvkMemoryDebugFlag::CreationStacks
+    std::shared_ptr<const std::vector<const void*>> stack;
+  };
+
+
+  /**
+   * \brief VRAM attribution's debug features (setMemoryDebugFlags)
+   */
+  enum DxvkMemoryDebugFlag : uint32_t {
+    /// Record each resource's creation stack in its label
+    DxvkMemoryDebugCreationStacks = 1u << 0,
+  };
+
+  /**
+   * \brief Sets the process-wide VRAM attribution debug flags
+   *
+   * Resources created afterwards are affected; set before the device is created.
+   */
+  void setMemoryDebugFlags(uint32_t flags);
+
+  /**
+   * \brief Queries the process-wide VRAM attribution debug flags
+   */
+  uint32_t getMemoryDebugFlags();
+
+
+  /**
+   * \brief A live resource's current storage, for VRAM attribution
+   */
+  struct DxvkMemoryResourceReport {
+    uint64_t            cookie       = 0u;
+    bool                image        = false;
+    bool                sparse       = false;
+    /// DxvkAllocationFlags of the current storage
+    uint32_t            flags        = 0u;
+    VkDeviceSize        size         = 0u;
+    /// Memory type and heap, or ~0u for imported and sparse storage
+    uint32_t            memoryType   = ~0u;
+    uint32_t            heap         = ~0u;
+    VkDeviceMemory      memory       = VK_NULL_HANDLE;
+    VkDeviceSize        offset       = 0u;
+    VkFormat            format       = VK_FORMAT_UNDEFINED;
+    VkExtent3D          extent       = { };
+    uint32_t            mipLevels    = 0u;
+    uint32_t            layers       = 0u;
+    uint32_t            usage        = 0u;
+    DxvkResourceLabel   label;
+  };
+
+
+  /**
+   * \brief One memory heap's DXVK totals, for VRAM attribution
+   */
+  struct DxvkMemoryHeapTotals {
+    /// Memory in VkDeviceMemory objects DXVK allocated (chunks and dedicated)
+    VkDeviceSize allocated = 0u;
+    /// Suballocated and dedicated memory in use, caches included
+    VkDeviceSize used = 0u;
+    /// DXVK's own budget for the heap
+    VkDeviceSize budget = 0u;
+    /// Free allocations held by the shared allocation caches
+    VkDeviceSize cacheBytes = 0u;
+    /// Retired storages an ORG client still holds (pushOrgRelocation)
+    VkDeviceSize orgRetiredBytes = 0u;
+  };
+
+
+  /**
+   * \brief Pushes a VRAM owner scope on this thread
+   *
+   * Resources registered on this thread until the matching pop are
+   * labeled with the owner. The string must stay valid until then.
+   */
+  void pushResourceOwner(const char* owner);
+
+  /**
+   * \brief Pops the owner scope pushed last on this thread
+   */
+  void popResourceOwner();
 
 
   /**
@@ -1354,7 +1453,68 @@ namespace dxvk {
      * \param [in] resource Resource to add
      */
     void registerResource(
-            DxvkPagedResource*          resource);
+            DxvkPagedResource*          resource,
+      const char*                       kind = nullptr);
+
+    /**
+     * \brief Names a resource for VRAM attribution
+     *
+     * \param [in] cookie Resource cookie
+     * \param [in] name Debug name the application gave it
+     */
+    void setResourceName(
+            uint64_t                    cookie,
+      const char*                       name);
+
+    /**
+     * \brief Records the API object a resource backs
+     *
+     * \param [in] cookie Resource cookie
+     * \param [in] origin Static string, e.g. "D3D11 buffer"
+     * \param [in] parentCookie Resource it is part of, or 0
+     */
+    void setResourceOrigin(
+            uint64_t                    cookie,
+      const char*                       origin,
+            uint64_t                    parentCookie = 0u);
+
+    /**
+     * \brief Sets a resource's owner after creation
+     *
+     * \param [in] cookie Resource cookie
+     * \param [in] owner Owner, copied
+     * \param [in] overwrite Replace an owner the resource already has
+     */
+    void setResourceOwner(
+            uint64_t                    cookie,
+      const char*                       owner,
+            bool                        overwrite);
+
+    /**
+     * \brief Reports every live resource's current storage
+     *
+     * Must run on the CS thread, which is the only one that replaces a
+     * resource's storage once it is published.
+     * \param [out] resources One entry per live buffer and image
+     */
+    void enumerateResources(
+            std::vector<DxvkMemoryResourceReport>& resources);
+
+    /**
+     * \brief A live resource's creation stack
+     *
+     * \param [in] cookie Resource cookie
+     * \returns The stack, or null if the resource is gone or none was recorded
+     */
+    std::shared_ptr<const std::vector<const void*>> getResourceStack(uint64_t cookie);
+
+    /**
+     * \brief Reports a heap's DXVK totals
+     *
+     * \param [in] heap Heap index
+     * \returns The heap's totals
+     */
+    DxvkMemoryHeapTotals getHeapTotals(uint32_t heap) const;
 
     /**
      * \brief Unregisters a paged resource
@@ -1502,6 +1662,8 @@ namespace dxvk {
     alignas(CACHE_LINE_SIZE)
     dxvk::mutex               m_resourceMutex;
     std::unordered_map<uint64_t, DxvkPagedResource*> m_resourceMap;
+    std::unordered_map<uint64_t, DxvkResourceLabel>  m_resourceLabels;
+    std::unordered_set<std::string>                  m_labelStrings;
 
     alignas(CACHE_LINE_SIZE)
     DxvkRelocationList        m_relocations;
@@ -1515,6 +1677,7 @@ namespace dxvk {
     std::atomic<uint64_t>     m_orgRelocationsPushed = { 0u };
     std::atomic<uint64_t>     m_orgRelocationsPolled = { 0u };
     std::atomic<int64_t>      m_orgStorageHeld = { 0 };
+    std::array<std::atomic<int64_t>, VK_MAX_MEMORY_HEAPS> m_orgStorageHeldBytes = { };
     std::atomic<uint64_t>     m_orgTransferWrites = { 0u };
 
     // Defragmentation's work, for the alloc trace (describeDevicePoolChunks)

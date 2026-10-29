@@ -33,3 +33,11 @@ EXPORTS
     dxvkUntrackInteropResources @150
     dxvkPollInteropRelocations @151
     dxvkReleaseInteropStorage @152
+    dxvkPushResourceOwner @153
+    dxvkPopResourceOwner @154
+    dxvkRequestMemorySnapshot @155
+    dxvkReadMemorySnapshot @156
+    dxvkGetMemoryHeapReports @157
+    dxvkSetResourceOwner @158
+    dxvkConfigureMemoryDebug @159
+    dxvkGetResourceCreationStack @160

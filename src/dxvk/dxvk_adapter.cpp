@@ -138,6 +138,21 @@ namespace dxvk {
   }
 
 
+  bool DxvkAdapter::getRawMemoryBudget(
+          VkPhysicalDeviceMemoryProperties&         properties,
+          VkPhysicalDeviceMemoryBudgetPropertiesEXT& budget) const {
+    bool hasMemoryBudget = m_capabilities.getFeatures().extMemoryBudget;
+
+    budget = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+    VkPhysicalDeviceMemoryProperties2 memProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 };
+    memProps.pNext = hasMemoryBudget ? &budget : nullptr;
+
+    m_instance->vki()->vkGetPhysicalDeviceMemoryProperties2(m_handle, &memProps);
+    properties = memProps.memoryProperties;
+    return hasMemoryBudget;
+  }
+
+
   DxvkFormatFeatures DxvkAdapter::getFormatFeatures(VkFormat format) const {
     auto vk = m_instance->vki();
 

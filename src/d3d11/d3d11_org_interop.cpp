@@ -587,6 +587,159 @@ namespace dxvk {
   }
 
 
+  // The last completed resource snapshot (RequestMemorySnapshot); the CS thread replaces it.
+  struct D3D11MemorySnapshot {
+    dxvk::mutex                           mutex;
+    std::vector<DxvkMemoryResourceReport> rows;
+    uint64_t                              serial = 0u;
+    std::atomic<bool>                     pending = { false };
+  };
+
+
+  std::shared_ptr<D3D11MemorySnapshot> D3D11VkInterop::GetMemorySnapshot() {
+    std::lock_guard lock(m_memorySnapshotMutex);
+
+    if (!m_memorySnapshot)
+      m_memorySnapshot = std::make_shared<D3D11MemorySnapshot>();
+
+    return m_memorySnapshot;
+  }
+
+
+  HRESULT D3D11VkInterop::RequestMemorySnapshot() {
+    auto snapshot = GetMemorySnapshot();
+
+    // One in flight at a time: a request while one is pending is already served by it.
+    if (snapshot->pending.exchange(true, std::memory_order_acq_rel))
+      return S_FALSE;
+
+    // On the CS thread, the only one that replaces a published resource's storage.
+    m_device->GetContext()->InjectCs(DxvkCsQueue::HighPriority, [
+      cDevice   = m_device->GetDXVKDevice(),
+      cSnapshot = std::move(snapshot)
+    ] (DxvkContext* ctx) {
+      std::vector<DxvkMemoryResourceReport> rows;
+      cDevice->getMemoryAllocator().enumerateResources(rows);
+
+      { std::lock_guard lock(cSnapshot->mutex);
+        cSnapshot->rows = std::move(rows);
+        cSnapshot->serial += 1u;
+      }
+
+      cSnapshot->pending.store(false, std::memory_order_release);
+    });
+
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::ReadMemorySnapshot(
+          DxvkMemoryResourceRow*      pRows,
+          uint32_t                    capacity,
+          uint32_t*                   pCount,
+          uint64_t*                   pSerial) {
+    if (!pCount || (capacity && !pRows))
+      return E_INVALIDARG;
+
+    auto snapshot = GetMemorySnapshot();
+    std::lock_guard lock(snapshot->mutex);
+
+    uint32_t total = uint32_t(snapshot->rows.size());
+    uint32_t count = std::min(total, capacity);
+
+    for (uint32_t i = 0u; i < count; i++) {
+      const auto& src = snapshot->rows[i];
+      auto& dst = pRows[i];
+      dst = { };
+      dst.cookie = src.cookie;
+      dst.parentCookie = src.label.parentCookie;
+      dst.size = src.size;
+      dst.memory = uint64_t(src.memory);
+      dst.offset = src.offset;
+      dst.flags = src.flags;
+      dst.isImage = src.image;
+      dst.isSparse = src.sparse;
+      dst.memoryType = src.memoryType;
+      dst.heapIndex = src.heap;
+      dst.format = uint32_t(src.format);
+      dst.width = src.extent.width;
+      dst.height = src.extent.height;
+      dst.depth = src.extent.depth;
+      dst.mipLevels = src.mipLevels;
+      dst.layers = src.layers;
+      dst.usage = src.usage;
+      dst.owner = src.label.owner;
+      dst.kind = src.label.kind;
+      dst.origin = src.label.origin;
+      std::memcpy(dst.name, src.label.name.data(), std::min(src.label.name.size(), sizeof(dst.name) - 1u));
+    }
+
+    *pCount = total;
+
+    if (pSerial)
+      *pSerial = snapshot->serial;
+
+    return count < total ? S_FALSE : S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::SetResourceOwner(
+          IUnknown*                   pObject,
+    const char*                       pOwner,
+          BOOL                        overwrite) {
+    Rc<DxvkPagedResource> resource = ResolveResource(pObject, nullptr, nullptr);
+
+    if (resource == nullptr)
+      return E_INVALIDARG;
+
+    m_device->GetDXVKDevice()->getMemoryAllocator().setResourceOwner(resource->cookie(), pOwner, overwrite);
+    return S_OK;
+  }
+
+
+  HRESULT D3D11VkInterop::GetMemoryHeapReports(
+          DxvkMemoryHeapReport*       pReports,
+          uint32_t                    capacity,
+          uint32_t*                   pCount) {
+    if (!pCount || (capacity && !pReports))
+      return E_INVALIDARG;
+
+    for (uint32_t i = 0u; i < capacity; i++) {
+      if (pReports[i].version != DXVK_MEMORY_REPORT_VERSION)
+        return E_INVALIDARG;
+    }
+
+    Rc<DxvkDevice> device = m_device->GetDXVKDevice();
+    auto& allocator = device->getMemoryAllocator();
+
+    VkPhysicalDeviceMemoryProperties properties = { };
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = { };
+    bool hasBudget = device->adapter()->getRawMemoryBudget(properties, budget);
+
+    uint32_t count = std::min(properties.memoryHeapCount, capacity);
+
+    for (uint32_t i = 0u; i < count; i++) {
+      DxvkMemoryHeapTotals heap = allocator.getHeapTotals(i);
+
+      auto& dst = pReports[i];
+      dst.heapIndex = i;
+      dst.heapFlags = properties.memoryHeaps[i].flags;
+      dst.hasVkBudget = hasBudget;
+      dst.heapSize = properties.memoryHeaps[i].size;
+      dst.vkUsage = hasBudget ? budget.heapUsage[i] : 0u;
+      dst.vkBudget = hasBudget ? budget.heapBudget[i] : 0u;
+      dst.dxvkBudget = heap.budget;
+      dst.dxvkAllocated = heap.allocated;
+      dst.dxvkUsed = heap.used;
+      dst.cacheBytes = heap.cacheBytes;
+      dst.orgRetiredBytes = heap.orgRetiredBytes;
+    }
+
+    *pCount = properties.memoryHeapCount;
+    return count < properties.memoryHeapCount ? S_FALSE : S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::EnqueueExternalSubmission(
     const DxvkOrgInteropSubmission*   pSubmission) {
     if (!pSubmission || pSubmission->version != DXVK_ORG_INTEROP_VERSION
@@ -1058,6 +1211,95 @@ extern "C" {
   DLLEXPORT HRESULT __stdcall dxvkSetDeviceTeardownCallback(PFN_dxvkOrgInteropTeardown pCallback, void* pUser) {
     setInteropTeardownCallback(pCallback, pUser);
     return S_OK;
+  }
+
+
+  DLLEXPORT void __stdcall dxvkPushResourceOwner(const char* owner) {
+    pushResourceOwner(owner);
+  }
+
+
+  DLLEXPORT void __stdcall dxvkPopResourceOwner() {
+    popResourceOwner();
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkRequestMemorySnapshot(ID3D11Device* pDevice) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->RequestMemorySnapshot();
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkReadMemorySnapshot(ID3D11Device* pDevice,
+    DxvkMemoryResourceRow* pRows, uint32_t capacity, uint32_t* pCount, uint64_t* pSerial) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->ReadMemorySnapshot(pRows, capacity, pCount, pSerial);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetResourceOwner(ID3D11Device* pDevice,
+    IUnknown* pObject, const char* pOwner, BOOL overwrite) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->SetResourceOwner(pObject, pOwner, overwrite);
+  }
+
+
+  DLLEXPORT void __stdcall dxvkConfigureMemoryDebug(uint32_t flags) {
+    setMemoryDebugFlags(flags);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkGetResourceCreationStack(ID3D11Device* pDevice,
+    uint64_t cookie, void** pFrames, uint32_t capacity, uint32_t* pCount) {
+    if (!pCount || (capacity && !pFrames))
+      return E_INVALIDARG;
+    *pCount = 0u;
+
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    auto stack = interop->GetDXVKDevice()->getMemoryAllocator().getResourceStack(cookie);
+
+    if (!stack)
+      return S_FALSE;
+
+    uint32_t count = std::min(capacity, uint32_t(stack->size()));
+
+    for (uint32_t i = 0u; i < count; i++)
+      pFrames[i] = const_cast<void*>((*stack)[i]);
+
+    *pCount = uint32_t(stack->size());
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkGetMemoryHeapReports(ID3D11Device* pDevice,
+    DxvkMemoryHeapReport* pReports, uint32_t capacity, uint32_t* pCount) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->GetMemoryHeapReports(pReports, capacity, pCount);
   }
 
 }

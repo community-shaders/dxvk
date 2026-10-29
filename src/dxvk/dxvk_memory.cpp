@@ -2316,6 +2316,9 @@ namespace dxvk {
     m_orgRelocationsPushed.fetch_add(1u, std::memory_order_relaxed);
     m_orgStorageHeld.fetch_add(1, std::memory_order_relaxed);
 
+    if (entry.storage->m_type)
+      m_orgStorageHeldBytes[entry.storage->m_type->properties.heapIndex].fetch_add(int64_t(entry.storage->m_size), std::memory_order_relaxed);
+
     std::lock_guard lock(m_orgMutex);
     m_orgRelocations.push_back(std::move(entry));
   }
@@ -2340,6 +2343,9 @@ namespace dxvk {
           DxvkResourceAllocation*     storage) {
     if (!storage)
       return;
+
+    if (storage->m_type)
+      m_orgStorageHeldBytes[storage->m_type->properties.heapIndex].fetch_sub(int64_t(storage->m_size), std::memory_order_relaxed);
 
     // Takes back the reference the poll handed out; the last one frees the allocation (under m_mutex).
     Rc<DxvkResourceAllocation>::unsafeCreate(storage);
@@ -2476,10 +2482,73 @@ namespace dxvk {
   }
 
 
+  namespace {
+    // VRAM owner scopes (pushResourceOwner): a fixed stack per thread. Scopes
+    // nested past its depth are counted, so their pops stay balanced.
+    constexpr uint32_t MaxResourceOwnerDepth = 16u;
+
+    thread_local std::array<const char*, MaxResourceOwnerDepth> g_resourceOwners = { };
+    thread_local uint32_t g_resourceOwnerDepth = 0u;
+
+    const char* currentResourceOwner() {
+      uint32_t depth = std::min(g_resourceOwnerDepth, MaxResourceOwnerDepth);
+      return depth ? g_resourceOwners[depth - 1u] : nullptr;
+    }
+  }
+
+
+  namespace {
+    std::atomic<uint32_t> g_memoryDebugFlags = { 0u };
+  }
+
+
+  void setMemoryDebugFlags(uint32_t flags) {
+    g_memoryDebugFlags.store(flags, std::memory_order_release);
+  }
+
+
+  uint32_t getMemoryDebugFlags() {
+    return g_memoryDebugFlags.load(std::memory_order_acquire);
+  }
+
+
+  void pushResourceOwner(const char* owner) {
+    if (g_resourceOwnerDepth < MaxResourceOwnerDepth)
+      g_resourceOwners[g_resourceOwnerDepth] = owner;
+
+    g_resourceOwnerDepth += 1u;
+  }
+
+
+  void popResourceOwner() {
+    if (g_resourceOwnerDepth)
+      g_resourceOwnerDepth -= 1u;
+  }
+
+
   void DxvkMemoryAllocator::registerResource(
-          DxvkPagedResource*          resource) {
+          DxvkPagedResource*          resource,
+    const char*                       kind) {
+    const char* owner = currentResourceOwner();
+
+    std::shared_ptr<const std::vector<const void*>> stack;
+#ifdef _WIN32
+    if (getMemoryDebugFlags() & DxvkMemoryDebugCreationStacks) {
+      void* frames[48];
+      USHORT count = RtlCaptureStackBackTrace(1, 48, frames, nullptr);
+      stack = std::make_shared<const std::vector<const void*>>(frames, frames + count);
+    }
+#endif
+
     std::lock_guard lock(m_resourceMutex);
     m_resourceMap.emplace(resource->cookie(), resource);
+
+    // Interned: the owner scope's string is only valid until its pop.
+    DxvkResourceLabel label;
+    label.stack = std::move(stack);
+    label.owner = owner ? m_labelStrings.emplace(owner).first->c_str() : nullptr;
+    label.kind = kind ? m_labelStrings.emplace(kind).first->c_str() : nullptr;
+    m_resourceLabels.insert_or_assign(resource->cookie(), std::move(label));
   }
 
 
@@ -2487,6 +2556,135 @@ namespace dxvk {
           DxvkPagedResource*          resource) {
     std::lock_guard lock(m_resourceMutex);
     m_resourceMap.erase(resource->cookie());
+    m_resourceLabels.erase(resource->cookie());
+  }
+
+
+  void DxvkMemoryAllocator::setResourceName(
+          uint64_t                    cookie,
+    const char*                       name) {
+    std::lock_guard lock(m_resourceMutex);
+    auto entry = m_resourceLabels.find(cookie);
+
+    if (entry != m_resourceLabels.end())
+      entry->second.name = name ? name : "";
+  }
+
+
+  void DxvkMemoryAllocator::setResourceOrigin(
+          uint64_t                    cookie,
+    const char*                       origin,
+          uint64_t                    parentCookie) {
+    std::lock_guard lock(m_resourceMutex);
+    auto entry = m_resourceLabels.find(cookie);
+
+    if (entry != m_resourceLabels.end()) {
+      entry->second.origin = origin ? m_labelStrings.emplace(origin).first->c_str() : nullptr;
+      entry->second.parentCookie = parentCookie;
+    }
+  }
+
+
+  void DxvkMemoryAllocator::setResourceOwner(
+          uint64_t                    cookie,
+    const char*                       owner,
+          bool                        overwrite) {
+    std::lock_guard lock(m_resourceMutex);
+    auto entry = m_resourceLabels.find(cookie);
+
+    if (entry != m_resourceLabels.end() && (overwrite || !entry->second.owner))
+      entry->second.owner = owner ? m_labelStrings.emplace(owner).first->c_str() : nullptr;
+  }
+
+
+  std::shared_ptr<const std::vector<const void*>> DxvkMemoryAllocator::getResourceStack(uint64_t cookie) {
+    std::lock_guard lock(m_resourceMutex);
+    auto entry = m_resourceLabels.find(cookie);
+    return entry != m_resourceLabels.end() ? entry->second.stack : nullptr;
+  }
+
+
+  void DxvkMemoryAllocator::enumerateResources(
+          std::vector<DxvkMemoryResourceReport>& resources) {
+    std::vector<std::pair<Rc<DxvkPagedResource>, DxvkResourceLabel>> live;
+
+    { std::lock_guard lock(m_resourceMutex);
+      live.reserve(m_resourceMap.size());
+
+      for (const auto& e : m_resourceMap) {
+        if (auto resource = e.second->tryAcquire()) {
+          auto label = m_resourceLabels.find(e.first);
+          live.emplace_back(std::move(resource), label != m_resourceLabels.end() ? label->second : DxvkResourceLabel());
+        }
+      }
+    }
+
+    // The references are dropped outside the lock: the last one destroys the
+    // resource, which unregisters it.
+    resources.clear();
+    resources.reserve(live.size());
+
+    for (auto& [resource, label] : live) {
+      DxvkMemoryResourceReport& report = resources.emplace_back();
+      report.cookie = resource->cookie();
+      report.label = std::move(label);
+
+      Rc<DxvkResourceAllocation> storage;
+
+      if (auto buffer = dynamic_cast<DxvkBuffer*>(resource.ptr())) {
+        const auto& info = buffer->info();
+        report.sparse = bool(info.flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT);
+        report.extent = { uint32_t(std::min<VkDeviceSize>(info.size, ~0u)), 1u, 1u };
+        report.usage = info.usage;
+        storage = buffer->storage();
+      } else if (auto image = dynamic_cast<DxvkImage*>(resource.ptr())) {
+        const auto& info = image->info();
+        report.image = true;
+        report.sparse = bool(info.flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+        report.format = info.format;
+        report.extent = info.extent;
+        report.mipLevels = info.mipLevels;
+        report.layers = info.numLayers;
+        report.usage = info.usage;
+        storage = image->storage();
+      }
+
+      if (storage == nullptr)
+        continue;
+
+      report.flags = storage->m_flags.raw();
+      report.size = storage->m_size;
+
+      if (storage->m_type && !report.sparse) {
+        report.memoryType = storage->m_type->index;
+        report.heap = storage->m_type->properties.heapIndex;
+        report.memory = storage->m_memory;
+        report.offset = storage->m_address & DxvkPageAllocator::ChunkAddressMask;
+      }
+    }
+  }
+
+
+  DxvkMemoryHeapTotals DxvkMemoryAllocator::getHeapTotals(uint32_t heap) const {
+    DxvkMemoryHeapTotals result = { };
+
+    if (heap >= m_memHeapCount)
+      return result;
+
+    DxvkMemoryStats stats = getMemoryStats(heap);
+    result.allocated = stats.memoryAllocated;
+    result.used = stats.memoryUsed;
+    result.budget = stats.memoryBudget;
+
+    for (auto typeIndex : bit::BitMask(m_memHeaps[heap].memoryTypes)) {
+      const auto& type = m_memTypes[typeIndex];
+
+      if (type.sharedCache)
+        result.cacheBytes += type.sharedCache->getStats().size;
+    }
+
+    result.orgRetiredBytes = VkDeviceSize(std::max<int64_t>(0, m_orgStorageHeldBytes[heap].load(std::memory_order_relaxed)));
+    return result;
   }
 
 

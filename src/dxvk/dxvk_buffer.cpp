@@ -17,7 +17,7 @@ namespace dxvk {
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_sharingMode   (device->getSharingMode()),
     m_info          (createInfo) {
-    m_allocator->registerResource(this);
+    m_allocator->registerResource(this, createInfo.debugName);
 
     // Assign debug name to buffer
     if (device->debugFlags().test(DxvkDebugFlag::Capture)) {
@@ -48,7 +48,7 @@ namespace dxvk {
     m_sharingMode   (device->getSharingMode()),
     m_info          (createInfo),
     m_stableAddress (true) {
-    m_allocator->registerResource(this);
+    m_allocator->registerResource(this, createInfo.debugName);
 
     DxvkAllocationInfo allocationInfo = { };
     allocationInfo.resourceCookie = cookie();

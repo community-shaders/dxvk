@@ -121,6 +121,9 @@ namespace dxvk {
     if (pDesc->BindFlags & D3D11_BIND_STREAM_OUTPUT)
       m_soCounter = CreateSoCounterBuffer();
 
+    if (m_buffer != nullptr)
+      m_parent->GetDXVKDevice()->getMemoryAllocator().setResourceOrigin(m_buffer->cookie(), "D3D11 buffer");
+
     if (D3D11AllocTraceHandle::Enabled() && m_buffer != nullptr) {
       m_allocTrace.Register(m_parent->GetDXVKDevice().ptr(), "buffer", m_desc.BindFlags, DXGI_FORMAT_UNKNOWN, m_buffer->info().size,
         bool(m_buffer->memFlags() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
@@ -222,6 +225,8 @@ namespace dxvk {
 
   void D3D11Buffer::SetDebugName(const char* pName) {
     if (m_buffer) {
+      m_parent->GetDXVKDevice()->getMemoryAllocator().setResourceName(m_buffer->cookie(), pName);
+
       m_parent->GetContext()->InjectCs(DxvkCsQueue::HighPriority, [
         cBuffer = m_buffer,
         cName   = std::string(pName ? pName : "")

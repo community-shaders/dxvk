@@ -124,7 +124,7 @@ namespace dxvk {
     m_properties    (memFlags),
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_info          (createInfo) {
-    m_allocator->registerResource(this);
+    m_allocator->registerResource(this, createInfo.debugName);
 
     copyFormatList(createInfo.viewFormatCount, createInfo.viewFormats);
     m_unifiedLayoutAvailable = device->features().khrUnifiedImageLayouts.unifiedImageLayouts;
@@ -174,7 +174,7 @@ namespace dxvk {
     m_info          (createInfo),
     m_stableAddress (true),
     m_globalLayout  (createInfo.initialLayout) {
-    m_allocator->registerResource(this);
+    m_allocator->registerResource(this, createInfo.debugName);
 
     copyFormatList(createInfo.viewFormatCount, createInfo.viewFormats);
 

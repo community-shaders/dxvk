@@ -209,6 +209,42 @@ work directly after a graph epoch".
 `dxvkGetPresenterSurfaceState` reports the live surface format plus requested and effective
 colour spaces, with a serial the host can poll for changes.
 
+### VRAM attribution (@153-@160)
+
+Community Shaders attributes every byte of VRAM to an owner. It needs DXVK's view of its own
+resources, which upstream keeps only under `DXVK_DEBUG=capture`.
+
+- **Labels.** Every `DxvkBuffer` and `DxvkImage` gets a `DxvkResourceLabel` in the allocator, keyed
+  by cookie and always on.
+  - The owner scope active on the creating thread (`dxvkPushResourceOwner` /
+    `dxvkPopResourceOwner`).
+  - The create info's `debugName`, which is DXVK's internal kind ("Staging buffer", "Resource
+    heap", ...).
+  - The D3D11 object the resource backs, set by `D3D11Buffer` and `D3D11CommonTexture`.
+  - The debug name the application gave that object.
+- **Late owners.** `dxvkSetResourceOwner` labels a resource that already exists, such as the game's
+  render targets. Without `overwrite`, an owner from a creation scope is kept.
+- **Snapshot.** `dxvkRequestMemorySnapshot` enumerates `m_resourceMap` on the CS thread, the only
+  one that replaces a published resource's storage. `dxvkReadMemorySnapshot` copies the last
+  completed snapshot without waiting.
+- **Debug: creation stacks.** `dxvkConfigureMemoryDebug(DXVK_MEMORY_DEBUG_CREATION_STACKS)`, called before
+  the device exists, makes every resource record its creation stack.
+  `dxvkGetResourceCreationStack` returns it, and the host walks it to the frame that called into
+  D3D11. This is how resources with no owner are traced to their creator.
+- **Heap report.** `dxvkGetMemoryHeapReports` returns, per heap:
+  - raw `VK_EXT_memory_budget` usage and budget
+  - DXVK allocated / used
+  - shared allocation cache bytes
+  - bytes of storages retired to an ORG client that it still holds
+
+The live resources' sizes don't add up to "used". The difference is renamed (discarded) storages
+still in flight, local allocation caches, and ORG-retired storages. Community Shaders reports it as
+a residual.
+
+*Files: `src/dxvk/dxvk_memory.{h,cpp}`, `src/dxvk/dxvk_adapter.{h,cpp}`,
+`src/d3d11/d3d11_org_interop.{h,cpp}`, `src/d3d11/d3d11_interop.h`, `src/d3d11/d3d11_buffer.cpp`,
+`src/d3d11/d3d11_texture.cpp`*
+
 ---
 
 ## 5. Bug fixes

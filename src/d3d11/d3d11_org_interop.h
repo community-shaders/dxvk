@@ -497,6 +497,125 @@ typedef HRESULT (__stdcall *PFN_dxvkSetSubmissionTrace)(ID3D11Device* pDevice, B
 typedef HRESULT (__stdcall *PFN_dxvkReadSubmissionTrace)(ID3D11Device* pDevice,
   DxvkOrgSubmissionTraceRecord* pRecords, uint32_t capacity, uint32_t* pCount);
 
+/* ---------------------------------------------------------------------------
+ * VRAM attribution
+ *
+ * Every DXVK buffer and image carries a label: the owner scope active on the
+ * thread that created it (dxvkPushResourceOwner), DXVK's internal kind for
+ * its own resources, the API object it backs and the debug name the
+ * application gave that object. Labels are kept independent of DXVK_DEBUG.
+ * ------------------------------------------------------------------------- */
+
+#define DXVK_MEMORY_REPORT_VERSION 1u
+
+/** Allocation flags of a resource's current storage (DxvkAllocationFlag bits). */
+#define DXVK_MEMORY_RESOURCE_OWNS_MEMORY   (1u << 0)  /* dedicated VkDeviceMemory */
+#define DXVK_MEMORY_RESOURCE_CAN_MOVE      (1u << 4)
+#define DXVK_MEMORY_RESOURCE_IMPORTED      (1u << 5)  /* memory DXVK did not allocate, e.g. dxvkCreateBufferFromVkBuffer */
+#define DXVK_MEMORY_RESOURCE_ORG_RETIRED   (1u << 8)
+
+/** One live DXVK buffer or image and its current storage. */
+typedef struct DxvkMemoryResourceRow {
+  uint64_t cookie;
+  /** Cookie of the resource this one is part of (a texture's mapped subresource buffers), or 0. */
+  uint64_t parentCookie;
+  /** Size of the current storage in bytes. */
+  uint64_t size;
+  uint64_t memory;        /* VkDeviceMemory, 0 for imported or sparse storage */
+  uint64_t offset;
+  uint32_t flags;         /* DXVK_MEMORY_RESOURCE_* */
+  uint32_t isImage;
+  uint32_t isSparse;
+  uint32_t memoryType;    /* ~0u for imported or sparse storage */
+  uint32_t heapIndex;     /* ~0u for imported or sparse storage */
+  uint32_t format;        /* VkFormat, images only */
+  uint32_t width;         /* buffers: size in bytes, clamped */
+  uint32_t height;
+  uint32_t depth;
+  uint32_t mipLevels;
+  uint32_t layers;
+  uint32_t usage;         /* VkImageUsageFlags or VkBufferUsageFlags */
+  /** Interned strings, valid while the device lives; null when absent. */
+  const char* owner;      /* the creating thread's owner scope */
+  const char* kind;       /* DXVK's internal kind, e.g. "Staging buffer" */
+  const char* origin;     /* e.g. "D3D11 buffer", "D3D11 texture", "D3D11 mapped subresource" */
+  char name[96];          /* debug name the application gave the API object, truncated */
+} DxvkMemoryResourceRow;
+
+/** One memory heap: Vulkan's view of it, and DXVK's share. */
+typedef struct DxvkMemoryHeapReport {
+  uint32_t version;       /* DXVK_MEMORY_REPORT_VERSION */
+  uint32_t heapIndex;
+  uint32_t heapFlags;     /* VkMemoryHeapFlags */
+  uint32_t hasVkBudget;   /* VK_EXT_memory_budget is supported: vkUsage and vkBudget are valid */
+  uint64_t heapSize;
+  uint64_t vkUsage;       /* process-wide usage of the heap (VK_EXT_memory_budget) */
+  uint64_t vkBudget;
+  uint64_t dxvkBudget;    /* DXVK's own budget for the heap */
+  uint64_t dxvkAllocated; /* VkDeviceMemory DXVK allocated: chunks and dedicated allocations */
+  uint64_t dxvkUsed;      /* suballocated and dedicated memory in use, caches included */
+  uint64_t cacheBytes;    /* free allocations held by DXVK's shared allocation caches */
+  uint64_t orgRetiredBytes; /* old storages a client holds after relocations (dxvkReleaseInteropStorage) */
+} DxvkMemoryHeapReport;
+
+/**
+ * Pushes an owner scope on the calling thread: every buffer and image DXVK
+ * creates on this thread until the matching pop is labeled with it,
+ * including those created by D3D11 calls (CreateBuffer, CreateTexture2D, a
+ * staging texture's first Map). The string is copied when a resource is
+ * created, so it must stay valid until the pop. Scopes nest.
+ */
+typedef void (__stdcall *PFN_dxvkPushResourceOwner)(const char* owner);
+typedef void (__stdcall *PFN_dxvkPopResourceOwner)(void);
+
+/**
+ * Sets the owner of a resource that already exists: a buffer, a texture, or
+ * the texture behind a shader resource view. Without overwrite, a resource
+ * that was created in an owner scope keeps that owner. The string is copied.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkSetResourceOwner)(ID3D11Device* pDevice,
+  IUnknown* pObject, const char* pOwner, BOOL overwrite);
+
+/**
+ * Asks for a snapshot of every live buffer and image. It is taken on DXVK's
+ * CS thread, in stream order, and replaces the previous one once complete;
+ * the call does not wait for it.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkRequestMemorySnapshot)(ID3D11Device* pDevice);
+
+/**
+ * Copies the last completed snapshot, up to capacity rows. *pCount receives
+ * the snapshot's row count, and *pSerial (optional) the snapshot's serial, 0
+ * before the first one completes. Returns S_FALSE if capacity was too small.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkReadMemorySnapshot)(ID3D11Device* pDevice,
+  DxvkMemoryResourceRow* pRows, uint32_t capacity, uint32_t* pCount, uint64_t* pSerial);
+
+/**
+ * Fills one report per memory heap, up to capacity (VK_MAX_MEMORY_HEAPS is
+ * enough). *pCount receives the heap count. Set each report's version.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkGetMemoryHeapReports)(ID3D11Device* pDevice,
+  DxvkMemoryHeapReport* pReports, uint32_t capacity, uint32_t* pCount);
+
+/** Debug features of VRAM attribution (dxvkConfigureMemoryDebug). */
+#define DXVK_MEMORY_DEBUG_CREATION_STACKS (1u << 0)  /* record each buffer's and image's creation stack */
+
+/**
+ * Sets the process-wide VRAM attribution debug flags. Resources created
+ * afterwards are affected, so call it before creating the device. Creation
+ * stacks cost a stack walk per resource.
+ */
+typedef void (__stdcall *PFN_dxvkConfigureMemoryDebug)(uint32_t flags);
+
+/**
+ * Copies a live resource's creation stack (return addresses, innermost
+ * first; the first frames are DXVK's own) up to capacity. *pCount receives
+ * the stack's depth. S_FALSE if none was recorded or the resource is gone.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkGetResourceCreationStack)(ID3D11Device* pDevice,
+  uint64_t cookie, void** pFrames, uint32_t capacity, uint32_t* pCount);
+
 #ifdef __cplusplus
 }
 
