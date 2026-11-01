@@ -340,7 +340,9 @@ namespace dxvk {
            << "  Graphics : (" << m_queueMapping.graphics.family << ", " << m_queueMapping.graphics.index << ")" << std::endl
            << "  Transfer : (" << m_queueMapping.transfer.family << ", " << m_queueMapping.transfer.index << ")" << std::endl
            << "  Sparse   : (" << m_queueMapping.sparse.family   << ", " << m_queueMapping.sparse.index   << ")" << std::endl
-           << "  Compute  : (" << m_queueMapping.compute.family  << ", " << m_queueMapping.compute.index  << ")" << std::endl;
+           << "  Compute  : (" << m_queueMapping.compute.family  << ", " << m_queueMapping.compute.index  << ")" << std::endl
+           << "  Upload   : (" << m_queueMapping.upload.family   << ", " << m_queueMapping.upload.index   << ")" << std::endl
+           << "  Copy     : (" << m_queueMapping.copy.family     << ", " << m_queueMapping.copy.index     << ")" << std::endl;
 
     // Log memory type and heap properties
     static const std::array<std::pair<VkMemoryPropertyFlagBits, const char*>, 8> s_flags = {{
@@ -967,7 +969,7 @@ namespace dxvk {
     auto nextQueue = [this] (uint32_t family) {
       DxvkDeviceQueueIndex queue = { family, 0u };
 
-      for (const auto* used : { &m_queueMapping.graphics, &m_queueMapping.transfer, &m_queueMapping.sparse, &m_queueMapping.compute }) {
+      for (const auto* used : { &m_queueMapping.graphics, &m_queueMapping.transfer, &m_queueMapping.sparse, &m_queueMapping.compute, &m_queueMapping.upload }) {
         if (used->family == family)
           queue.index = std::max(queue.index, used->index + 1u);
       }
@@ -984,12 +986,19 @@ namespace dxvk {
     if (m_queueMapping.upload.family == VK_QUEUE_FAMILY_IGNORED && computeQueue != m_queueMapping.graphics.family)
       m_queueMapping.upload = nextQueue(computeQueue);
 
+    // A queue for interop clients' graph copies, never one the others use: the next queue of the transfer-only family. Without
+    // one the client shares its upload queue. Never a compute family (a copy there can wait behind a running dispatch) or a video
+    // family (a driver need not support copies there correctly).
+    if (m_queueMapping.transfer.family != m_queueMapping.graphics.family && m_queueMapping.transfer.family != computeQueue)
+      m_queueMapping.copy = nextQueue(m_queueMapping.transfer.family);
+
     // Actually enable all the queues
     enableQueue(m_queueMapping.graphics);
     enableQueue(m_queueMapping.transfer);
     enableQueue(m_queueMapping.sparse);
     enableQueue(m_queueMapping.compute);
     enableQueue(m_queueMapping.upload);
+    enableQueue(m_queueMapping.copy);
 
     // Fix up queue priority pointers
     uint32_t maxQueueCount = 0u;

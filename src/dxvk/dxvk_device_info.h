@@ -236,6 +236,8 @@ namespace dxvk {
     DxvkDeviceQueueIndex compute;
     /** A transfer-capable queue for interop clients' uploads (dxvkGetInteropDeviceInfo); DXVK never submits to it. */
     DxvkDeviceQueueIndex upload;
+    /** A queue on a copy engine for interop clients' graph work (dxvkGetInteropDeviceInfo); DXVK never submits to it. */
+    DxvkDeviceQueueIndex copy;
   };
 
 

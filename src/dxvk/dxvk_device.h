@@ -71,6 +71,7 @@ namespace dxvk {
     DxvkDeviceQueue sparse;
     DxvkDeviceQueue compute;  // interop clients' (DxvkDeviceQueueMapping::compute); null without one
     DxvkDeviceQueue upload;   // interop clients' (DxvkDeviceQueueMapping::upload); null without one
+    DxvkDeviceQueue copy;     // interop clients' (DxvkDeviceQueueMapping::copy); null without one
   };
   
   /**

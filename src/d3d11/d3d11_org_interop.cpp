@@ -973,6 +973,10 @@ extern "C" {
     pInfo->uploadQueue = upload.queueHandle;
     pInfo->uploadQueueFamily = upload.queueFamily;
     pInfo->uploadQueueIndex = upload.queueIndex;
+    const auto& copy = device->queues().copy;
+    pInfo->copyQueue = copy.queueHandle;
+    pInfo->copyQueueFamily = copy.queueFamily;
+    pInfo->copyQueueIndex = copy.queueIndex;
     return S_OK;
   }
 

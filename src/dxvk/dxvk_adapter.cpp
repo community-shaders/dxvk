@@ -407,6 +407,7 @@ namespace dxvk {
     deviceQueues.sparse   = getDeviceQueue(vkd, caps, queueMapping.sparse);
     deviceQueues.compute  = getDeviceQueue(vkd, caps, queueMapping.compute);
     deviceQueues.upload   = getDeviceQueue(vkd, caps, queueMapping.upload);
+    deviceQueues.copy     = getDeviceQueue(vkd, caps, queueMapping.copy);
 
     // Record what the device was created with, for clients adopting it.
     auto record = std::make_shared<DxvkInteropDeviceRecord>();
@@ -472,6 +473,7 @@ namespace dxvk {
     deviceQueues.sparse   = getDeviceQueue(vkd, importCaps, queueMapping.sparse);
     deviceQueues.compute  = getDeviceQueue(vkd, importCaps, queueMapping.compute);
     deviceQueues.upload   = getDeviceQueue(vkd, importCaps, queueMapping.upload);
+    deviceQueues.copy     = getDeviceQueue(vkd, importCaps, queueMapping.copy);
 
     return new DxvkDevice(m_instance, this, vkd, importCaps, deviceQueues, args.queueCallback);
   }
