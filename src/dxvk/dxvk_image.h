@@ -643,7 +643,7 @@ namespace dxvk {
      * or mapped to host address space cannot be relocated.
      * \returns \c true if the image can be relocated
      */
-    bool canRelocate() const;
+    bool canRelocate() const override;
 
     /**
      * \brief Create a new shared handle to dedicated memory backing the image

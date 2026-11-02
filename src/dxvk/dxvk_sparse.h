@@ -736,6 +736,12 @@ namespace dxvk {
     }
 
     /**
+     * \brief Queries whether the resource can move
+     * \returns \c true if the backend can safely relocate the resource
+     */
+    virtual bool canRelocate() const = 0;
+
+    /**
      * \brief Allocates new backing storage with constraints
      *
      * \param [in] mode Allocation mode flags to control behaviour.

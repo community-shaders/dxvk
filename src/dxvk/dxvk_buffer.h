@@ -347,7 +347,7 @@ namespace dxvk {
      * moved, unless it's done explicitly done by the client API.
      * \returns \c true if the backend can safely relocate the buffer
      */
-    bool canRelocate() const;
+    bool canRelocate() const override;
 
     /**
      * \brief Enables stable GPU address

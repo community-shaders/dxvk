@@ -1556,6 +1556,7 @@ namespace dxvk {
     pool.chunks[chunkIndex].memory = chunk;
     pool.chunks[chunkIndex].unusedTime = high_resolution_clock::time_point();
     pool.chunks[chunkIndex].lockedAllocations = 0u;
+    pool.chunks[chunkIndex].retiredAllocations = 0u;
     return true;
   }
 
@@ -1698,11 +1699,15 @@ namespace dxvk {
 
             if (allocation->m_flags.test(DxvkAllocationFlag::GpuAddressLocked))
               pool.chunks[chunkIndex].lockedAllocations -= 1u;
+
+            if (allocation->m_flags.test(DxvkAllocationFlag::OrgRetired))
+              pool.chunks[chunkIndex].retiredAllocations -= 1u;
           }
 
           if (unlikely(pool.free(allocation->m_address, allocation->m_size))) {
             uint32_t chunkIndex = allocation->m_address >> DxvkPageAllocator::ChunkAddressBits;
             pool.chunks[chunkIndex].lockedAllocations = 0u;
+            pool.chunks[chunkIndex].retiredAllocations = 0u;
 
             if (freeEmptyChunksInPool(*allocation->m_type, pool, 0, high_resolution_clock::now()))
               updateMemoryHeapStats(allocation->m_type->properties.heapIndex);
@@ -2321,7 +2326,9 @@ namespace dxvk {
 
       if (!storage->m_flags.test(DxvkAllocationFlag::OwnsMemory) && !storage->m_mapPtr) {
         uint32_t chunkIndex = storage->m_address >> DxvkPageAllocator::ChunkAddressBits;
-        getAllocationPool(storage.ptr()).chunks[chunkIndex].lockedAllocations += 1u;
+        auto& chunk = getAllocationPool(storage.ptr()).chunks[chunkIndex];
+        chunk.lockedAllocations += 1u;
+        chunk.retiredAllocations += 1u;
         storage->m_flags.set(DxvkAllocationFlag::GpuAddressLocked);
       }
     }
@@ -2710,6 +2717,11 @@ namespace dxvk {
 
   void DxvkMemoryAllocator::requestMakeResident(
           DxvkPagedResource*          resource) {
+    // Evicted and unable to move: asking again at every use only keeps the
+    // relocation list from emptying, which holds defragmentation back.
+    if (!resource->canRelocate())
+      return;
+
     std::lock_guard lock(m_resourceMutex);
 
     m_relocations.addResource(resource, nullptr,
@@ -2965,6 +2977,17 @@ namespace dxvk {
     if (pool.chunks.empty())
       return;
 
+    // A dead chunk whose client has not let its storages go for some time takes
+    // allocations again: its free pages are better used than empty.
+    for (uint32_t i = 0u; i < pool.chunks.size(); i++) {
+      if (pool.pageAllocator.chunkIsAvailable(i) || !pool.chunks[i].lockedAllocations) {
+        pool.chunks[i].lockedDeadTicks = 0u;
+      } else if (++pool.chunks[i].lockedDeadTicks >= MaxLockedDeadTicks) {
+        pool.pageAllocator.reviveChunk(i);
+        pool.chunks[i].lockedDeadTicks = 0u;
+      }
+    }
+
     // Only engage defragmentation at all if we have a significant
     // amount of memory wasted, or if we're under memory pressure.
     auto heapStats = getMemoryStats(type.heap->index);
@@ -3052,8 +3075,11 @@ namespace dxvk {
     // If we already have a dead chunk with a resource that cannot be moved,
     // revive it and mark the newly selected one instead so that it can be
     // moved into the previously dead chunk.
+    // A chunk held only by retired storages is not stuck: they go within a few
+    // frames and empty it, so it stays dead rather than taking new allocations.
     for (uint32_t i = 0; i < pool.chunks.size(); i++) {
-      if (!pool.pageAllocator.chunkIsAvailable(i) && pool.pageAllocator.pagesUsed(i))
+      if (!pool.pageAllocator.chunkIsAvailable(i) && pool.pageAllocator.pagesUsed(i)
+       && (!pool.chunks[i].retiredAllocations || pool.chunks[i].lockedAllocations != pool.chunks[i].retiredAllocations))
         pool.pageAllocator.reviveChunk(i);
     }
 
@@ -3283,6 +3309,32 @@ namespace dxvk {
           }
         }
       }
+
+      // Each chunk of the spill pools (MiB held of MiB, * dead, L locked), and what defragmentation has done so far.
+      for (uint32_t i = 0; i < m_memTypeCount; i++) {
+        auto& pool = m_memTypes[i].spillPool;
+
+        if (pool.chunks.empty())
+          continue;
+
+        sstr << std::endl << "  " << i << " spill chunks:";
+
+        for (uint32_t c = 0; c < pool.chunks.size(); c++) {
+          if (!pool.chunks[c].memory.memory)
+            continue;
+
+          sstr << " " << (uint64_t(pool.pageAllocator.pagesUsed(c)) * DxvkPageAllocator::PageSize >> 20)
+               << "/" << (pool.chunks[c].memory.size >> 20)
+               << (pool.pageAllocator.chunkIsAvailable(c) ? "" : "*")
+               << (pool.chunks[c].lockedAllocations ? "L" : "");
+        }
+      }
+
+      sstr << std::endl << "  defrag: " << m_defragPicked.load() << " chunks picked, " << m_defragQueued.load() << " queued, skipped "
+           << m_defragSkippedUnmovable.load() << " unmovable (" << m_defragSkippedLocked.load() << " locked, " << m_defragSkippedRetired.load() << " retired, "
+           << m_defragSkippedOwned.load() << " dedicated, " << m_defragSkippedMapped.load() << " mapped), "
+           << m_defragSkippedUnknown.load() << " unknown, " << m_defragSkippedUnreferenced.load() << " unreferenced; "
+           << m_relocationsAttempted.load() << " relocations attempted, " << m_relocationsRefused.load() << " refused";
 
       sstr << std::endl << "  " << describeOrgRelocations();
 

@@ -93,6 +93,11 @@ namespace dxvk {
     /// rather than only once the chunk is empty. Only relevant for
     /// chunks in non-mappable device memory.
     uint32_t lockedAllocations = 0u;
+    /// The locked allocations that are an ORG client's retired storages.
+    /// The client lets each go within a few frames.
+    uint32_t retiredAllocations = 0u;
+    /// Defragmentation ticks spent dead and locked, waiting for that.
+    uint32_t lockedDeadTicks = 0u;
 
     void addAllocation(DxvkResourceAllocation* allocation);
     void removeAllocation(DxvkResourceAllocation* allocation);
@@ -1256,6 +1261,9 @@ namespace dxvk {
     friend DxvkSharedAllocationCache;
 
     constexpr static uint64_t DedicatedChunkAddress = 1ull << 63u;
+
+    /// Half-second ticks a dead chunk may wait for its locks to go
+    constexpr static uint32_t MaxLockedDeadTicks = 10u;
 
     constexpr static VkDeviceSize MinChunkSize =   4ull << 20;
     constexpr static VkDeviceSize MaxChunkSize = 256ull << 20;
