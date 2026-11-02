@@ -713,6 +713,10 @@ namespace dxvk {
       return true;
     }
 
+    bool isEvicted() const {
+      return m_residency.load() == DxvkResourceResidency::Evicted;
+    }
+
     bool isOrgTracked() const {
       return m_orgTracks.load(std::memory_order_acquire) != 0u;
     }

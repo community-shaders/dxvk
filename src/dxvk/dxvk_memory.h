@@ -175,6 +175,8 @@ namespace dxvk {
     VkBufferUsageFlags bufferUsage  = 0u;
 
     DxvkMemoryPool    devicePool;
+    /// Sampled-only images: evicted first, and demoted first by the driver
+    DxvkMemoryPool    spillPool;
     DxvkMemoryPool    mappedPool;
 
     DxvkSharedAllocationCache* sharedCache = nullptr;
@@ -604,6 +606,8 @@ namespace dxvk {
     GpuAddressLocked = 7,
     /// An ORG client's retired storage (pushOrgRelocation): no resource's any more
     OrgRetired = 8,
+    /// Allocated from its memory type's spill pool
+    SpillPool = 9,
   };
 
   using DxvkAllocationFlags = Flags<DxvkAllocationFlag>;
@@ -1128,6 +1132,8 @@ namespace dxvk {
     DxvkAllocationModes mode = 0u;
     /// Shared handle type
     VkExternalMemoryHandleTypeFlagBits handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM;
+    /// Goes to the spill pool rather than the protected one
+    bool spillable = false;
   };
 
 
@@ -1697,7 +1703,8 @@ namespace dxvk {
     DxvkDeviceMemory allocateDeviceMemory(
             DxvkMemoryType&       type,
             VkDeviceSize          size,
-      const void*                 next);
+      const void*                 next,
+            bool                  spillable);
 
     void assignMemoryDebugName(
       const DxvkDeviceMemory&     memory,
@@ -1708,7 +1715,8 @@ namespace dxvk {
             DxvkMemoryPool&       pool,
             VkMemoryPropertyFlags properties,
             VkDeviceSize          requiredSize,
-            VkDeviceSize          desiredSize);
+            VkDeviceSize          desiredSize,
+            bool                  spillable);
 
     void freeDeviceMemory(
             DxvkMemoryType&       type,
@@ -1806,13 +1814,21 @@ namespace dxvk {
             uint32_t              heapIndex);
 
     void moveDefragChunk(
-            DxvkMemoryType&       type);
+            DxvkMemoryType&       type,
+            DxvkMemoryPool&       pool);
 
     void pickDefragChunk(
-            DxvkMemoryType&       type);
+            DxvkMemoryType&       type,
+            DxvkMemoryPool&       pool);
 
     void evictResources(
             DxvkMemoryType&       type);
+
+    void restoreTrackedResources(
+            DxvkMemoryType&       type);
+
+    static DxvkMemoryPool& getAllocationPool(
+      const DxvkResourceAllocation*     allocation);
 
     void performTimedTasksLocked(
             high_resolution_clock::time_point currentTime);

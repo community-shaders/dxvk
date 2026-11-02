@@ -336,6 +336,11 @@ namespace dxvk {
     allocationInfo.mode = mode;
     allocationInfo.handleType = m_info.sharing.type;
 
+    // Only what is purely sampled can spill: whatever the GPU writes has to stay fast.
+    allocationInfo.spillable = !sharedMemoryInfo && !m_info.transient && !(imageInfo.usage & (
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT));
+
     if (m_info.transient)
       allocationInfo.mode.set(DxvkAllocationMode::NoDedicated);
 
