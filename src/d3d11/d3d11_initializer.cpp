@@ -355,7 +355,11 @@ namespace dxvk {
     if (stagingMemoryInFlight > MaxMemoryInFlight) {
       ExecuteFlushLocked();
 
+      // Not under the lock: the context needs it to flush, and that thread is usually the window's too. Blocking
+      // it here can stop the GPU work this waits for, when that needs the window to answer a display change.
+      m_mutex.unlock();
       m_stagingSignal->wait(stats.allocatedTotal - MaxMemoryInFlight);
+      m_mutex.lock();
     } else if (m_transferCommands >= MaxCommandsPerSubmission || stats.allocatedSinceLastReset >= MaxMemoryPerSubmission) {
       // Flush pending commands if there are a lot of updates in flight
       // to keep both execution time and staging memory in check.
