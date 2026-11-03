@@ -6,6 +6,8 @@
 #include "d3d11_view.h"
 
 namespace dxvk {
+
+  class D3D11CommonTexture;
   
   class D3D11Device;
   
@@ -58,6 +60,8 @@ namespace dxvk {
     }
     
     Rc<DxvkImageView> GetImageView() const {
+      if (unlikely(m_deferredTexture.load(std::memory_order_relaxed)))
+        CommitDeferredTexture();
       return m_imageView;
     }
     
@@ -83,6 +87,10 @@ namespace dxvk {
   private:
     
     ID3D11Resource*                   m_resource;
+    // The texture, while its storage may still wait for its first use (D3D11CommonTexture::EnsureStorage).
+    mutable std::atomic<D3D11CommonTexture*> m_deferredTexture = { nullptr };
+
+    void CommitDeferredTexture() const;
     D3D11_UNORDERED_ACCESS_VIEW_DESC1 m_desc;
     D3D11_VK_VIEW_INFO                m_info;
     Rc<DxvkBufferView>                m_bufferView;

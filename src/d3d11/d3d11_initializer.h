@@ -52,6 +52,14 @@ namespace dxvk {
             D3D11Buffer*                pBuffer,
       const D3D11_SUBRESOURCE_DATA*     pInitialData);
     
+    /**
+     * \brief Allocates a texture's deferred storage and initializes it, as InitTexture would have
+     *
+     * Any thread, before the use that asked for it: the initialization reaches the CS thread ahead of that use.
+     */
+    void CommitDeferredTexture(
+      const D3D11CommonTexture*         pTexture);
+
     void InitTexture(
             D3D11CommonTexture*         pTexture,
       const D3D11_SUBRESOURCE_DATA*     pInitialData);

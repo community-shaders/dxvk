@@ -666,6 +666,7 @@ namespace dxvk {
       dst.height = src.extent.height;
       dst.depth = src.extent.depth;
       dst.mipLevels = src.mipLevels;
+      dst.idleFrames = src.idleFrames;
       dst.layers = src.layers;
       dst.usage = src.usage;
       dst.owner = src.label.owner;
@@ -687,6 +688,24 @@ namespace dxvk {
           IUnknown*                   pObject,
     const char*                       pOwner,
           BOOL                        overwrite) {
+    // A label is no use of the texture: it must not allocate deferred storage.
+    Com<ID3D11ShaderResourceView> srv;
+    Com<ID3D11Resource> labelled;
+
+    if (SUCCEEDED(pObject->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv))))
+      srv->GetResource(&labelled);
+    else
+      pObject->QueryInterface(__uuidof(ID3D11Resource), reinterpret_cast<void**>(&labelled));
+
+    if (labelled != nullptr) {
+      auto texture = GetCommonTexture(labelled.ptr());
+
+      if (texture && texture->GetImageWithoutStorage() != nullptr) {
+        m_device->GetDXVKDevice()->getMemoryAllocator().setResourceOwner(texture->GetImageWithoutStorage()->cookie(), pOwner, overwrite);
+        return S_OK;
+      }
+    }
+
     Rc<DxvkPagedResource> resource = ResolveResource(pObject, nullptr, nullptr);
 
     if (resource == nullptr)
@@ -1296,6 +1315,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     *pQueued = interop->GetDXVKDevice()->getMemoryAllocator().setResourcesSpillable(count, pCookies, spillable);
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetDefragPressurePercent(ID3D11Device* pDevice, uint32_t percent) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    interop->GetDXVKDevice()->getMemoryAllocator().setDefragPressurePercent(percent);
     return S_OK;
   }
 

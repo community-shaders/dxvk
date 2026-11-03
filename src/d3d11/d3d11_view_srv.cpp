@@ -182,7 +182,8 @@ namespace dxvk {
       m_info.Image.NumLayers = viewInfo.layerCount;
 
       // Create the underlying image view object
-      m_imageView = texture->GetImage()->createView(viewInfo);
+      m_imageView = texture->GetImageWithoutStorage()->createView(viewInfo);
+      m_deferredTexture.store(texture->IsStorageDeferred() ? texture : nullptr, std::memory_order_relaxed);
     }
   }
   
@@ -201,6 +202,12 @@ namespace dxvk {
       m_allocTrace->TraceRef(-1, true);
 
     return D3D11DeviceChild<ID3D11ShaderResourceView1>::Release();
+  }
+
+
+  void D3D11ShaderResourceView::CommitDeferredTexture() const {
+    if (auto texture = m_deferredTexture.exchange(nullptr, std::memory_order_relaxed))
+      texture->EnsureStorage();
   }
 
 

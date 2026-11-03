@@ -43,3 +43,4 @@ EXPORTS
     dxvkGetResourceCreationStack @160
     dxvkForceResourcePlacement @161
     dxvkSetResourcesSpillable @162
+    dxvkSetDefragPressurePercent @163

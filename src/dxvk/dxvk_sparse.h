@@ -504,6 +504,23 @@ namespace dxvk {
      */
     force_inline void acquire(DxvkAccess access) {
       m_useCount.fetch_add(getIncrement(access));
+
+      if (access != DxvkAccess::None)
+        m_lastUseFrame.store(s_useFrame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    /**
+     * rief Frames presented since a command list last used this resource
+     */
+    uint32_t idleFrames() const {
+      return s_useFrame.load(std::memory_order_relaxed) - m_lastUseFrame.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * rief Counts a presented frame for ef idleFrames
+     */
+    static void countPresentedFrame() {
+      s_useFrame.fetch_add(1u, std::memory_order_relaxed);
     }
 
     /**
@@ -818,6 +835,8 @@ namespace dxvk {
   private:
 
     std::atomic<uint64_t> m_useCount = { 0u };
+    std::atomic<uint32_t> m_lastUseFrame = { 0u };
+    inline static std::atomic<uint32_t> s_useFrame = { 0u };
     uint64_t              m_trackId = { 0u };
     uint64_t              m_cookie = { 0u };
     std::atomic<bool>     m_forcedToSystem = { false };

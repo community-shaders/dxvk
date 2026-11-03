@@ -103,10 +103,18 @@ namespace dxvk {
       m_info.Image.Aspects &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
 
     // Create the underlying image view object
-    m_view = GetCommonTexture(pResource)->GetImage()->createView(viewInfo);
+    m_view = GetCommonTexture(pResource)->GetImageWithoutStorage()->createView(viewInfo);
+    auto texture = GetCommonTexture(pResource);
+    m_deferredTexture.store(texture->IsStorageDeferred() ? texture : nullptr, std::memory_order_relaxed);
   }
   
   
+  void D3D11DepthStencilView::CommitDeferredTexture() const {
+    if (auto texture = m_deferredTexture.exchange(nullptr, std::memory_order_relaxed))
+      texture->EnsureStorage();
+  }
+
+
   D3D11DepthStencilView::~D3D11DepthStencilView() {
     m_destructionNotifier.Notify();
 

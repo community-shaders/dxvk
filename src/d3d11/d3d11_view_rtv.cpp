@@ -123,7 +123,8 @@ namespace dxvk {
 
     if (texture) {
       // Simply create view for existing image
-      m_view = texture->GetImage()->createView(viewInfo);
+      m_view = texture->GetImageWithoutStorage()->createView(viewInfo);
+      m_deferredTexture.store(texture->IsStorageDeferred() ? texture : nullptr, std::memory_order_relaxed);
     } else {
       // If we're creating a buffer RTV, we need to explicitly
       // create a 1D image that we can actually render to
@@ -171,6 +172,12 @@ namespace dxvk {
   }
   
   
+  void D3D11RenderTargetView::CommitDeferredTexture() const {
+    if (auto texture = m_deferredTexture.exchange(nullptr, std::memory_order_relaxed))
+      texture->EnsureStorage();
+  }
+
+
   D3D11RenderTargetView::~D3D11RenderTargetView() {
     m_destructionNotifier.Notify();
 

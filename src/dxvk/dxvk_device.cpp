@@ -618,6 +618,14 @@ namespace dxvk {
           uint32_t                  rectCount,
     const VkRectLayerKHR*           rects,
           DxvkSubmitStatus*         status) {
+    DxvkPagedResource::countPresentedFrame();
+
+    // Fork diagnostic: DXVK_CHUNK_REPORT=<frames> logs the device-local pools' chunks.
+    static const uint32_t chunkReportFrames = uint32_t(std::atoi(env::getEnvVar("DXVK_CHUNK_REPORT").c_str()));
+
+    if (chunkReportFrames && !(frameId % chunkReportFrames))
+      Logger::info(str::format("Chunks at frame ", frameId, ":", describeDevicePoolChunks()));
+
     DxvkPresentInfo presentInfo = { };
     presentInfo.presenter = presenter;
     presentInfo.frameId = frameId;

@@ -248,7 +248,44 @@ namespace dxvk {
      * \returns The DXVK image
      */
     Rc<DxvkImage> GetImage() const {
+      EnsureStorage();
       return m_image;
+    }
+
+    /**
+     * \brief The image, without allocating deferred storage
+     *
+     * For what only reads its properties or creates views of it.
+     */
+    const Rc<DxvkImage>& GetImageWithoutStorage() const {
+      return m_image;
+    }
+
+    /**
+     * \brief Whether the image's storage waits for its first use
+     */
+    bool IsStorageDeferred() const {
+      return m_storageDeferred.load(std::memory_order_acquire);
+    }
+
+    /**
+     * \brief Allocates the image's storage if it waits for its first use
+     *
+     * Any thread. Queues the image's initialization for before the next use.
+     */
+    void EnsureStorage() const {
+      if (unlikely(IsStorageDeferred()))
+        CommitDeferredStorage();
+    }
+
+    /**
+     * \brief Allocates deferred storage, the caller initializing the image
+     *
+     * D3D11Initializer, under its lock.
+     */
+    void CommitStorageLocked() const {
+      m_image->commitDeferredStorage();
+      m_storageDeferred.store(false, std::memory_order_release);
     }
     
     /**
@@ -584,6 +621,10 @@ namespace dxvk {
     VkFormat                      m_packedFormat;
     
     Rc<DxvkImage>                 m_image;
+    // The image was created with deferStorage and has not been used.
+    mutable std::atomic<bool>     m_storageDeferred = { false };
+
+    void CommitDeferredStorage() const;
     small_vector<MappedBuffer, 6> m_buffers;
     small_vector<MappedInfo, 6>   m_mapInfo;
 

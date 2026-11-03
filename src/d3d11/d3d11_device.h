@@ -423,6 +423,10 @@ namespace dxvk {
       m_initializer->FlushCsChunk();
     }
 
+    void CommitDeferredTexture(const D3D11CommonTexture* pTexture) {
+      m_initializer->CommitDeferredTexture(pTexture);
+    }
+
     void NotifyContextFlush() {
       m_initializer->NotifyContextFlush();
     }

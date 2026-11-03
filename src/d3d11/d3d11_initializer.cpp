@@ -41,6 +41,29 @@ namespace dxvk {
   }
   
 
+  void D3D11Initializer::CommitDeferredTexture(
+    const D3D11CommonTexture*         pTexture) {
+    std::lock_guard<dxvk::mutex> lock(m_mutex);
+
+    if (!pTexture->IsStorageDeferred())
+      return;
+
+    pTexture->CommitStorageLocked();
+    m_transferCommands += 1;
+
+    EmitCs([
+      cImage = pTexture->GetImageWithoutStorage()
+    ] (DxvkContext* ctx) {
+      ctx->initImage(cImage, VK_IMAGE_LAYOUT_UNDEFINED);
+    });
+
+    // Now, not at the context's next chunk: an interop client locks the image in the high priority queue too.
+    FlushCsChunkLocked();
+
+    ThrottleAllocationLocked();
+  }
+
+
   void D3D11Initializer::InitTexture(
           D3D11CommonTexture*         pTexture,
     const D3D11_SUBRESOURCE_DATA*     pInitialData) {
@@ -176,6 +199,14 @@ namespace dxvk {
     const D3D11_SUBRESOURCE_DATA*     pInitialData) {
     std::lock_guard<dxvk::mutex> lock(m_mutex);
     
+    // Without initial data, the image is initialized at its first use (CommitDeferredTexture).
+    if (pTexture->IsStorageDeferred()) {
+      if (pInitialData == nullptr || pInitialData->pSysMem == nullptr)
+        return;
+
+      pTexture->CommitStorageLocked();
+    }
+
     // Image migt be null if this is a staging resource
     Rc<DxvkImage> image = pTexture->GetImage();
     auto desc = pTexture->Desc();

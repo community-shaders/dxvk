@@ -1803,6 +1803,8 @@ namespace dxvk {
 
     if (&pool == &type.mappedPool)
       maxUnusedMemory *= 4u;
+    else if (type.heap->tightenDefrag)
+      maxUnusedMemory = 0u;
 
     // Factor current memory allocation into the decision to free chunks
     VkDeviceSize heapBudget = type.heap->memoryBudget;
@@ -2274,7 +2276,8 @@ namespace dxvk {
       if (!(type.properties.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
         continue;
 
-      auto& pool = type.devicePool;
+      for (auto* poolPtr : { &type.devicePool, &type.spillPool }) {
+      auto& pool = *poolPtr;
       uint32_t chunks = 0u, empty = 0u, locked = 0u, lockedAllocations = 0u, dead = 0u;
       uint64_t lockedUsed = 0u, lockedTotal = 0u, freeUsed = 0u, freeTotal = 0u;
 
@@ -2305,10 +2308,11 @@ namespace dxvk {
       if (!chunks)
         continue;
 
-      str << " type " << t << ": " << chunks << " chunks (" << empty << " empty, " << dead << " dead in use), "
+      str << " type " << t << (poolPtr == &type.spillPool ? " spill" : " device") << ": " << chunks << " chunks (" << empty << " empty, " << dead << " dead in use), "
           << locked << " with " << lockedAllocations << " locked allocations using "
           << (lockedUsed / PagesPerMiB) << " of " << (lockedTotal / PagesPerMiB) << " MiB, the rest "
           << (freeUsed / PagesPerMiB) << " of " << (freeTotal / PagesPerMiB) << " MiB;";
+      }
     }
 
     str << " defragmentation " << (enableDefrag() ? "on" : "off") << ": " << m_defragPicked.load() << " chunks picked, "
@@ -2665,6 +2669,7 @@ namespace dxvk {
     for (auto& [resource, label] : live) {
       DxvkMemoryResourceReport& report = resources.emplace_back();
       report.cookie = resource->cookie();
+      report.idleFrames = resource->idleFrames();
       report.label = std::move(label);
 
       Rc<DxvkResourceAllocation> storage;
@@ -2950,6 +2955,12 @@ namespace dxvk {
 
           if (maxBudget)
             m_memHeaps[i].memoryBudget = std::min(m_memHeaps[i].memoryBudget, maxBudget);
+
+          // Fork diagnostic: DXVK_DEFRAG_PRESSURE_PERCENT holds the share whatever the application sets.
+          static const uint32_t pinnedPercent = uint32_t(std::atoi(env::getEnvVar("DXVK_DEFRAG_PRESSURE_PERCENT").c_str()));
+          const uint32_t percent = pinnedPercent ? pinnedPercent : m_defragPressurePercent.load(std::memory_order_relaxed);
+
+          m_memHeaps[i].tightenDefrag = memBudget.heapUsage[i] / 100u > memBudget.heapBudget[i] / 100u * percent / 100u;
         }
       }
     }
@@ -3083,6 +3094,12 @@ namespace dxvk {
       uint32_t tolerance = (type.heap->properties.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
         ? pagesUsed / 8u
         : pagesUsed / 3u;
+
+      // Over the application's VRAM budget, most of that waste goes (setDefragPressurePercent).
+      if (type.heap->tightenDefrag) {
+        tolerance = pagesUsed / 32u;
+        pagesPerChunk = 0u;
+      }
 
       if (pagesUsed + tolerance + pagesPerChunk >= pagesTotal)
         return;

@@ -123,11 +123,19 @@ namespace dxvk {
       m_info.Image.NumLevels = viewInfo.mipCount;
       m_info.Image.NumLayers = viewInfo.layerCount;
 
-      m_imageView = GetCommonTexture(pResource)->GetImage()->createView(viewInfo);
+      m_imageView = GetCommonTexture(pResource)->GetImageWithoutStorage()->createView(viewInfo);
+      auto commonTexture = GetCommonTexture(pResource);
+      m_deferredTexture.store(commonTexture->IsStorageDeferred() ? commonTexture : nullptr, std::memory_order_relaxed);
     }
   }
   
   
+  void D3D11UnorderedAccessView::CommitDeferredTexture() const {
+    if (auto texture = m_deferredTexture.exchange(nullptr, std::memory_order_relaxed))
+      texture->EnsureStorage();
+  }
+
+
   D3D11UnorderedAccessView::~D3D11UnorderedAccessView() {
     m_destructionNotifier.Notify();
 

@@ -104,6 +104,9 @@ namespace dxvk {
 
     /// Shader dump path
     std::string shaderDumpPath;
+
+    /// Allocates a texture without initial data when it is first used, as a native driver does, not when it is created.
+    bool deferTextureAllocation = true;
   };
   
 }

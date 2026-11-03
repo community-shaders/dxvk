@@ -157,7 +157,8 @@ namespace dxvk {
     m_globalLayout = (m_info.sharing.mode != DxvkSharedHandleMode::Import)
       ? m_info.initialLayout : m_info.layout;
 
-    assignStorage(allocateStorage());
+    if (!m_info.deferStorage)
+      assignStorage(allocateStorage());
   }
 
 
@@ -193,6 +194,9 @@ namespace dxvk {
 
 
   bool DxvkImage::canRelocate() const {
+    if (m_storage == nullptr)
+      return false;
+
     return !m_imageInfo.mapPtr && !m_shared && !m_stableAddress
         && !(m_info.flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
   }
@@ -565,7 +569,7 @@ namespace dxvk {
 
 
   void DxvkImage::updateDebugName() {
-    if (m_storage->flags().test(DxvkAllocationFlag::OwnsImage)) {
+    if (m_storage != nullptr && m_storage->flags().test(DxvkAllocationFlag::OwnsImage)) {
       VkDebugUtilsObjectNameInfoEXT nameInfo = { VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
       nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
       nameInfo.objectHandle = vk::getObjectHandle(m_imageInfo.image);

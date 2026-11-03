@@ -540,6 +540,7 @@ typedef struct DxvkMemoryResourceRow {
   uint32_t mipLevels;
   uint32_t layers;
   uint32_t usage;         /* VkImageUsageFlags or VkBufferUsageFlags */
+  uint32_t idleFrames;    /* frames presented since a command list last used it */
   /** Interned strings, valid while the device lives; null when absent. */
   const char* owner;      /* the creating thread's owner scope */
   const char* kind;       /* DXVK's internal kind, e.g. "Staging buffer" */
@@ -636,6 +637,12 @@ typedef HRESULT (__stdcall *PFN_dxvkForceResourcePlacement)(ID3D11Device* pDevic
  */
 typedef HRESULT (__stdcall *PFN_dxvkSetResourcesSpillable)(ID3D11Device* pDevice,
   uint32_t count, const uint64_t* pCookies, BOOL spillable, uint32_t* pQueued);
+
+/**
+ * The share of the driver's VRAM budget above which DXVK stops keeping slack in its
+ * memory chunks: defragmentation tightens and empty chunks go. 100 by default.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkSetDefragPressurePercent)(ID3D11Device* pDevice, uint32_t percent);
 
 #ifdef __cplusplus
 }

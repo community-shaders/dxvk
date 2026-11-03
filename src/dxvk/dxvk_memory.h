@@ -159,6 +159,8 @@ namespace dxvk {
     VkMemoryHeap      properties    = { };
     bool              enforceBudget = false;
     bool              enableEviction = false;
+    /// The process' use of the heap is over the budget share setDefragPressurePercent names: slack is not kept.
+    bool              tightenDefrag = false;
   };
 
 
@@ -300,6 +302,7 @@ namespace dxvk {
     uint32_t            mipLevels    = 0u;
     uint32_t            layers       = 0u;
     uint32_t            usage        = 0u;
+    uint32_t            idleFrames   = 0u;
     DxvkResourceLabel   label;
   };
 
@@ -1572,6 +1575,16 @@ namespace dxvk {
      * \param [in] spillable Whether they belong in the spill pool
      * \returns Number of resources queued to move
      */
+    /**
+     * \brief Share of the driver's budget above which the allocator stops keeping slack
+     *
+     * Below it, defragmentation tolerates some waste. Over it, a VRAM budget the application manages
+     * is already exceeded, so waste goes first. 100 by default: the driver's budget itself.
+     */
+    void setDefragPressurePercent(uint32_t percent) {
+      m_defragPressurePercent.store(percent, std::memory_order_relaxed);
+    }
+
     uint32_t setResourcesSpillable(
             uint32_t                    count,
       const uint64_t*                   cookies,
@@ -1707,6 +1720,7 @@ namespace dxvk {
     alignas(CACHE_LINE_SIZE)
     dxvk::mutex               m_resourceMutex;
     std::unordered_map<uint64_t, DxvkPagedResource*> m_resourceMap;
+    std::atomic<uint32_t> m_defragPressurePercent = { 100u };
     std::unordered_map<uint64_t, DxvkResourceLabel>  m_resourceLabels;
     std::unordered_set<std::string>                  m_labelStrings;
 

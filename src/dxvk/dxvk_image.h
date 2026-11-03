@@ -77,6 +77,9 @@ namespace dxvk {
 
     // Debug name
     const char* debugName = nullptr;
+
+    /// No storage until commitDeferredStorage: nothing may use the image before that.
+    VkBool32 deferStorage = VK_FALSE;
   };
   
   
@@ -618,7 +621,16 @@ namespace dxvk {
      * \returns Backing memory
      */
     DxvkResourceMemoryInfo getMemoryInfo() const {
-      return m_storage->getMemoryInfo();
+      return m_storage != nullptr ? m_storage->getMemoryInfo() : DxvkResourceMemoryInfo();
+    }
+
+    /**
+     * \brief Allocates the storage of an image created with deferStorage
+     *
+     * The caller serializes this and has no other thread using the image.
+     */
+    void commitDeferredStorage() {
+      assignStorage(allocateStorage());
     }
 
     /**

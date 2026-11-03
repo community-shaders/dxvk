@@ -241,10 +241,19 @@ namespace dxvk {
     if (m_11on12.Resource != nullptr)
       vkImage = VkImage(m_11on12.VulkanHandle);
 
+    // Only what the initializer can bring up later: not what the application or the swap chain can reach by other means.
+    const bool deferStorage = !vkImage && m_11on12.Resource == nullptr && m_device->GetOptions()->deferTextureAllocation
+      && m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_NONE && imageInfo.sharing.mode == DxvkSharedHandleMode::None
+      && !(m_desc.MiscFlags & D3D11_RESOURCE_MISC_TILED) && !(DxgiUsage & DXGI_USAGE_BACK_BUFFER);
+
+    imageInfo.deferStorage = deferStorage ? VK_TRUE : VK_FALSE;
+
     if (!vkImage)
       m_image = m_device->GetDXVKDevice()->createImage(imageInfo, memoryProperties);
     else
       m_image = m_device->GetDXVKDevice()->importImage(imageInfo, vkImage, memoryProperties);
+
+    m_storageDeferred.store(deferStorage, std::memory_order_release);
 
     if (m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)
       m_mapPtr = m_image->mapPtr(0);
@@ -269,6 +278,11 @@ namespace dxvk {
   }
   
   
+  void D3D11CommonTexture::CommitDeferredStorage() const {
+    m_device->CommitDeferredTexture(this);
+  }
+
+
   void D3D11CommonTexture::TraceAllocation() {
     if (!D3D11AllocTraceHandle::Enabled())
       return;

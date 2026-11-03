@@ -57,6 +57,12 @@ namespace dxvk {
 
     // Shader dump path is only available via an environment variable
     this->shaderDumpPath = env::getEnvVar("DXVK_SHADER_DUMP_PATH");
+
+    this->deferTextureAllocation = config.getOption<bool>("d3d11.deferTextureAllocation", true);
+
+    // Fork: the host's setting (Community Shaders' VRAM Budget), which is read before the device is made.
+    if (env::getEnvVar("DXVK_DEFER_TEXTURE_ALLOCATION") == "0")
+      this->deferTextureAllocation = false;
   }
   
 }
