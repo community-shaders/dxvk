@@ -125,6 +125,9 @@ namespace dxvk {
     VkDeviceSize nextChunkSize = MinChunkSize;
     /// Maximum chunk size for the memory pool. Hard limit.
     VkDeviceSize maxChunkSize = MaxChunkSize;
+    /// The largest chunk this memory type could use. Budget margins and the
+    /// choice of dedicated allocations are counted in it, not in maxChunkSize.
+    VkDeviceSize fullChunkSize = MaxChunkSize;
     /// Next chunk to relocate for defragmentation
     uint32_t nextDefragChunk = ~0u;
     /// Next chunk to evict resources from
@@ -1265,8 +1268,12 @@ namespace dxvk {
 
     constexpr static uint64_t DedicatedChunkAddress = 1ull << 63u;
 
-    /// Half-second ticks a dead chunk may wait for its locks to go
-    constexpr static uint32_t MaxLockedDeadTicks = 10u;
+    /// Defragmentation ticks a dead chunk may wait for its locks to go: five seconds
+    constexpr static uint32_t MaxLockedDeadTicks = 40u;
+    /// Chunk size of the device pools
+    constexpr static VkDeviceSize DeviceChunkSize = 64ull << 20;
+    /// How often defragmentation takes a step, in milliseconds
+    constexpr static uint32_t DefragTickMs = 125u;
 
     constexpr static VkDeviceSize MinChunkSize =   4ull << 20;
     constexpr static VkDeviceSize MaxChunkSize = 256ull << 20;
@@ -1715,6 +1722,7 @@ namespace dxvk {
 
     alignas(CACHE_LINE_SIZE)
     high_resolution_clock::time_point m_taskDeadline = { };
+    high_resolution_clock::time_point m_fullTaskDeadline = { };
     std::array<DxvkMemoryStats, VK_MAX_MEMORY_HEAPS> m_adapterHeapStats = { };
 
     alignas(CACHE_LINE_SIZE)
@@ -1884,7 +1892,8 @@ namespace dxvk {
       const DxvkResourceAllocation*     allocation);
 
     void performTimedTasksLocked(
-            high_resolution_clock::time_point currentTime);
+            high_resolution_clock::time_point currentTime,
+            bool fullTick);
 
     bool enableDefrag() const;
 

@@ -766,9 +766,18 @@ namespace dxvk {
       type.heap = &m_memHeaps[type.properties.heapIndex];
       type.heap->memoryTypes |= 1u << i;
 
-      type.devicePool.maxChunkSize = determineMaxChunkSize(type, false);
+      type.devicePool.fullChunkSize = determineMaxChunkSize(type, false);
+      type.spillPool.fullChunkSize = type.devicePool.fullChunkSize;
+      type.mappedPool.fullChunkSize = determineMaxChunkSize(type, true);
+
+      // Device pools use smaller chunks: a chunk's memory only returns once all of it is free, and a
+      // 256 MiB chunk with one texture left in it holds the rest. DXVK_MAX_CHUNK_MIB overrides it, for tests.
+      static const uint32_t maxChunkMib = uint32_t(std::atoi(env::getEnvVar("DXVK_MAX_CHUNK_MIB").c_str()));
+      const VkDeviceSize deviceChunkSize = maxChunkMib ? VkDeviceSize(maxChunkMib) << 20u : DeviceChunkSize;
+
+      type.devicePool.maxChunkSize = std::min(type.devicePool.fullChunkSize, deviceChunkSize);
       type.spillPool.maxChunkSize = type.devicePool.maxChunkSize;
-      type.mappedPool.maxChunkSize = determineMaxChunkSize(type, true);
+      type.mappedPool.maxChunkSize = type.mappedPool.fullChunkSize;
 
       // Uncached system memory is going to be used for large temporary allocations
       // during resource creation. Account for that by always using full-sized chunks.
@@ -869,7 +878,9 @@ namespace dxvk {
       // If the allocation is very large, use a dedicated allocation instead
       // of creating a new chunk. This way we avoid excessive fragmentation,
       // especially when a multiple such resources are created at once.
-      VkDeviceSize maxChunkSize = selectedPool.maxChunkSize;
+      // Counted in full-size chunks: only a resource in a chunk can spill, so smaller
+      // chunks must not turn more resources into dedicated allocations.
+      VkDeviceSize maxChunkSize = selectedPool.fullChunkSize;
       uint32_t minResourcesPerChunk = 4u;
 
       if (allocationInfo.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
@@ -907,7 +918,11 @@ namespace dxvk {
       // multiple resources of the type we're tying to allocate.
       VkDeviceSize desiredSize = selectedPool.nextChunkSize;
 
-      while (desiredSize < size * minResourcesPerChunk)
+      // A device pool's chunks stay at its chunk size, unless the resource needs more.
+      const bool sizeLimited = &selectedPool != &type.mappedPool;
+
+      while (desiredSize < size * minResourcesPerChunk
+          && (!sizeLimited || desiredSize < selectedPool.maxChunkSize || desiredSize < size))
         desiredSize *= 2u;
 
       if (allocateChunkInPool(type, selectedPool, allocationInfo.properties, size, desiredSize, spill)) {
@@ -3091,8 +3106,11 @@ namespace dxvk {
       uint32_t pagesPerChunk = pool.nextChunkSize / DxvkPageAllocator::PageSize;
 
       // Allow for more "wasted" system memory since it's usually less of an issue
+      // Tighter than upstream's 1/8 on device-local memory. DXVK_DEFRAG_TOLERANCE overrides it, for tests.
+      static const uint32_t toleranceShare = uint32_t(std::atoi(env::getEnvVar("DXVK_DEFRAG_TOLERANCE").c_str()));
+
       uint32_t tolerance = (type.heap->properties.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
-        ? pagesUsed / 8u
+        ? pagesUsed / (toleranceShare ? toleranceShare : 16u)
         : pagesUsed / 3u;
 
       // Over the application's VRAM budget, most of that waste goes (setDefragPressurePercent).
@@ -3192,7 +3210,7 @@ namespace dxvk {
       return;
 
     // Work out how much memory we should ideally leave unused
-    VkDeviceSize minUnusedMemory = 2u * pool.maxChunkSize;
+    VkDeviceSize minUnusedMemory = 2u * pool.fullChunkSize;
 
     // Account for mapped memory types on the same heap where we may not be
     // able to move any resources, and count their total allocated amount.
@@ -3287,7 +3305,7 @@ namespace dxvk {
     auto stats = getMemoryStats(type.heap->index);
 
     // Well clear of what evictResources leaves unused, or the two would move resources back and forth.
-    VkDeviceSize margin = 4u * type.spillPool.maxChunkSize;
+    VkDeviceSize margin = 4u * type.spillPool.fullChunkSize;
 
     if (stats.memoryAllocated + margin >= stats.memoryBudget)
       return;
@@ -3317,7 +3335,11 @@ namespace dxvk {
 
 
   void DxvkMemoryAllocator::performTimedTasks() {
-    static constexpr auto Interval = std::chrono::milliseconds(500u);
+    // Defragmentation moves one chunk at a time, so smaller chunks need more frequent ticks to give memory
+    // back as fast after a load. DXVK_MEMORY_TICK_MS overrides the interval, for tests.
+    static const uint32_t tickMs = uint32_t(std::atoi(env::getEnvVar("DXVK_MEMORY_TICK_MS").c_str()));
+    static const auto Interval = std::chrono::milliseconds(tickMs ? tickMs : DefragTickMs);
+    static constexpr auto FullInterval = std::chrono::milliseconds(500u);
 
     // This function shouldn't be called concurrently, so checking and
     // updating the deadline is fine without taking the global lock
@@ -3333,14 +3355,21 @@ namespace dxvk {
     else
       m_taskDeadline = m_taskDeadline + Interval;
 
+    // The rest of the timed work stays at its own rate.
+    const bool fullTick = m_fullTaskDeadline <= currentTime;
+
+    if (fullTick)
+      m_fullTaskDeadline = currentTime + FullInterval;
+
     std::unique_lock lock(m_mutex);
-    performTimedTasksLocked(currentTime);
+    performTimedTasksLocked(currentTime, fullTick);
   }
 
 
-  void DxvkMemoryAllocator::performTimedTasksLocked(high_resolution_clock::time_point currentTime) {
+  void DxvkMemoryAllocator::performTimedTasksLocked(high_resolution_clock::time_point currentTime, bool fullTick) {
     // Re-query current memory budgets
-    updateMemoryHeapBudgets();
+    if (fullTick)
+      updateMemoryHeapBudgets();
 
     // Fork diagnostic: DXVK_MEMORY_STATS_LOG=<seconds> logs each memory type's allocated and used memory
     // and its pools' chunks that often (finding host memory growth).
@@ -3444,7 +3473,7 @@ namespace dxvk {
       freeEmptyChunksInHeap(m_memHeaps[i], 0, currentTime);
 
     // Periodically clean up unused cached allocations
-    for (uint32_t i = 0; i < m_memTypeCount; i++) {
+    for (uint32_t i = 0; fullTick && i < m_memTypeCount; i++) {
       if (m_memTypes[i].sharedCache)
         m_memTypes[i].sharedCache->cleanupUnusedFromLockedAllocator(currentTime);
     }
@@ -3460,8 +3489,11 @@ namespace dxvk {
         if (m_memTypes[i].properties.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
           moveDefragChunk(m_memTypes[i], m_memTypes[i].spillPool);
           pickDefragChunk(m_memTypes[i], m_memTypes[i].spillPool);
-          evictResources(m_memTypes[i]);
-          restoreTrackedResources(m_memTypes[i]);
+
+          if (fullTick) {
+            evictResources(m_memTypes[i]);
+            restoreTrackedResources(m_memTypes[i]);
+          }
         }
       }
     }
