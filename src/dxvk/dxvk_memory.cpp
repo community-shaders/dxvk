@@ -1,5 +1,7 @@
 #include "dxvk_image.h"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <iomanip>
 #include <sstream>
 
@@ -1383,23 +1385,32 @@ namespace dxvk {
     // Decide on a memory priority based on the memory type and allocation properties
     VkMemoryPriorityAllocateInfoEXT priorityInfo = { VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT };
 
+    // Fork diagnostic: DXVK_MEMORY_PRIORITIES=<spill>,<protected> replaces the two priorities below.
+    static const std::array<float, 2> priorities = [] {
+      std::array<float, 2> values = { 0.25f, 1.0f };
+      std::string text = env::getEnvVar("DXVK_MEMORY_PRIORITIES");
+      if (!text.empty())
+        (void)std::sscanf(text.c_str(), "%f,%f", &values[0], &values[1]);
+      return values;
+    }();
+
     if (type.properties.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
       if (spillable) {
         // Sampled-only images: below every other client's default, so that the driver
         // demotes these first when the process exceeds its budget.
-        priorityInfo.priority = 0.25f;
+        priorityInfo.priority = priorities[0];
       } else if (next) {
         // Dedicated allocation, may or may not be a shared resource. Assign this the
         // highest priority since this is expected to be a high-bandwidth resource,
         // such as a render target or a descriptor heap. The latter may be host-visible.
-        priorityInfo.priority = 1.0f;
+        priorityInfo.priority = priorities[1];
       } else if (type.properties.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
         // Regular HVV allocation. Give this a low priority since these are typically
         // useful when when placed in system memory.
         priorityInfo.priority = 0.0f;
       } else {
         // The protected pool: render targets, storage images and buffers
-        priorityInfo.priority = 1.0f;
+        priorityInfo.priority = priorities[1];
       }
 
       if (m_device->features().extMemoryPriority.memoryPriority)
@@ -2692,6 +2703,33 @@ namespace dxvk {
   }
 
 
+  uint32_t DxvkMemoryAllocator::setResourcesSpillable(
+          uint32_t                    count,
+    const uint64_t*                   cookies,
+          bool                        spillable) {
+    std::lock_guard lock(m_resourceMutex);
+    uint32_t queued = 0u;
+
+    for (uint32_t i = 0u; i < count; i++) {
+      auto entry = m_resourceMap.find(cookies[i]);
+
+      if (entry == m_resourceMap.end())
+        continue;
+
+      auto resource = entry->second->tryAcquire();
+
+      if (!resource || !resource->canRelocate() || resource->isMarkedSpillable() == spillable)
+        continue;
+
+      resource->setMarkedSpillable(spillable);
+      m_relocations.addResource(std::move(resource), nullptr, DxvkAllocationMode::NoFallback);
+      queued += 1u;
+    }
+
+    return queued;
+  }
+
+
   DxvkMemoryHeapTotals DxvkMemoryAllocator::getHeapTotals(uint32_t heap) const {
     DxvkMemoryHeapTotals result = { };
 
@@ -2719,13 +2757,43 @@ namespace dxvk {
           DxvkPagedResource*          resource) {
     // Evicted and unable to move: asking again at every use only keeps the
     // relocation list from emptying, which holds defragmentation back.
-    if (!resource->canRelocate())
+    if (!resource->canRelocate() || resource->isForcedToSystem())
       return;
 
     std::lock_guard lock(m_resourceMutex);
 
     m_relocations.addResource(resource, nullptr,
       DxvkAllocationMode::NoFallback);
+  }
+
+
+  uint32_t DxvkMemoryAllocator::forceResourcePlacement(
+          uint32_t                    count,
+    const uint64_t*                   cookies,
+          bool                        system) {
+    std::lock_guard lock(m_resourceMutex);
+    uint32_t queued = 0u;
+
+    for (uint32_t i = 0u; i < count; i++) {
+      auto entry = m_resourceMap.find(cookies[i]);
+
+      if (entry == m_resourceMap.end())
+        continue;
+
+      auto resource = entry->second->tryAcquire();
+
+      if (!resource || !resource->canRelocate())
+        continue;
+
+      resource->setForcedToSystem(system);
+
+      m_relocations.addResource(std::move(resource), nullptr, system
+        ? DxvkAllocationModes(DxvkAllocationMode::NoDeviceMemory)
+        : DxvkAllocationModes(DxvkAllocationMode::NoFallback));
+      queued += 1u;
+    }
+
+    return queued;
   }
 
 
@@ -2952,6 +3020,10 @@ namespace dxvk {
         m_defragSkippedUnknown.fetch_add(1u, std::memory_order_relaxed);
         continue;
       }
+
+      // A test holds this one where it is.
+      if (entry->second->isForcedToSystem())
+        continue;
 
       // Same if there are no external references. There is a small chance
       // that we pick up a newly created resource here that has no public

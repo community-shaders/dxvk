@@ -41,3 +41,5 @@ EXPORTS
     dxvkSetResourceOwner @158
     dxvkConfigureMemoryDebug @159
     dxvkGetResourceCreationStack @160
+    dxvkForceResourcePlacement @161
+    dxvkSetResourcesSpillable @162

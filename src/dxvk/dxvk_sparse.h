@@ -459,6 +459,30 @@ namespace dxvk {
     }
 
     /**
+     * \brief Whether a test keeps this resource out of device-local memory
+     * \returns \c true after DxvkMemoryAllocator::forceResourcePlacement
+     */
+    bool isForcedToSystem() const {
+      return m_forcedToSystem.load(std::memory_order_relaxed);
+    }
+
+    void setForcedToSystem(bool forced) {
+      m_forcedToSystem.store(forced, std::memory_order_relaxed);
+    }
+
+    /**
+     * \brief Whether this resource belongs in the spill pool whatever its usage
+     * \returns \c true after DxvkMemoryAllocator::setResourcesSpillable
+     */
+    bool isMarkedSpillable() const {
+      return m_markedSpillable.load(std::memory_order_relaxed);
+    }
+
+    void setMarkedSpillable(bool spillable) {
+      m_markedSpillable.store(spillable, std::memory_order_relaxed);
+    }
+
+    /**
      * \brief Increments reference count
      */
     force_inline void incRef() {
@@ -796,6 +820,8 @@ namespace dxvk {
     std::atomic<uint64_t> m_useCount = { 0u };
     uint64_t              m_trackId = { 0u };
     uint64_t              m_cookie = { 0u };
+    std::atomic<bool>     m_forcedToSystem = { false };
+    std::atomic<bool>     m_markedSpillable = { false };
 
     std::atomic<DxvkResourceResidency> m_residency = { DxvkResourceResidency::Resident };
 

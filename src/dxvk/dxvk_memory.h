@@ -1547,6 +1547,37 @@ namespace dxvk {
             DxvkPagedResource*          resource);
 
     /**
+     * \brief Moves resources to system memory or back, for testing
+     *
+     * Forced resources stay out of device-local memory until released: neither
+     * use nor defragmentation brings them back. The moves happen with the
+     * context's next submissions.
+     * \param [in] count Number of cookies
+     * \param [in] cookies The resources' cookies
+     * \param [in] system \c true to move them out, \c false to bring them back
+     * \returns Number of resources queued to move
+     */
+    uint32_t forceResourcePlacement(
+            uint32_t                    count,
+      const uint64_t*                   cookies,
+            bool                        system);
+
+    /**
+     * \brief Moves images into the spill pool, or back out of it
+     *
+     * They stay in video memory, in the pool the driver demotes first under
+     * memory pressure. For images the application knows it rarely uses.
+     * \param [in] count Number of cookies
+     * \param [in] cookies The resources' cookies
+     * \param [in] spillable Whether they belong in the spill pool
+     * \returns Number of resources queued to move
+     */
+    uint32_t setResourcesSpillable(
+            uint32_t                    count,
+      const uint64_t*                   cookies,
+            bool                        spillable);
+
+    /**
      * \brief Locks an allocation in place
      *
      * Ensures that the resource is marked as immovable so

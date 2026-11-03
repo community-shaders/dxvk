@@ -1268,6 +1268,38 @@ extern "C" {
   }
 
 
+  DLLEXPORT HRESULT __stdcall dxvkForceResourcePlacement(ID3D11Device* pDevice,
+    uint32_t count, const uint64_t* pCookies, BOOL toSystem, uint32_t* pQueued) {
+    if (!pQueued || (count && !pCookies))
+      return E_INVALIDARG;
+
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    *pQueued = interop->GetDXVKDevice()->getMemoryAllocator().forceResourcePlacement(count, pCookies, toSystem);
+    return S_OK;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetResourcesSpillable(ID3D11Device* pDevice,
+    uint32_t count, const uint64_t* pCookies, BOOL spillable, uint32_t* pQueued) {
+    if (!pQueued || (count && !pCookies))
+      return E_INVALIDARG;
+
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    *pQueued = interop->GetDXVKDevice()->getMemoryAllocator().setResourcesSpillable(count, pCookies, spillable);
+    return S_OK;
+  }
+
+
   DLLEXPORT HRESULT __stdcall dxvkGetResourceCreationStack(ID3D11Device* pDevice,
     uint64_t cookie, void** pFrames, uint32_t capacity, uint32_t* pCount) {
     if (!pCount || (capacity && !pFrames))

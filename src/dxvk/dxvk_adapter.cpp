@@ -1,3 +1,11 @@
+#include <array>
+#include <chrono>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <thread>
+#include <unordered_map>
+
 #include <cstring>
 #include <unordered_set>
 
@@ -8,6 +16,37 @@
 #include "../util/util_env.h"
 
 namespace dxvk {
+
+  namespace {
+    std::mutex g_memoryReportLock;
+    // Object type: heap 0 bytes, other heaps' bytes.
+    std::map<uint32_t, std::array<int64_t, 2>> g_memoryReportTotals;
+    std::unordered_map<uint64_t, std::array<uint64_t, 3>> g_memoryReportLive;
+
+    void VKAPI_PTR DeviceMemoryReportCallback(const VkDeviceMemoryReportCallbackDataEXT* data, void*) {
+      std::lock_guard lock(g_memoryReportLock);
+      // A free's size is undefined: the allocation's is remembered.
+      if (data->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT || data->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_IMPORT_EXT) {
+        g_memoryReportTotals[uint32_t(data->objectType)][data->heapIndex ? 1 : 0] += data->size;
+        g_memoryReportLive[data->memoryObjectId] = { uint64_t(data->objectType), uint64_t(data->heapIndex ? 1 : 0), data->size };
+      } else if (data->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_FREE_EXT || data->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_UNIMPORT_EXT) {
+        auto entry = g_memoryReportLive.find(data->memoryObjectId);
+        if (entry != g_memoryReportLive.end()) {
+          g_memoryReportTotals[uint32_t(entry->second[0])][entry->second[1]] -= int64_t(entry->second[2]);
+          g_memoryReportLive.erase(entry);
+        }
+      }
+    }
+
+    void DeviceMemoryReportLog() {
+      std::lock_guard lock(g_memoryReportLock);
+      std::stringstream line;
+      line << "[DeviceMemoryReport]";
+      for (const auto& e : g_memoryReportTotals)
+        line << " " << e.first << "=" << (e.second[0] >> 20) << "/" << (e.second[1] >> 20);
+      Logger::warn(line.str());
+    }
+  }
 
   DxvkDeviceQueue getDeviceQueue(const Rc<vk::DeviceFn>& vkd, const DxvkDeviceCapabilities& caps, DxvkDeviceQueueIndex queue) {
     DxvkDeviceQueue result = { };
@@ -380,6 +419,23 @@ namespace dxvk {
         bool(aftermathDiagnosticFlags & VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV),
         ", shader error reporting=",
         bool(aftermathDiagnosticFlags & VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV)));
+    }
+    // Fork diagnostic: DXVK_DEVICE_MEMORY_REPORT=1 logs the driver's own device memory by object type, every 10 s.
+    VkDeviceDeviceMemoryReportCreateInfoEXT memoryReport = { VK_STRUCTURE_TYPE_DEVICE_DEVICE_MEMORY_REPORT_CREATE_INFO_EXT };
+    VkPhysicalDeviceDeviceMemoryReportFeaturesEXT memoryReportFeature = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_MEMORY_REPORT_FEATURES_EXT };
+    if (env::getEnvVar("DXVK_DEVICE_MEMORY_REPORT") == "1") {
+      memoryReportFeature.deviceMemoryReport = VK_TRUE;
+      memoryReportFeature.pNext = const_cast<void*>(deviceInfo.pNext);
+      memoryReport.pNext = &memoryReportFeature;
+      memoryReport.pfnUserCallback = DeviceMemoryReportCallback;
+      deviceInfo.pNext = &memoryReport;
+      extensionNames.push_back(VK_EXT_DEVICE_MEMORY_REPORT_EXTENSION_NAME);
+      std::thread([] {
+        for (;;) {
+          std::this_thread::sleep_for(std::chrono::seconds(10));
+          DeviceMemoryReportLog();
+        }
+      }).detach();
     }
     deviceInfo.queueCreateInfoCount = queues.size();
     deviceInfo.pQueueCreateInfos = queues.data();
