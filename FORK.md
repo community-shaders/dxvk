@@ -327,6 +327,22 @@ BasicRHI's descriptor-buffer backend, that override is gone. Costs of heaps on N
 
 ---
 
+### SPIR-V shaders through the D3D11 entry points
+
+Community Shaders builds its game shaders with DXC, because the DXBC route costs GPU time, and passes them through the normal
+`Create*Shader` calls in a DXBC container with `ISGN`, `OSGN`, `SPRM` and `SPRV` chunks. Input layouts work as usual from `ISGN`.
+
+`d3d11_shader_spirv.cpp` adapts the module to DXVK's binding model: a binding's range names its register class
+(`D3D11SpirvShift*`, which the compiler is given as `-fvk-*-shift`), and samplers go through the global heap with their index in
+push data, the same layout as `DxvkIrShader`. The result is a `DxvkSpirvShader`. `dxvkSpirvIngestVersion` lets the client check
+the convention, and `dxvkSpirvContainerHash` gives it the container's hash.
+
+Design and measurements: `docs/development/dxc-game-shaders.md` in the CS repo.
+
+*Files: `src/d3d11/d3d11_shader_spirv.{h,cpp}`, `src/d3d11/d3d11_shader.{h,cpp}`, `src/d3d11/d3d11_device.cpp`, `src/d3d11/d3d11.def`*
+
+---
+
 ## 6. Environment variables
 
 Only two are fork-specific. Both are debugging aids, not shipping configuration.

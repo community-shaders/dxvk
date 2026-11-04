@@ -2054,6 +2054,24 @@ namespace dxvk {
       return E_INVALIDARG;
     }
 
+    // Community Shaders' DXC builds carry SPIR-V instead of DXBC code. See FORK.md.
+    if (D3D11HasSpirvChunk(pShaderBytecode, BytecodeLength)) {
+      D3D11SpirvModule spirv;
+      auto error = D3D11TranslateSpirvShader(pShaderBytecode, BytecodeLength, &spirv);
+
+      if (!error.empty()) {
+        Logger::err(str::format("D3D11: ", ShaderKey.toString(), ": ", error));
+        return E_INVALIDARG;
+      }
+
+      if (ShaderKey.stage() != spirv.stage) {
+        Logger::warn(str::format("D3D11: ", ShaderKey.toString(), ": SPIR-V shader is of incompatible stage"));
+        return E_INVALIDARG;
+      }
+
+      return m_shaderModules.GetShaderModule(this, ShaderKey, std::move(spirv), pShaderModule);
+    }
+
     // Parse dxbc binary and I/O signatures and validate that all
     // features used by the shader are enabled on the device
     dxbc_spv::dxbc::Parser parser(container.getCodeChunk());

@@ -51,6 +51,7 @@ d3d11_src = [
   'd3d11_resource.cpp',
   'd3d11_sampler.cpp',
   'd3d11_shader.cpp',
+  'd3d11_shader_spirv.cpp',
   'd3d11_state.cpp',
   'd3d11_state_object.cpp',
   'd3d11_swapchain.cpp',

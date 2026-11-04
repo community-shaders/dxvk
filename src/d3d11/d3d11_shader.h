@@ -17,6 +17,7 @@
 #include "d3d11_class_linkage.h"
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
+#include "d3d11_shader_spirv.h"
 #include "d3d11_util.h"
 
 namespace dxvk {
@@ -150,6 +151,10 @@ namespace dxvk {
             size_t                  BytecodeLength,
       const D3D11ShaderIcbInfo&     Icb,
       const D3D11BindingMask&       BindingMask);
+    D3D11CommonShader(
+            D3D11Device*            pDevice,
+      const DxvkShaderHash&         ShaderKey,
+            D3D11SpirvModule&&      Module);
     ~D3D11CommonShader();
 
     Rc<DxvkShader> GetShader() const {
@@ -298,6 +303,12 @@ namespace dxvk {
             size_t                  BytecodeLength,
       const D3D11ShaderIcbInfo&     Icb,
       const D3D11BindingMask&       BindingMask,
+            D3D11CommonShader*      pShader);
+
+    HRESULT GetShaderModule(
+            D3D11Device*            pDevice,
+      const DxvkShaderHash&         ShaderKey,
+            D3D11SpirvModule&&      Module,
             D3D11CommonShader*      pShader);
     
   private:

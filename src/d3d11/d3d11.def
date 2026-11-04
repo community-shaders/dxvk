@@ -44,3 +44,5 @@ EXPORTS
     dxvkForceResourcePlacement @161
     dxvkSetResourcesSpillable @162
     dxvkSetDefragPressurePercent @163
+    dxvkSpirvIngestVersion @164
+    dxvkSpirvContainerHash @165

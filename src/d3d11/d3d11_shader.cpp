@@ -9,6 +9,8 @@
 #include "d3d11_org_interop.h"
 #include "d3d11_shader.h"
 
+#include "../dxvk/dxvk_shader_spirv.h"
+
 namespace dxvk {
 
   class D3D11ShaderConverter : public DxvkIrShaderConverter {
@@ -238,6 +240,28 @@ namespace dxvk {
   }
 
 
+  D3D11CommonShader::D3D11CommonShader(
+          D3D11Device*            pDevice,
+    const DxvkShaderHash&         ShaderKey,
+          D3D11SpirvModule&&      Module)
+  : m_bindings(Module.bindingMask) {
+    DxvkSpirvShaderCreateInfo info = { };
+    info.bindingCount = uint32_t(Module.bindings.size());
+    info.bindings = Module.bindings.data();
+    info.localPushData = Module.localPushData;
+    info.samplerHeap = DxvkShaderBinding(Module.stage, 0u, 0u);
+    info.debugName = ShaderKey.toString();
+
+    m_shader = new DxvkSpirvShader(info, SpirvCodeBuffer(std::move(Module.code)));
+
+    // Named before registration, which may start compiling its pipeline library
+    if (auto name = TakeNextShaderName(); !name.empty())
+      m_shader->setCaptureName(name);
+
+    pDevice->GetDXVKDevice()->registerShader(m_shader);
+  }
+
+
   void D3D11CommonShader::CreateIrShader(
           D3D11Device*            pDevice,
     const DxvkShaderHash&         ShaderKey,
@@ -327,6 +351,34 @@ namespace dxvk {
   }
 
   
+  HRESULT D3D11ShaderModuleSet::GetShaderModule(
+          D3D11Device*            pDevice,
+    const DxvkShaderHash&         ShaderKey,
+          D3D11SpirvModule&&      Module,
+          D3D11CommonShader*      pShader) {
+    std::unique_lock<dxvk::mutex> lock(m_mutex);
+
+    auto entry = m_modules.find(ShaderKey);
+    if (entry != m_modules.end()) {
+      *pShader = entry->second;
+      return S_OK;
+    }
+
+    D3D11CommonShader module;
+
+    try {
+      module = D3D11CommonShader(pDevice, ShaderKey, std::move(Module));
+    } catch (const DxvkError& e) {
+      Logger::err(e.message());
+      return E_INVALIDARG;
+    }
+
+    m_modules.insert({ ShaderKey, module });
+    *pShader = std::move(module);
+    return S_OK;
+  }
+
+
   D3D11ShaderModuleSet:: D3D11ShaderModuleSet() { }
   D3D11ShaderModuleSet::~D3D11ShaderModuleSet() { }
   
