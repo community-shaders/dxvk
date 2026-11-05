@@ -1176,9 +1176,25 @@ namespace dxvk {
       barrier.dstAccessMask |= depInfo->pImageMemoryBarriers[i].dstAccessMask;
     }
 
-    debugMarker(cmdBuffer, str::format("Barrier (", depInfo->memoryBarrierCount, ", ", depInfo->imageMemoryBarrierCount, "): ",
+    std::string text = str::format("Barrier (", depInfo->memoryBarrierCount, ", ", depInfo->imageMemoryBarrierCount, "): ",
       "0x", std::hex, barrier.srcStageMask, ":0x", std::hex, barrier.srcAccessMask, " -> ",
-      "0x", std::hex, barrier.dstStageMask, ":0x", std::hex, barrier.dstAccessMask).c_str());
+      "0x", std::hex, barrier.dstStageMask, ":0x", std::hex, barrier.dstAccessMask);
+
+    // Each image: name (or handle), layouts old>new, aspect, first mip+count, first layer+count. A label holds about three.
+    for (uint32_t i = 0u; i < depInfo->imageMemoryBarrierCount && i < 3u; i++) {
+      const auto& image = depInfo->pImageMemoryBarriers[i];
+      std::string name = DxvkCheckpointBuffer::getImageName(image.image);
+
+      if (name.empty())
+        name = str::format("0x", std::hex, uint64_t(image.image));
+
+      text += str::format(" [", name.substr(0u, 40u), " ", uint32_t(image.oldLayout), ">", uint32_t(image.newLayout),
+        " a", uint32_t(image.subresourceRange.aspectMask),
+        " m", image.subresourceRange.baseMipLevel, "+", image.subresourceRange.levelCount,
+        " l", image.subresourceRange.baseArrayLayer, "+", image.subresourceRange.layerCount, "]");
+    }
+
+    debugMarker(cmdBuffer, text.c_str());
   }
 
 }

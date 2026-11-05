@@ -20,7 +20,7 @@ namespace dxvk {
     int32_t prev = -1;
     int32_t next = -1;
 
-    std::array<char, 120> info = {};
+    std::array<char, 280> info = {};
   };
 
 
@@ -71,6 +71,19 @@ namespace dxvk {
      * Must only be called when DEVICE_LOST was detected.
      */
     void printHangInfo();
+
+    /**
+     * \brief Remembers an image's debug name for barrier labels
+     *
+     * Only called with debug names on. A reused handle replaces the old name.
+     */
+    static void setImageName(VkImage image, const char* name);
+
+    /**
+     * \brief Looks up a debug name set with \c setImageName
+     * \returns The name, or an empty string for an image without one
+     */
+    static std::string getImageName(VkImage image);
 
     // Resolve a Vulkan checkpoint's integer payload while this device is alive.
     // Used by the application's Aftermath crash-dump callback.

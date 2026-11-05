@@ -569,6 +569,9 @@ namespace dxvk {
 
 
   void DxvkImage::updateDebugName() {
+    if (m_storage != nullptr && m_imageInfo.image)
+      DxvkCheckpointBuffer::setImageName(m_imageInfo.image, m_info.debugName);
+
     if (m_storage != nullptr && m_storage->flags().test(DxvkAllocationFlag::OwnsImage)) {
       VkDebugUtilsObjectNameInfoEXT nameInfo = { VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
       nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;

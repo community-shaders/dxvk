@@ -1,5 +1,7 @@
 #include <optional>
 #include <iomanip>
+#include <string>
+#include <unordered_map>
 
 #include "dxvk_hang.h"
 #include "dxvk_device.h"
@@ -7,6 +9,25 @@
 #include "../util/util_file.h"
 
 namespace dxvk {
+
+  namespace {
+    dxvk::mutex g_imageNameMutex;
+    std::unordered_map<uint64_t, std::string> g_imageNames;
+  }
+
+
+  void DxvkCheckpointBuffer::setImageName(VkImage image, const char* name) {
+    std::lock_guard lock(g_imageNameMutex);
+    g_imageNames[uint64_t(image)] = name;
+  }
+
+
+  std::string DxvkCheckpointBuffer::getImageName(VkImage image) {
+    std::lock_guard lock(g_imageNameMutex);
+    auto entry = g_imageNames.find(uint64_t(image));
+    return entry != g_imageNames.end() ? entry->second : std::string();
+  }
+
 
   DxvkCheckpointBuffer::DxvkCheckpointBuffer(DxvkDevice* device)
   : m_device(device) {
@@ -243,12 +264,11 @@ namespace dxvk {
     info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
 
+    // VK_AMD_device_coherent_memory is not enabled here, so its memory types are not available: an allocation asking for them fails and the
+    // next write dereferences null. Plain coherent memory: the last markers before a hang can lag, as the GPU's caches may still hold them.
     Rc<DxvkBuffer> buffer = m_device->createBuffer(info,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-      VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
-      VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD |
-      VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD);
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     std::memset(buffer->mapPtr(0), -1, info.size);
     return buffer;
