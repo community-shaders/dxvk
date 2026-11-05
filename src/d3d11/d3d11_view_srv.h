@@ -64,10 +64,32 @@ namespace dxvk {
     }
     
     Rc<DxvkImageView> GetImageView() const {
-      if (unlikely(m_deferredTexture.load(std::memory_order_relaxed)))
+      if (unlikely(m_deferredTexture.load(std::memory_order_relaxed))) {
+        if (m_stream)
+          return GetStreamedImageView();
         CommitDeferredTexture();
+      }
       return m_imageView;
     }
+
+    /**
+     * \brief Makes this view a streamed texture's shell (dxvkStreamEnableView)
+     *
+     * Its texture keeps no storage. A bind reads the window set with SetStreamWindow. With no window,
+     * pfnMissing runs on the binding thread and may set one; otherwise the bind reads zero. pfnGone runs
+     * first in the view's destructor, so whoever names the view can stop before it is destroyed.
+     * \returns \c false if the texture has storage already, or this view is a shell already
+     */
+    bool EnableStream(PFN_D3D11StreamMissing pfnMissing, PFN_D3D11StreamMissing pfnGone, uint64_t user);
+
+    /** \brief A shell's window. Any thread. Null clears it. */
+    void SetStreamWindow(D3D11ShaderResourceView* pWindow);
+
+    /** \brief A shell's window with a reference, or null. Any thread. */
+    D3D11ShaderResourceView* GetStreamWindow() const;
+
+    /** \brief How many binds have read this shell. Any thread. */
+    uint64_t GetStreamBinds() const;
 
     D3D10ShaderResourceView* GetD3D10Iface() {
       return &m_d3d10;
@@ -95,6 +117,19 @@ namespace dxvk {
     mutable std::atomic<D3D11CommonTexture*> m_deferredTexture = { nullptr };
 
     void CommitDeferredTexture() const;
+
+    struct StreamState {
+      PFN_D3D11StreamMissing        missing = nullptr;
+      PFN_D3D11StreamMissing        gone = nullptr;
+      uint64_t                      user = 0;
+      mutable sync::Spinlock        lock;
+      Com<D3D11ShaderResourceView>  window;
+      std::atomic<uint64_t>         binds = { 0 };
+    };
+
+    std::unique_ptr<StreamState> m_stream;
+
+    Rc<DxvkImageView> GetStreamedImageView() const;
     D3D11_SHADER_RESOURCE_VIEW_DESC1  m_desc;
     D3D11_VK_VIEW_INFO                m_info;
     Rc<DxvkBufferView>                m_bufferView;

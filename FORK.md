@@ -245,6 +245,21 @@ a residual.
 `src/d3d11/d3d11_org_interop.{h,cpp}`, `src/d3d11/d3d11_interop.h`, `src/d3d11/d3d11_buffer.cpp`,
 `src/d3d11/d3d11_texture.cpp`*
 
+### Streamed textures
+
+Community Shaders streams game textures' mips (`docs/development/texture-streaming.md` in its repo). It keeps the texture and view the game holds
+as a storage-less **shell**, and puts the mips in an ordinary texture, the **window**.
+
+- `dxvkStreamEnableView` makes a view whose texture still has deferred storage a shell. It fails if the storage was committed.
+- `D3D11ShaderResourceView::GetImageView` returns the window's image view for a shell, so every bind reads it. With no window set, it calls the
+  client's missing callback on the binding thread, then reads zero if there is still none.
+- The check sits behind the existing deferred-storage test, so a view that is not a shell pays nothing new.
+- The client's gone callback runs first in the view's destructor, so the client can stop naming the view before it is destroyed.
+- If something commits a shell's own storage (`EnsureStorage`: a `Map`, a copy), `D3D11CommonTexture::CommitDeferredStorage` asks the client's fill
+  callback for the contents and initializes the image from them.
+- `dxvkStreamSetWindow`, `dxvkStreamGetWindow` and `dxvkStreamGetBinds` are any thread's. A rebind is what picks up a new window: a slot already
+  bound keeps reading the old one.
+
 ---
 
 ## 5. Bug fixes

@@ -46,3 +46,7 @@ EXPORTS
     dxvkSetDefragPressurePercent @163
     dxvkSpirvIngestVersion @164
     dxvkSpirvContainerHash @165
+    dxvkStreamEnableView @166
+    dxvkStreamSetWindow @167
+    dxvkStreamGetWindow @168
+    dxvkStreamGetBinds @169

@@ -279,6 +279,14 @@ namespace dxvk {
   
   
   void D3D11CommonTexture::CommitDeferredStorage() const {
+    if (m_streamFill) {
+      if (auto data = m_streamFill(m_streamFillUser, FALSE)) {
+        m_device->InitDeferredTexture(const_cast<D3D11CommonTexture*>(this), data);
+        m_streamFill(m_streamFillUser, TRUE);
+        return;
+      }
+    }
+
     m_device->CommitDeferredTexture(this);
   }
 

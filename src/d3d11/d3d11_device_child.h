@@ -7,6 +7,15 @@
 
 namespace dxvk {
 
+  /** A streamed texture's shell was bound with no window (D3D11ShaderResourceView::EnableStream). */
+  using PFN_D3D11StreamMissing = void (__stdcall*)(uint64_t user);
+
+  /**
+   * The contents of a streamed texture whose own storage something needs. Called with release FALSE for the
+   * data, and with TRUE once it is uploaded.
+   */
+  using PFN_D3D11StreamFill = const D3D11_SUBRESOURCE_DATA* (__stdcall*)(uint64_t user, BOOL release);
+
   class D3D11Device;
 
   template<typename Base>

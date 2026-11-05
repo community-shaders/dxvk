@@ -279,6 +279,14 @@ namespace dxvk {
     }
 
     /**
+     * \brief Where a streamed shell's contents come from if something needs its own storage
+     */
+    void SetStreamFill(PFN_D3D11StreamFill pfnFill, uint64_t user) {
+      m_streamFill = pfnFill;
+      m_streamFillUser = user;
+    }
+
+    /**
      * \brief Allocates deferred storage, the caller initializing the image
      *
      * D3D11Initializer, under its lock.
@@ -623,6 +631,8 @@ namespace dxvk {
     Rc<DxvkImage>                 m_image;
     // The image was created with deferStorage and has not been used.
     mutable std::atomic<bool>     m_storageDeferred = { false };
+    PFN_D3D11StreamFill           m_streamFill = nullptr;
+    uint64_t                      m_streamFillUser = 0;
 
     void CommitDeferredStorage() const;
     small_vector<MappedBuffer, 6> m_buffers;

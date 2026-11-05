@@ -427,6 +427,10 @@ namespace dxvk {
       m_initializer->CommitDeferredTexture(pTexture);
     }
 
+    void InitDeferredTexture(D3D11CommonTexture* pTexture, const D3D11_SUBRESOURCE_DATA* pData) {
+      m_initializer->InitTexture(pTexture, pData);
+    }
+
     void NotifyContextFlush() {
       m_initializer->NotifyContextFlush();
     }

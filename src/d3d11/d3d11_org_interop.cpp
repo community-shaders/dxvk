@@ -1319,6 +1319,42 @@ extern "C" {
   }
 
 
+  DLLEXPORT HRESULT __stdcall dxvkStreamEnableView(ID3D11ShaderResourceView* pShell, PFN_D3D11StreamMissing pfnMissing,
+    PFN_D3D11StreamMissing pfnGone, PFN_D3D11StreamFill pfnFill, uint64_t user) {
+    if (!pShell)
+      return E_INVALIDARG;
+
+    Com<ID3D11Resource> resource;
+    pShell->GetResource(&resource);
+
+    auto texture = GetCommonTexture(resource.ptr());
+
+    if (!texture || !texture->IsStorageDeferred())
+      return E_FAIL;
+
+    if (!static_cast<D3D11ShaderResourceView*>(pShell)->EnableStream(pfnMissing, pfnGone, user))
+      return E_FAIL;
+
+    texture->SetStreamFill(pfnFill, user);
+    return S_OK;
+  }
+
+
+  DLLEXPORT void __stdcall dxvkStreamSetWindow(ID3D11ShaderResourceView* pShell, ID3D11ShaderResourceView* pWindow) {
+    static_cast<D3D11ShaderResourceView*>(pShell)->SetStreamWindow(static_cast<D3D11ShaderResourceView*>(pWindow));
+  }
+
+
+  DLLEXPORT ID3D11ShaderResourceView* __stdcall dxvkStreamGetWindow(ID3D11ShaderResourceView* pShell) {
+    return static_cast<D3D11ShaderResourceView*>(pShell)->GetStreamWindow();
+  }
+
+
+  DLLEXPORT uint64_t __stdcall dxvkStreamGetBinds(ID3D11ShaderResourceView* pShell) {
+    return static_cast<D3D11ShaderResourceView*>(pShell)->GetStreamBinds();
+  }
+
+
   DLLEXPORT HRESULT __stdcall dxvkSetDefragPressurePercent(ID3D11Device* pDevice, uint32_t percent) {
     Com<IDXGIVkInteropDevice1> ref;
     auto interop = GetInterop(pDevice, ref);
