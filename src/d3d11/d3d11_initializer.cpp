@@ -58,7 +58,8 @@ namespace dxvk {
     });
 
     // Now, not at the context's next chunk: an interop client locks the image in the high priority queue too.
-    FlushCsChunkLocked();
+    // The chunk lock, not just m_mutex: the render thread's context flush also flushes this chunk.
+    FlushCsChunk();
 
     ThrottleAllocationLocked();
   }
