@@ -1201,6 +1201,7 @@ namespace dxvk {
       ENABLE_FEATURE(vk12, samplerFilterMinmax, false),
       ENABLE_FEATURE(vk12, samplerMirrorClampToEdge, true),
       ENABLE_FEATURE(vk12, scalarBlockLayout, true),
+      ENABLE_FEATURE(vk12, separateDepthStencilLayouts, false),
       ENABLE_FEATURE(vk12, shaderFloat16, false),
       ENABLE_FEATURE(vk12, shaderInt8, true),
       ENABLE_FEATURE(vk12, shaderOutputViewportIndex, false),

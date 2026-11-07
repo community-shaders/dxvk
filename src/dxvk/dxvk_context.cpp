@@ -3372,6 +3372,12 @@ namespace dxvk {
     // render layouts and its clears deferred, and the client must find
     // every image in its default layout with its contents complete.
     this->endCurrentPass(false);
+
+    // Interop images back in their default layout, their deferred clears done. Ending the pass alone leaves an image another pass
+    // moved earlier in this command list in that pass's layout (DXVK moves layouts lazily, and only endCurrentCommands restores
+    // them), and the client names the default layout. Without unified image layouts, a render target the engine drew to
+    // stays in COLOR_ATTACHMENT_OPTIMAL while the client renders to it and samples it in GENERAL.
+    this->prepareSharedImages();
     this->flushBarriers();
 
     // Every barrier DXVK emits releases an access to the resource's full

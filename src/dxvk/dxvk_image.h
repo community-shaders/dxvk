@@ -483,6 +483,22 @@ namespace dxvk {
     bool isOrgInteropImage() const {
       return isOrgInterop();
     }
+
+    /**
+     * \brief Keeps an interop image in GENERAL, as unified image layouts would
+     *
+     * The interop client records its own commands on the image, which DXVK does
+     * not see, and names GENERAL in all of them. Without
+     * VK_KHR_unified_image_layouts, DXVK would otherwise move the image into its
+     * views' optimal layouts (attachments, sampled reads) between the client's
+     * commands, and its own descriptors would name those layouts while the image
+     * rests in GENERAL. CS thread only: bumps the version so that views made
+     * before it rebuild their descriptors.
+     */
+    void markOrgGeneral() {
+      if (!m_orgGeneral.exchange(true, std::memory_order_relaxed))
+        m_version += 1u;
+    }
     
     /**
      * \brief Memory type flags
@@ -555,7 +571,7 @@ namespace dxvk {
      * \returns A compatible image layout
      */
     VkImageLayout pickLayout(VkImageLayout layout) const {
-      if (m_unifiedLayoutEnabled)
+      if (m_unifiedLayoutEnabled || m_orgGeneral.load(std::memory_order_relaxed))
           return VK_IMAGE_LAYOUT_GENERAL;
 
       if (unlikely(m_info.layout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)) {
@@ -874,6 +890,7 @@ namespace dxvk {
     uint32_t                    m_version     = 0u;
     bool                        m_shared      = false;
     bool                        m_stableAddress = false;
+    std::atomic<bool>           m_orgGeneral = { false };
 
     bool                        m_unifiedLayoutEnabled = false;
     bool                        m_unifiedLayoutAvailable = false;

@@ -185,6 +185,7 @@ namespace dxvk {
   private:
 
     bool LockImage(const Rc<DxvkImage>& image);
+    void PinGeneral(const Rc<DxvkImage>& image);
 
     /**
      * \brief The image or buffer behind a buffer, texture or SRV, and the view an image is described with

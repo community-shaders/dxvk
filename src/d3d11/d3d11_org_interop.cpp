@@ -304,13 +304,30 @@ namespace dxvk {
     // Same condition as D3D11DeviceExt::LockImage: nothing to do for an image that cannot move.
     if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT) && layout == VK_IMAGE_LAYOUT_UNDEFINED) {
       image->markOrgInteropImage();
+      PinGeneral(image);
       return true;
     }
 
     const bool locked = m_device->LockImage(image, VK_IMAGE_USAGE_SAMPLED_BIT, layout);
-    if (locked)
+    if (locked) {
       image->markOrgInteropImage();
+      PinGeneral(image);
+    }
     return locked;
+  }
+
+
+  void D3D11VkInterop::PinGeneral(const Rc<DxvkImage>& image) {
+    // On the CS thread, after LockImage's chunk (DxvkImage::markOrgGeneral): the client's
+    // commands and DXVK's then agree on GENERAL for the image, as with unified layouts.
+    if (image->hasUnifiedLayout() || image->info().layout != VK_IMAGE_LAYOUT_GENERAL)
+      return;
+
+    auto chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
+    chunk->push([cImage = image] (DxvkContext*) {
+      cImage->markOrgGeneral();
+    });
+    m_device->GetContext()->InjectCsChunk(DxvkCsQueue::HighPriority, std::move(chunk), true);
   }
 
 
@@ -478,6 +495,9 @@ namespace dxvk {
 
           item.image->markOrgInterop();
           item.image->addOrgTrack();
+
+          if (item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL)
+            item.image->markOrgGeneral();
 
           FillImageInfo(item.image, item.key, out.info.image);
           out.info.kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
