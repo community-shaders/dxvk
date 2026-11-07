@@ -814,11 +814,15 @@ namespace dxvk {
       m_shaderOptions.flags.set(DxvkShaderCompileFlag::LowerSinCos);
 
     // RADV generally does the right thing for f32tof16 and int conversions by default
-    if (!m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)) {
-      m_shaderOptions.flags.set(
-        DxvkShaderCompileFlag::LowerFtoI,
-        DxvkShaderCompileFlag::LowerF32toF16);
-    }
+    if (!m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV))
+      m_shaderOptions.flags.set(DxvkShaderCompileFlag::LowerF32toF16);
+
+    // NVIDIA's conversion saturates and turns NaN into zero, as D3D11 asks, and gives
+    // the same results as its D3D11 driver. Lowering it there costs about 4 instructions
+    // for each conversion: 27% of a shader that converts in a loop, 6% of Screen Space GI.
+    if (!m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)
+     && !m_adapter->matchesDriver(VK_DRIVER_ID_NVIDIA_PROPRIETARY))
+      m_shaderOptions.flags.set(DxvkShaderCompileFlag::LowerFtoI);
 
     // On AMD, push constant BDA will not be worse than going through a descriptor
     if (m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)
