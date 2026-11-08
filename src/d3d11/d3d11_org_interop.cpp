@@ -294,12 +294,27 @@ namespace dxvk {
   }
 
 
+  bool D3D11VkInterop::PinsGeneral(const DxvkImage& image) const {
+    return !(m_options.load(std::memory_order_acquire) & DXVK_ORG_INTEROP_RESTING_LAYOUTS)
+      && !image.hasUnifiedLayout() && image.info().layout != VK_IMAGE_LAYOUT_GENERAL;
+  }
+
+
+  HRESULT D3D11VkInterop::SetOptions(uint32_t Options) {
+    if (Options & ~uint32_t(DXVK_ORG_INTEROP_RESTING_LAYOUTS))
+      return E_INVALIDARG;
+
+    m_options.store(Options, std::memory_order_release);
+    return S_OK;
+  }
+
+
   bool D3D11VkInterop::LockImage(const Rc<DxvkImage>& image) {
-    // The client imports an image in the layout it rests in between commands (FillImageInfo), and expects GENERAL: without
-    // VK_KHR_unified_image_layouts (AMD's legacy Windows driver) an image rests in its usage's optimal layout, so it is moved to
-    // GENERAL, which becomes its resting layout (ensureImageCompatibility: a barrier, no new storage).
-    const VkImageLayout layout = image->hasUnifiedLayout() || image->info().layout == VK_IMAGE_LAYOUT_GENERAL
-      ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
+    // The client imports an image in the layout it rests in between commands (FillImageInfo). One that has not set
+    // DXVK_ORG_INTEROP_RESTING_LAYOUTS expects GENERAL: without VK_KHR_unified_image_layouts (AMD's legacy Windows driver) an
+    // image rests in its usage's optimal layout, so it is moved to GENERAL, which becomes its resting layout
+    // (ensureImageCompatibility: a barrier, no new storage). On AMD's driver that turns its compression off.
+    const VkImageLayout layout = PinsGeneral(*image) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Same condition as D3D11DeviceExt::LockImage: nothing to do for an image that cannot move.
     if (!image->canRelocate() && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT) && layout == VK_IMAGE_LAYOUT_UNDEFINED) {
@@ -320,7 +335,9 @@ namespace dxvk {
   void D3D11VkInterop::PinGeneral(const Rc<DxvkImage>& image) {
     // On the CS thread, after LockImage's chunk (DxvkImage::markOrgGeneral): the client's
     // commands and DXVK's then agree on GENERAL for the image, as with unified layouts.
-    if (image->hasUnifiedLayout() || image->info().layout != VK_IMAGE_LAYOUT_GENERAL)
+    // A client that keeps resting layouts finds the image in its own layout instead.
+    if ((m_options.load(std::memory_order_acquire) & DXVK_ORG_INTEROP_RESTING_LAYOUTS)
+     || image->hasUnifiedLayout() || image->info().layout != VK_IMAGE_LAYOUT_GENERAL)
       return;
 
     auto chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
@@ -445,7 +462,9 @@ namespace dxvk {
     auto chunk = m_device->AllocCsChunk(DxvkCsChunkFlag::SingleUse);
     auto allocator = &m_device->GetDXVKDevice()->getMemoryAllocator();
 
-    chunk->push([cItems = std::move(items), pResources, pResults, allocator] (DxvkContext* ctx) {
+    const bool restingLayouts = m_options.load(std::memory_order_acquire) & DXVK_ORG_INTEROP_RESTING_LAYOUTS;
+
+    chunk->push([cItems = std::move(items), pResources, pResults, allocator, restingLayouts] (DxvkContext* ctx) {
       for (const auto& item : cItems) {
         auto& out = pResources[item.index];
 
@@ -472,11 +491,12 @@ namespace dxvk {
           out.cookie = item.buffer->cookie();
           out.storageSerial = item.buffer->orgStorageSerial();
         } else {
-          // As LockImage: the client samples the image in GENERAL, which becomes its resting
-          // layout without VK_KHR_unified_image_layouts. No stable address: it may move.
+          // As LockImage: unless the client keeps resting layouts, it samples the image in GENERAL,
+          // which becomes its resting layout without VK_KHR_unified_image_layouts. No stable address:
+          // it may move.
           DxvkImageUsageInfo usageInfo;
           usageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-          usageInfo.layout = item.image->hasUnifiedLayout() || item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL
+          usageInfo.layout = restingLayouts || item.image->hasUnifiedLayout() || item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL
             ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
 
           // One the GPU writes stays pinned, as for buffers.
@@ -496,7 +516,7 @@ namespace dxvk {
           item.image->markOrgInterop();
           item.image->addOrgTrack();
 
-          if (item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL)
+          if (!restingLayouts && item.image->info().layout == VK_IMAGE_LAYOUT_GENERAL)
             item.image->markOrgGeneral();
 
           FillImageInfo(item.image, item.key, out.info.image);
@@ -1101,6 +1121,17 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->SetCommandBufferBoundaryCallbacks(pOnEnd, pOnBegin, pUser);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkSetInteropOptions(ID3D11Device* pDevice, uint32_t options) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->SetOptions(options);
   }
 
 

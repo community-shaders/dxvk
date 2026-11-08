@@ -50,3 +50,4 @@ EXPORTS
     dxvkStreamSetWindow @167
     dxvkStreamGetWindow @168
     dxvkStreamGetBinds @169
+    dxvkSetInteropOptions @170

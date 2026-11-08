@@ -120,6 +120,11 @@ namespace dxvk {
             void*                                   pUser);
 
     /**
+     * \brief What the client handles itself (DxvkOrgInteropOptionBits, see d3d11_org_interop.h)
+     */
+    HRESULT SetOptions(uint32_t Options);
+
+    /**
      * \brief Describes and locks a buffer, texture or SRV (see d3d11_org_interop.h)
      */
     HRESULT GetResourceInfo(
@@ -188,6 +193,14 @@ namespace dxvk {
     void PinGeneral(const Rc<DxvkImage>& image);
 
     /**
+     * \brief Whether an imported image moves to GENERAL and stays there
+     *
+     * Only for a client that has not set DXVK_ORG_INTEROP_RESTING_LAYOUTS, and only where GENERAL is not the
+     * image's resting layout already (unified layouts, storage images).
+     */
+    bool PinsGeneral(const DxvkImage& image) const;
+
+    /**
      * \brief The image or buffer behind a buffer, texture or SRV, and the view an image is described with
      */
     static Rc<DxvkPagedResource> ResolveResource(IUnknown* pObject, DxvkImageViewKey* pKey, D3D11Buffer** ppBuffer);
@@ -198,6 +211,8 @@ namespace dxvk {
 
     IDXGIObject* m_container;
     D3D11Device* m_device;
+
+    std::atomic<uint32_t> m_options = { 0u };
 
     dxvk::mutex                          m_memorySnapshotMutex;
     std::shared_ptr<D3D11MemorySnapshot> m_memorySnapshot;
