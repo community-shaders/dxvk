@@ -1108,10 +1108,15 @@ namespace dxvk {
   }
 
 
+  thread_local std::string g_initProbeText;
+
   void DxvkCommandList::debugMarker(
           DxvkCmdBuffer                 cmdBuffer,
     const char*                         text) {
     if (m_checkpoints) {
+      if ((cmdBuffer == DxvkCmdBuffer::InitBarriers || cmdBuffer == DxvkCmdBuffer::InitBuffer) && g_initProbeText.size() < 6000u)
+        g_initProbeText += str::format(cmdBuffer == DxvkCmdBuffer::InitBarriers ? " {B " : " {I ", text, "}");
+
       auto cmdIndex = uint32_t(cmdBuffer);
 
       m_checkpointIds.at(cmdIndex) = m_checkpoints->addCheckpoint(
@@ -1181,7 +1186,7 @@ namespace dxvk {
       "0x", std::hex, barrier.dstStageMask, ":0x", std::hex, barrier.dstAccessMask);
 
     // Each image: name (or handle), layouts old>new, aspect, first mip+count, first layer+count. A label holds about three.
-    for (uint32_t i = 0u; i < depInfo->imageMemoryBarrierCount && i < 3u; i++) {
+    for (uint32_t i = 0u; i < depInfo->imageMemoryBarrierCount && i < 40u; i++) {
       const auto& image = depInfo->pImageMemoryBarriers[i];
       std::string name = DxvkCheckpointBuffer::getImageName(image.image);
 

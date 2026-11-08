@@ -89,9 +89,70 @@ namespace dxvk {
   }
   
   
+  extern thread_local std::string g_initProbeText;
+
+  // Temporary: stamps around each init phase of every command list.
+  namespace {
+    struct InitProbePending { uint32_t first; std::string text; };
+    dxvk::mutex g_initProbeMutex;
+    VkQueryPool g_initProbePool = VK_NULL_HANDLE;
+    uint32_t g_initProbeNext = 0u;
+    std::deque<InitProbePending> g_initProbePending;
+    thread_local uint32_t g_initProbeCurrent = 0u;
+    constexpr uint32_t InitProbeSlots = 256u;
+
+    bool initProbeEnabled() {
+      static bool enabled = !env::getEnvVar("DXVK_INIT_PROBE").empty();
+      return enabled;
+    }
+
+    void initProbeBegin(DxvkDevice* device, const Rc<DxvkCommandList>& cmd) {
+      if (!initProbeEnabled())
+        return;
+      auto vk = device->vkd();
+      std::lock_guard lock(g_initProbeMutex);
+      if (!g_initProbePool) {
+        VkQueryPoolCreateInfo info = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = 6u * InitProbeSlots;
+        vk->vkCreateQueryPool(vk->device(), &info, nullptr, &g_initProbePool);
+      }
+      while (!g_initProbePending.empty()) {
+        auto& p = g_initProbePending.front();
+        uint64_t data[12] = { };
+        VkResult vr = vk->vkGetQueryPoolResults(vk->device(), g_initProbePool, p.first, 6u, sizeof(data), data, 2u * sizeof(uint64_t),
+          VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (vr != VK_SUCCESS || !data[1] || !data[3] || !data[5] || !data[7] || !data[9] || !data[11])
+          break;
+        Logger::info(str::format("[InitProbe] ", data[0], " ", data[2], " ", data[4], " ", data[6], " ", data[8], " ", data[10], " |", p.text));
+        g_initProbePending.pop_front();
+      }
+      uint32_t slot = g_initProbeNext;
+      g_initProbeNext = (slot + 1u) % InitProbeSlots;
+      g_initProbeCurrent = 6u * slot;
+      vk->vkResetQueryPool(vk->device(), g_initProbePool, g_initProbeCurrent, 6u);
+      g_initProbeText.clear();
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::InitBarriers, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 0u);
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::InitBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 2u);
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::ExecBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 4u);
+    }
+
+    void initProbeEnd(const Rc<DxvkCommandList>& cmd) {
+      if (!initProbeEnabled())
+        return;
+      std::lock_guard lock(g_initProbeMutex);
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::InitBarriers, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 1u);
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::InitBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 3u);
+      cmd->cmdWriteTimestamp(DxvkCmdBuffer::ExecBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_initProbePool, g_initProbeCurrent + 5u);
+      g_initProbePending.push_back({ g_initProbeCurrent, std::exchange(g_initProbeText, std::string()) });
+    }
+  }
+
+
   void DxvkContext::beginRecording(const Rc<DxvkCommandList>& cmdList) {
     m_cmd = cmdList;
     m_cmd->init();
+    initProbeBegin(m_device.ptr(), m_cmd);
 
     if (unlikely(!m_trackingId)) {
       // If this is the first command list ever, check if
@@ -111,6 +172,7 @@ namespace dxvk {
     const VkDebugUtilsLabelEXT*       reason) {
     this->endExternalCommands();
     this->endCurrentCommands();
+    initProbeEnd(m_cmd);
     this->relocateQueuedResources();
 
     m_implicitResolves.cleanup(m_trackingId);
