@@ -1,4 +1,5 @@
 #include "dxvk_device.h"
+#include "dxvk_graphics.h"
 #include "dxvk_pipemanager.h"
 #include "dxvk_shader.h"
 #include "dxvk_shader_io.h"
@@ -678,6 +679,12 @@ namespace dxvk {
     if (m_device->canUseDescriptorBuffer())
       flagsInfo.flags |= VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT;
 
+    // DXVK_PIPELINE_STATS (logPipelineStatistics, dxvk_graphics.cpp), as for graphics pipelines.
+    const bool captureStatistics = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStatistics)
+      flagsInfo.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     VkComputePipelineCreateInfo info = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
     info.stage        = *stageInfo.getStageInfos();
     info.layout       = getPipelineLibraryLayout()->getPipelineLayout();
@@ -691,6 +698,11 @@ namespace dxvk {
 
     if (vr && vr != VK_PIPELINE_COMPILE_REQUIRED_EXT)
       Logger::err(str::format("DxvkShaderPipelineLibrary: Failed to create compute shader pipeline: ", vr));
+
+    if (!vr && captureStatistics) {
+      auto shader = getShader(VK_SHADER_STAGE_COMPUTE_BIT);
+      logPipelineStatistics(m_device, pipeline, shader ? shader->captureName() : std::string("cs"));
+    }
 
     return vr ? VK_NULL_HANDLE : pipeline;
   }

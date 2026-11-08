@@ -1443,7 +1443,7 @@ namespace dxvk {
    * Logs a compiled pipeline's executables and their statistics (registers, spills, ...) when DXVK_PIPELINE_STATS
    * enabled VK_KHR_pipeline_executable_properties: one line per executable, named by the pipeline's shaders.
    */
-  static void logPipelineStatistics(DxvkDevice* device, VkPipeline pipeline, const std::string& name) {
+  void logPipelineStatistics(DxvkDevice* device, VkPipeline pipeline, const std::string& name) {
     auto vk = device->vkd();
     VkPipelineInfoKHR info = { VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR };
     info.pipeline = pipeline;
@@ -1463,7 +1463,7 @@ namespace dxvk {
       std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR });
       if (vk->vkGetPipelineExecutableStatisticsKHR(vk->device(), &executable, &statCount, stats.data()))
         continue;
-      std::string line = str::format("PipelineStats: ", name, " | ", executables[e].name, ":");
+      std::string line = str::format("PipelineStats: ", name, " | ", executables[e].name, ": subgroupSize=", executables[e].subgroupSize, ";");
       for (const auto& stat : stats) {
         line += str::format(" ", stat.name, "=");
         switch (stat.format) {

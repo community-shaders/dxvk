@@ -117,6 +117,12 @@ namespace dxvk {
     info.layout               = layout->getPipelineLayout();
     info.basePipelineIndex    = -1;
 
+    // DXVK_PIPELINE_STATS (logPipelineStatistics, dxvk_graphics.cpp): registers and wave size, as for graphics pipelines.
+    const bool captureStatistics = m_device->features().khrPipelineExecutableProperties.pipelineExecutableInfo;
+
+    if (captureStatistics)
+      flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
     if (flags.flags)
       flags.pNext = std::exchange(info.pNext, &flags);
 
@@ -129,6 +135,9 @@ namespace dxvk {
       this->logPipelineState(LogLevel::Error, state);
       return VK_NULL_HANDLE;
     }
+
+    if (captureStatistics)
+      logPipelineStatistics(m_device, pipeline, m_shaders.cs->captureName());
 
     return pipeline;
   }

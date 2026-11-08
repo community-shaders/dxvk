@@ -701,4 +701,9 @@ namespace dxvk {
 
   };
   
+  /**
+   * \brief Logs a pipeline's executables and their statistics (DXVK_PIPELINE_STATS)
+   */
+  void logPipelineStatistics(DxvkDevice* device, VkPipeline pipeline, const std::string& name);
+
 }
