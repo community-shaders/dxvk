@@ -63,6 +63,8 @@ namespace dxvk {
     SemanticIo                  = 12u,
     /// Whether to explicitly use BDA for fully-bound constant buffers.
     LowerInBoundsCbvToBda       = 13u,
+    /// Leave shared memory uninitialized, as D3D does
+    NoZeroInitLds               = 14u,
   };
 
   using DxvkShaderCompileFlags = Flags<DxvkShaderCompileFlag>;

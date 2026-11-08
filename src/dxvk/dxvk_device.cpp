@@ -820,9 +820,31 @@ namespace dxvk {
     // NVIDIA's conversion saturates and turns NaN into zero, as D3D11 asks, and gives
     // the same results as its D3D11 driver. Lowering it there costs about 4 instructions
     // for each conversion: 27% of a shader that converts in a loop, 6% of Screen Space GI.
-    if (!m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)
-     && !m_adapter->matchesDriver(VK_DRIVER_ID_NVIDIA_PROPRIETARY))
+    // AMD's Windows driver matches its D3D11 driver too (NaN, infinities, out of range,
+    // for signed and unsigned results), and lowering costs it about 6 instructions each.
+    bool lowerFtoI = !m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)
+                  && !m_adapter->matchesDriver(VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+                  && !m_adapter->matchesDriver(VK_DRIVER_ID_AMD_PROPRIETARY);
+
+    // DXVK_LOWER_FTOI=0|1 overrides the choice, to compare a driver's own conversion with D3D11's.
+    std::string lowerFtoIEnv = env::getEnvVar("DXVK_LOWER_FTOI");
+    if (lowerFtoIEnv == "0" || lowerFtoIEnv == "1")
+      lowerFtoI = lowerFtoIEnv == "1";
+
+    if (lowerFtoI)
       m_shaderOptions.flags.set(DxvkShaderCompileFlag::LowerFtoI);
+
+    // AMD's Windows driver fills zero-initialized shared memory from one lane per wave: a 16 KiB array
+    // costs about a thousand serial stores before the shader starts. D3D11 leaves shared memory
+    // undefined and AMD's D3D11 driver does not clear it either. DXVK_ZERO_LDS=0|1 overrides.
+    bool zeroInitLds = !m_adapter->matchesDriver(VK_DRIVER_ID_AMD_PROPRIETARY);
+
+    std::string zeroLdsEnv = env::getEnvVar("DXVK_ZERO_LDS");
+    if (zeroLdsEnv == "0" || zeroLdsEnv == "1")
+      zeroInitLds = zeroLdsEnv == "1";
+
+    if (!zeroInitLds)
+      m_shaderOptions.flags.set(DxvkShaderCompileFlag::NoZeroInitLds);
 
     // On AMD, push constant BDA will not be worse than going through a descriptor
     if (m_adapter->matchesDriver(VK_DRIVER_ID_MESA_RADV)
