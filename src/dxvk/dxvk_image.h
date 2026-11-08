@@ -496,9 +496,16 @@ namespace dxvk {
      * before it rebuild their descriptors.
      */
     void markOrgGeneral() {
-      if (!m_orgGeneral.exchange(true, std::memory_order_relaxed))
+      if (!m_orgGeneral.exchange(true, std::memory_order_relaxed)) {
         m_version += 1u;
+        logOrgGeneral();
+      }
     }
+
+    /**
+     * rief Logs an image that rests in GENERAL for the interop client (DXVK_LOG_ORG_GENERAL=1)
+     */
+    void logOrgGeneral() const;
     
     /**
      * \brief Memory type flags

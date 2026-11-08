@@ -657,6 +657,15 @@ namespace dxvk {
   }
 
 
+  void DxvkImage::logOrgGeneral() const {
+    static const bool enabled = env::getEnvVar("DXVK_LOG_ORG_GENERAL") == "1";
+    if (!enabled)
+      return;
+    Logger::info(str::format("OrgGeneral: ", m_info.format, " ", m_info.extent.width, "x", m_info.extent.height, "x", m_info.numLayers,
+      " mips ", m_info.mipLevels, " usage 0x", std::hex, m_info.usage, std::dec, " name ", m_info.debugName ? m_info.debugName : "-"));
+  }
+
+
   bool DxvkImage::canUseUnifiedLayout(const DxvkDevice& device) const {
     if (m_unifiedLayoutAvailable)
       return true;

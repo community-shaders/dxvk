@@ -300,11 +300,14 @@ namespace dxvk {
   }
 
 
+  void DxvkBarrierStatsPresent();
+
   VkResult Presenter::presentImage(
           uint64_t                frameId,
     const Rc<DxvkLatencyTracker>& tracker,
           uint32_t                rectCount,
     const VkRectLayerKHR*         rects) {
+    DxvkBarrierStatsPresent();
     PresenterSync& currSync = m_semaphores.at(m_frameIndex);
 
     VkPresentIdKHR presentId = { VK_STRUCTURE_TYPE_PRESENT_ID_KHR };

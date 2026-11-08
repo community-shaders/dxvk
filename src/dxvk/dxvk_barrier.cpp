@@ -1,7 +1,208 @@
 #include "dxvk_barrier.h"
 #include "dxvk_device.h"
 
+#include <algorithm>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <set>
+#include <tuple>
+#include <vector>
+
 namespace dxvk {
+
+  // DXVK_BARRIER_STATS=<frames>: counts barrier commands and image layout transitions, and logs the per-frame means every
+  // <frames> presents. A diagnostic only.
+  namespace barrier_stats {
+    struct State {
+      std::mutex mutex;
+      uint32_t interval = 0;
+      uint32_t frames = 0;
+      uint64_t commands = 0, withImages = 0, imageBarriers = 0, renderPasses = 0;
+      std::map<std::tuple<VkImageLayout, VkImageLayout, VkImageAspectFlags>, std::pair<uint64_t, std::set<VkImage>>> transitions;
+      // DXVK_BARRIER_TIMING: GPU time of each barrier command, between timestamps written just before and just after it.
+      bool timing = false;
+      float nsPerTick = 1.0f;
+      VkQueryPool pool = VK_NULL_HANDLE;
+      uint32_t next = 0;
+      std::deque<std::pair<uint32_t, std::string>> pending;
+      std::vector<bool> busy;
+      std::map<std::string, std::pair<uint64_t, double>> timed;  // count, microseconds
+      uint64_t skipped = 0;
+    };
+
+    State& Get() {
+      static State state;
+      static std::once_flag once;
+      std::call_once(once, [] {
+        std::string value = env::getEnvVar("DXVK_BARRIER_STATS");
+        state.interval = value.empty() ? 0u : uint32_t(std::max(1, std::atoi(value.c_str())));
+        state.timing = state.interval && !env::getEnvVar("DXVK_BARRIER_TIMING").empty();
+      });
+      return state;
+    }
+  }
+
+  void DxvkBarrierStatsPresent() {
+    auto& s = barrier_stats::Get();
+    if (!s.interval)
+      return;
+    std::lock_guard lock(s.mutex);
+    if (++s.frames < s.interval)
+      return;
+    double f = double(s.frames);
+    Logger::info(str::format("BarrierStats: per frame ", s.commands / f, " barrier commands (", s.withImages / f,
+      " with layout transitions, ", s.imageBarriers / f, " image barriers), ", s.renderPasses / f, " render passes, over ", s.frames, " frames"));
+    for (const auto& [key, value] : s.transitions) {
+      Logger::info(str::format("BarrierStats:   ", std::get<0>(key), " -> ", std::get<1>(key), " aspect ", std::get<2>(key),
+        ": ", value.first / f, " per frame, ", value.second.size(), " images"));
+    }
+    if (s.timing) {
+      std::vector<std::pair<std::string, std::pair<uint64_t, double>>> rows(s.timed.begin(), s.timed.end());
+      std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+      double total = 0.0;
+      for (const auto& r : rows)
+        total += r.second.second;
+      Logger::info(str::format("BarrierTiming: ", total / f, " us per frame in barrier commands (", s.skipped, " not timed)"));
+      for (size_t i = 0; i < rows.size() && i < 40; i++) {
+        Logger::info(str::format("BarrierTiming:   ", rows[i].second.second / f, " us/frame, ", rows[i].second.first / f, " per frame, ",
+          rows[i].second.second / double(rows[i].second.first), " us each: ", rows[i].first));
+      }
+      s.timed.clear();
+      s.skipped = 0;
+    }
+    s.frames = 0;
+    s.commands = s.withImages = s.imageBarriers = s.renderPasses = 0;
+    s.transitions.clear();
+  }
+
+  namespace barrier_stats {
+    constexpr uint32_t TimedSlots = 8192u;
+
+    const char* ShortLayout(VkImageLayout layout) {
+      switch (layout) {
+        case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEF";
+        case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR";
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DS";
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DS_RO";
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SRV";
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "XSRC";
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "XDST";
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT";
+        default: return "OTHER";
+      }
+    }
+
+    std::string StageClass(VkPipelineStageFlags2 stages) {
+      std::string c;
+      if (stages & (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT))
+        c += "C";
+      if (stages & (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+          | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+          | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT))
+        c += "G";
+      if (stages & (VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT
+          | VK_PIPELINE_STAGE_2_RESOLVE_BIT))
+        c += "T";
+      return c.empty() ? std::string("-") : c;
+    }
+
+    std::string Describe(const VkDependencyInfo& depInfo) {
+      VkPipelineStageFlags2 src = 0, dst = 0;
+      std::set<std::string> parts;
+      if (depInfo.memoryBarrierCount) {
+        src |= depInfo.pMemoryBarriers[0].srcStageMask;
+        dst |= depInfo.pMemoryBarriers[0].dstStageMask;
+      }
+      for (uint32_t i = 0; i < depInfo.imageMemoryBarrierCount; i++) {
+        const auto& b = depInfo.pImageMemoryBarriers[i];
+        src |= b.srcStageMask;
+        dst |= b.dstStageMask;
+        parts.insert(str::format(ShortLayout(b.oldLayout), ">", ShortLayout(b.newLayout),
+          (b.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) ? "(d)" : ""));
+      }
+      std::string text = StageClass(src) + ">" + StageClass(dst) + (parts.empty() ? " memory" : " ");
+      for (const auto& p : parts)
+        text += p + " ";
+      return text;
+    }
+
+    void Drain(State& s, const vk::DeviceFn& vkd) {
+      while (!s.pending.empty()) {
+        auto& p = s.pending.front();
+        uint64_t data[4] = { };
+        if (vkd.vkGetQueryPoolResults(vkd.device(), s.pool, p.first, 2u, sizeof(data), data, 2u * sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS || !data[1] || !data[3])
+          break;
+        auto& row = s.timed[p.second];
+        row.first += 1;
+        row.second += double(data[2] - data[0]) * s.nsPerTick / 1000.0;
+        s.busy[p.first / 2u] = false;
+        s.pending.pop_front();
+      }
+    }
+
+    uint32_t TimedBegin(DxvkDevice* device, const vk::DeviceFn& vkd, VkCommandBuffer cmd, const VkDependencyInfo& depInfo) {
+      auto& s = Get();
+      if (!s.timing)
+        return ~0u;
+      std::lock_guard lock(s.mutex);
+      if (!s.pool) {
+        VkQueryPoolCreateInfo info = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = 2u * TimedSlots;
+        if (vkd.vkCreateQueryPool(vkd.device(), &info, nullptr, &s.pool) != VK_SUCCESS) {
+          s.timing = false;
+          return ~0u;
+        }
+        s.busy.assign(TimedSlots, false);
+        s.nsPerTick = device->properties().core.properties.limits.timestampPeriod;
+      }
+      Drain(s, vkd);
+      const uint32_t slot = s.next;
+      if (s.busy[slot]) {
+        s.skipped += 1;
+        return ~0u;
+      }
+      s.next = (slot + 1u) % TimedSlots;
+      s.busy[slot] = true;
+      vkd.vkResetQueryPool(vkd.device(), s.pool, 2u * slot, 2u);
+      vkd.vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s.pool, 2u * slot);
+      s.pending.emplace_back(2u * slot, Describe(depInfo));
+      return slot;
+    }
+
+    void TimedEnd(const vk::DeviceFn& vkd, VkCommandBuffer cmd, uint32_t slot) {
+      auto& s = Get();
+      vkd.vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s.pool, 2u * slot + 1u);
+    }
+
+    void RecordRenderPass() {
+      auto& s = Get();
+      if (!s.interval)
+        return;
+      std::lock_guard lock(s.mutex);
+      s.renderPasses += 1;
+    }
+
+    void Record(const VkDependencyInfo& depInfo) {
+      auto& s = Get();
+      if (!s.interval)
+        return;
+      std::lock_guard lock(s.mutex);
+      s.commands += 1;
+      s.withImages += depInfo.imageMemoryBarrierCount ? 1 : 0;
+      s.imageBarriers += depInfo.imageMemoryBarrierCount;
+      for (uint32_t i = 0; i < depInfo.imageMemoryBarrierCount; i++) {
+        const auto& b = depInfo.pImageMemoryBarriers[i];
+        auto& entry = s.transitions[{ b.oldLayout, b.newLayout, b.subresourceRange.aspectMask }];
+        entry.first += 1;
+        entry.second.insert(b.image);
+      }
+    }
+  }
+
   
   DxvkBarrierTracker::DxvkBarrierTracker() {
     // Having an accessible 0 node makes certain things easier to

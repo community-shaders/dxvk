@@ -517,6 +517,7 @@ namespace dxvk::vk {
     #ifdef VK_KHR_pipeline_executable_properties
     VULKAN_FN(vkGetPipelineExecutablePropertiesKHR);
     VULKAN_FN(vkGetPipelineExecutableStatisticsKHR);
+    VULKAN_FN(vkGetPipelineExecutableInternalRepresentationsKHR);
     #endif
 
     #ifdef VK_KHR_present_wait

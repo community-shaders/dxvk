@@ -21,6 +21,13 @@
 
 namespace dxvk {
 
+  namespace barrier_stats {
+    void Record(const VkDependencyInfo& depInfo);
+    void RecordRenderPass();
+    uint32_t TimedBegin(DxvkDevice* device, const vk::DeviceFn& vkd, VkCommandBuffer cmd, const VkDependencyInfo& depInfo);
+    void TimedEnd(const vk::DeviceFn& vkd, VkCommandBuffer cmd, uint32_t slot);
+  }
+
   class DxvkCheckpointBuffer;
 
   /**
@@ -640,6 +647,7 @@ namespace dxvk {
 
       m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
 
+      barrier_stats::RecordRenderPass();
       m_vkd->vkCmdBeginRendering(getCmdBuffer(cmdBuffer), pRenderingInfo);
     }
 
@@ -1078,8 +1086,13 @@ namespace dxvk {
 
       m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
       m_statCounters.addCtr(DxvkStatCounter::CmdBarrierCount, 1);
+      barrier_stats::Record(*dependencyInfo);
 
+      const uint32_t timed = cmdBuffer == DxvkCmdBuffer::ExecBuffer
+        ? barrier_stats::TimedBegin(m_device, *m_vkd, getCmdBuffer(cmdBuffer), *dependencyInfo) : ~0u;
       m_vkd->vkCmdPipelineBarrier2(getCmdBuffer(cmdBuffer), dependencyInfo);
+      if (timed != ~0u)
+        barrier_stats::TimedEnd(*m_vkd, getCmdBuffer(cmdBuffer), timed);
     }
 
 

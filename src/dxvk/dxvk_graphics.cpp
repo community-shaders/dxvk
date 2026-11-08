@@ -1,3 +1,6 @@
+#include <atomic>
+#include <fstream>
+#include <iomanip>
 #include <iomanip>
 
 #include "../util/util_time.h"
@@ -1477,6 +1480,37 @@ namespace dxvk {
       }
       Logger::info(line);
     }
+
+    static const std::string isaDir = env::getEnvVar("DXVK_PIPELINE_ISA");
+    if (isaDir.empty())
+      return;
+    static std::atomic<uint32_t> isaIndex = { 0u };
+    std::string text = str::format("pipeline ", name, "\n");
+    for (uint32_t e = 0; e < count; e++) {
+      VkPipelineExecutableInfoKHR executable = { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR };
+      executable.pipeline = pipeline;
+      executable.executableIndex = e;
+      uint32_t repCount = 0;
+      if (vk->vkGetPipelineExecutableInternalRepresentationsKHR(vk->device(), &executable, &repCount, nullptr) || !repCount)
+        continue;
+      std::vector<VkPipelineExecutableInternalRepresentationKHR> reps(repCount, { VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR });
+      if (vk->vkGetPipelineExecutableInternalRepresentationsKHR(vk->device(), &executable, &repCount, reps.data()))
+        continue;
+      std::vector<std::vector<char>> data(repCount);
+      for (uint32_t r = 0; r < repCount; r++) {
+        data[r].resize(reps[r].dataSize + 1u, '\0');
+        reps[r].pData = data[r].data();
+      }
+      if (vk->vkGetPipelineExecutableInternalRepresentationsKHR(vk->device(), &executable, &repCount, reps.data()))
+        continue;
+      text += str::format("\n######## executable ", e, ": ", executables[e].name, " (subgroup size ", executables[e].subgroupSize, ")\n");
+      for (uint32_t r = 0; r < repCount; r++) {
+        if (reps[r].isText)
+          text += str::format("\n==== ", reps[r].name, "\n", data[r].data(), "\n");
+      }
+    }
+    std::ofstream file(str::topath(str::format(isaDir, "/", std::setw(5), std::setfill('0'), isaIndex++, ".txt").c_str()));
+    file << text;
   }
 
 
@@ -1547,6 +1581,12 @@ namespace dxvk {
 
     if (captureStatistics)
       flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+
+    // DXVK_PIPELINE_ISA=<dir> (with DXVK_PIPELINE_STATS): logPipelineStatistics also writes each pipeline's ISA there.
+    static const bool captureIsa = !env::getEnvVar("DXVK_PIPELINE_ISA").empty();
+
+    if (captureStatistics && captureIsa)
+      flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
 
     if (flags.flags)
       flags.pNext = std::exchange(info.pNext, &flags);
