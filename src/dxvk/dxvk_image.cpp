@@ -558,6 +558,15 @@ namespace dxvk {
 
 
   void DxvkImage::setDebugName(const char* name) {
+    // Fork diagnostic: DXVK_LOG_RT_IMAGES=1 logs each large colour target's usage and flags as it is named, to find the targets a
+    // driver cannot compress (on AMD RDNA2, storage usage and some mutable-format setups turn colour compression off).
+    static const bool logTargets = env::getEnvVar("DXVK_LOG_RT_IMAGES") == "1";
+    if (logTargets && name && (m_info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && m_info.extent.width >= 1024) {
+      Logger::info(str::format("RT image '", name, "': ", m_info.extent.width, "x", m_info.extent.height, " format ", m_info.format,
+        " usage 0x", std::hex, m_info.usage, " flags 0x", m_info.flags, std::dec, " view formats ", m_info.viewFormatCount,
+        (m_info.usage & VK_IMAGE_USAGE_STORAGE_BIT) ? " STORAGE" : "", (m_info.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) ? " MUTABLE" : ""));
+    }
+
     if (likely(!m_info.debugName))
       return;
 
