@@ -978,6 +978,24 @@ extern "C" {
   }
 
 
+  DLLEXPORT HRESULT __stdcall dxvkRequestDeviceExtensions(uint32_t extensionCount, const char* const* ppExtensions) {
+    if (extensionCount && !ppExtensions)
+      return E_INVALIDARG;
+
+    std::vector<std::string> extensions;
+
+    for (uint32_t i = 0u; i < extensionCount; i++) {
+      if (!ppExtensions[i] || !*ppExtensions[i])
+        return E_INVALIDARG;
+
+      extensions.emplace_back(ppExtensions[i]);
+    }
+
+    setInteropExtensionRequest(std::move(extensions));
+    return S_OK;
+  }
+
+
   DLLEXPORT HRESULT __stdcall dxvkSetBindingModelCallback(const DxvkOrgInteropBindingModelNegotiation* pNegotiation) {
     if (!pNegotiation || pNegotiation->version != DXVK_ORG_BINDING_MODEL_NEGOTIATION_VERSION)
       return E_INVALIDARG;

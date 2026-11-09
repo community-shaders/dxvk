@@ -330,6 +330,33 @@ namespace dxvk {
     for (const auto& ext : extensions)
       extensionNames.push_back(ext.extensionName);
 
+    // Extensions an interop client asked for that DXVK has no table entry for
+    // (setInteropExtensionRequest): enabled where the device has them.
+    std::vector<std::string> interopExtensions = getInteropExtensionRequest();
+
+    if (!interopExtensions.empty()) {
+      uint32_t supportedCount = 0;
+      std::vector<VkExtensionProperties> supported;
+
+      if (vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, nullptr) == VK_SUCCESS) {
+        supported.resize(supportedCount);
+        if (vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, supported.data()) != VK_SUCCESS)
+          supported.clear();
+      }
+
+      for (const auto& name : interopExtensions) {
+        bool enabled = std::any_of(extensionNames.begin(), extensionNames.end(),
+          [&](const char* n) { return name == n; });
+        bool available = std::any_of(supported.begin(), supported.end(),
+          [&](const VkExtensionProperties& e) { return name == e.extensionName; });
+
+        if (!enabled && available)
+          extensionNames.push_back(name.c_str());
+
+        Logger::info(str::format("  Interop extension ", name, ": ", enabled ? "already enabled" : available ? "enabled" : "unsupported"));
+      }
+    }
+
     // DXVK_DEBUG=hang supplies checkpoints and VK_EXT_device_fault. For an
     // Aftermath page fault, ask NVIDIA's driver to retain the resource history
     // and shader mapping too. Probe both the extension and its feature so a

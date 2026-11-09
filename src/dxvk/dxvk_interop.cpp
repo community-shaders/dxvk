@@ -10,6 +10,7 @@ namespace dxvk {
     struct InteropState {
       std::mutex mutex;
       std::vector<DxvkInteropFeature> request;
+      std::vector<std::string> extensions;
       DxvkInteropBindingModelNegotiation negotiation;
       std::unordered_map<VkDevice, std::shared_ptr<DxvkInteropDeviceRecord>> devices;
       DxvkInteropTeardownCallback teardown = nullptr;
@@ -33,6 +34,18 @@ namespace dxvk {
   std::vector<DxvkInteropFeature> getInteropFeatureRequest() {
     std::lock_guard lock(state().mutex);
     return state().request;
+  }
+
+
+  void setInteropExtensionRequest(std::vector<std::string> extensions) {
+    std::lock_guard lock(state().mutex);
+    state().extensions = std::move(extensions);
+  }
+
+
+  std::vector<std::string> getInteropExtensionRequest() {
+    std::lock_guard lock(state().mutex);
+    return state().extensions;
   }
 
 

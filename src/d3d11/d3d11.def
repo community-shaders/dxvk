@@ -51,3 +51,4 @@ EXPORTS
     dxvkStreamGetWindow @168
     dxvkStreamGetBinds @169
     dxvkSetInteropOptions @170
+    dxvkRequestDeviceExtensions @171

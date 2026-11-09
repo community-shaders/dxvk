@@ -36,6 +36,19 @@ namespace dxvk {
   std::vector<DxvkInteropFeature> getInteropFeatureRequest();
 
   /**
+   * rief Device extensions to enable at the next device creation, on top of DXVK's
+   *
+   * For extensions DXVK has no feature table entry for (a profiler's driver
+   * interface, VK_AMD_gpa_interface). Each is enabled when the device supports
+   * it and skipped (logged) otherwise; DXVK itself never uses them. Device
+   * creation only: the instance belongs to dxvk_dxgi.dll, whose interop state
+   * this request does not reach.
+   */
+  void setInteropExtensionRequest(std::vector<std::string> extensions);
+
+  std::vector<std::string> getInteropExtensionRequest();
+
+  /**
    * \brief Descriptor binding models, as a mask
    *
    * A client recording into DXVK's command buffers must bind descriptors the
