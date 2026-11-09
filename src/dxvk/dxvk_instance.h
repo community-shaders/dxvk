@@ -190,6 +190,21 @@ namespace dxvk {
     DxvkDebugFlags debugFlags() const {
       return m_debugFlags;
     }
+
+    /**
+     * \brief What an instance a host creates for a guest device needs
+     *
+     * The instance extensions DXVK would enable itself, limited to the ones
+     * the loader has, and the engine name it would report.
+     * \param [in] loaderProc The host's loader entry point, or null for DXVK's
+     * \param [out] extensions Extension names
+     * \param [out] engineName VkApplicationInfo::pEngineName
+     * \returns \c false when the loader cannot be loaded
+     */
+    static bool queryGuestRequirements(
+            PFN_vkGetInstanceProcAddr loaderProc,
+            std::vector<std::string>& extensions,
+            std::string&              engineName);
     
   private:
 
@@ -217,6 +232,12 @@ namespace dxvk {
             DxvkInstanceFlags       flags);
 
     bool initAdapters();
+
+    static std::string getEngineName(
+      const Config&                 config);
+
+    static DxvkDebugFlags getDebugFlags(
+      const DxvkOptions&            options);
 
     static std::vector<VkExtensionProperties*> getExtensionList(
             DxvkInstanceExtensionInfo& extensions);

@@ -7,6 +7,7 @@
 #include "d3d11_device.h"
 #include "d3d11_enums.h"
 #include "d3d11_interop.h"
+#include "d3d11_org_guest.h"
 
 namespace dxvk {
   Logger Logger::s_instance("d3d11.log");
@@ -65,8 +66,12 @@ extern "C" {
     }
 
     try {
-      // Create Vulkan device so we have up-to-date features / properties
-      Rc<DxvkDevice> dxvkDevice = dxvkAdapter->createDevice();
+      // A host's device handed to dxvkSetGuestDevice, else create a Vulkan
+      // device so we have up-to-date features / properties
+      Rc<DxvkDevice> dxvkDevice;
+
+      if (!takeGuestDevice(dxvkInstance, dxvkAdapter, dxvkDevice))
+        dxvkDevice = dxvkAdapter->createDevice();
 
       // Find the highest feature level supported by the device.
       // This works because the feature level array is ordered.

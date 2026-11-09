@@ -219,6 +219,15 @@ namespace dxvk {
   /**
    * \brief Queue family and index
    */
+  /**
+   * rief A feature struct and its size
+   */
+  struct DxvkFeatureStructInfo {
+    const VkBaseInStructure* feature = nullptr;
+    size_t                   size    = 0u;
+  };
+
+
   struct DxvkDeviceQueueIndex {
     uint32_t family = VK_QUEUE_FAMILY_IGNORED;
     uint32_t index  = 0u;
@@ -383,6 +392,15 @@ namespace dxvk {
     const DxvkDeviceFeatures& getCreateFeatures() const {
       return m_interopActive ? m_featuresCreate : m_featuresEnabled;
     }
+
+    /**
+     * rief Every extension feature struct in the create chain, with its size
+     *
+     * For a host that creates the device for DXVK (guest devices): it ORs
+     * each struct into its own of the same sType or copies it.
+     * eturns The structs of getCreateFeatures() that are chained
+     */
+    std::vector<DxvkFeatureStructInfo> getCreateFeatureStructs() const;
 
     /**
      * \brief Checks whether adapter supports all features

@@ -52,3 +52,6 @@ EXPORTS
     dxvkStreamGetBinds @169
     dxvkSetInteropOptions @170
     dxvkRequestDeviceExtensions @171
+    dxvkGetGuestInstanceRequirements @172
+    dxvkGetGuestDeviceRequirements @173
+    dxvkSetGuestDevice @174
