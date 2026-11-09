@@ -279,6 +279,7 @@ extern "C" {
       args.interopUpload = queueIndex(pDesc->upload);
       args.interopCopy = queueIndex(pDesc->copy);
       args.registerInterop = true;
+      args.hostFeatures = pDesc->enabledFeatures;
 
       s.pending = s.adapter->importDevice(args);
     } catch (const DxvkError& e) {

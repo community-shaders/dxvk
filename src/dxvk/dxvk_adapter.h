@@ -112,6 +112,8 @@ namespace dxvk {
     DxvkDeviceQueueIndex interopCopy    = { };
     /// A guest device: register it for dxvkGetInteropDeviceInfo.
     bool              registerInterop = false;
+    /// A guest device: the features the host enabled, which the interop record reports instead of DXVK's own where it has them.
+    const VkPhysicalDeviceFeatures2* hostFeatures = nullptr;
   };
 
   /**

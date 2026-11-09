@@ -118,6 +118,9 @@ namespace dxvk {
     /// -> deviceGeneratedCommands -> robustness2 -> pipelineExecutableProperties. Adopters find structs by sType, so appending to the chain
     /// keeps older ones working.
     void chain();
+
+    /// Replaces each struct above with the one of the same sType in a device's enabled feature chain, where it has one.
+    void takeEnabled(const VkPhysicalDeviceFeatures2* enabled);
   };
 
   void registerInteropDevice(std::shared_ptr<DxvkInteropDeviceRecord> record);

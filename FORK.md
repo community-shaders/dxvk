@@ -219,13 +219,18 @@ A host can create the Vulkan instance and device itself and run DXVK on them as 
   queues). DXVK submits everything to the first queue of the graphics family it is given. The host's compute, upload and
   copy queues are reported by `dxvkGetInteropDeviceInfo`, and the device is registered for it like DXVK's own. The next
   `D3D11InternalCreateDevice` takes it.
+- The host passes the feature chain it created the device with (`DxvkOrgGuestDeviceDesc::enabledFeatures`, guest
+  version 2). The interop record reports those structs (`DxvkInteropDeviceRecord::takeEnabled`), not only the ones DXVK
+  enabled itself: a host on descriptor buffers enables mutable descriptors, which DXVK does not, and an interop client
+  checks for both.
 - A guest device's `D3D11SwapChain` is headless: no presenter, no surface; Present ends the frame and flushes, and the
   host copies the back buffer out and presents. `CheckColorSpaceSupport` and `SetColorSpace1` only tag the back buffer.
 - An imported instance without `VK_EXT_debug_utils` turns DXVK's debug modes off instead of calling into a null entry
   point.
 
 *Files: `src/d3d11/d3d11_org_guest.{h,cpp}`, `src/d3d11/d3d11_main.cpp`, `src/d3d11/d3d11_swapchain.{h,cpp}`,
-`src/dxvk/dxvk_adapter.{h,cpp}`, `src/dxvk/dxvk_device_info.{h,cpp}`, `src/dxvk/dxvk_instance.{h,cpp}`*
+`src/dxvk/dxvk_adapter.{h,cpp}`, `src/dxvk/dxvk_device_info.{h,cpp}`, `src/dxvk/dxvk_instance.{h,cpp}`,
+`src/dxvk/dxvk_interop.{h,cpp}`*
 
 ### Other exports
 

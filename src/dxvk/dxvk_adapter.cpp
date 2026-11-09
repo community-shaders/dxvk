@@ -587,6 +587,11 @@ namespace dxvk {
       record->deviceGeneratedCommands = features.extDeviceGeneratedCommands;
       record->robustness2 = features.extRobustness2;
       record->pipelineExecutableProperties = features.khrPipelineExecutableProperties;
+
+      // DXVK's tables hold only what DXVK enabled; the host enabled more (its own binding model's features).
+      if (args.hostFeatures)
+        record->takeEnabled(args.hostFeatures);
+
       record->chain();
       registerInteropDevice(std::move(record));
     }

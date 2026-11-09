@@ -1,3 +1,4 @@
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -58,6 +59,30 @@ namespace dxvk {
   DxvkInteropBindingModelNegotiation getInteropBindingModelNegotiation() {
     std::lock_guard lock(state().mutex);
     return state().negotiation;
+  }
+
+
+  void DxvkInteropDeviceRecord::takeEnabled(const VkPhysicalDeviceFeatures2* enabled) {
+    // Copies a struct's members after its sType and pNext; chain() links the record's own structs afterwards.
+    auto take = [] (auto& into, const VkBaseInStructure* from) {
+      constexpr size_t header = sizeof(VkBaseInStructure);
+
+      if (from->sType == into.sType)
+        std::memcpy(reinterpret_cast<char*>(&into) + header, reinterpret_cast<const char*>(from) + header, sizeof(into) - header);
+    };
+
+    for (auto s = reinterpret_cast<const VkBaseInStructure*>(enabled); s; s = s->pNext) {
+      take(features, s);
+      take(vk11, s);
+      take(vk12, s);
+      take(vk13, s);
+      take(descriptorHeap, s);
+      take(descriptorBuffer, s);
+      take(mutableDescriptorType, s);
+      take(deviceGeneratedCommands, s);
+      take(robustness2, s);
+      take(pipelineExecutableProperties, s);
+    }
   }
 
 

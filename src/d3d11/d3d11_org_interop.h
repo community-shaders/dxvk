@@ -735,7 +735,7 @@ typedef HRESULT (__stdcall *PFN_dxvkSetDefragPressurePercent)(ID3D11Device* pDev
  * with the host's compute, upload and copy queues in it.
  */
 
-#define DXVK_ORG_GUEST_VERSION 1u
+#define DXVK_ORG_GUEST_VERSION 2u
 
 typedef struct DxvkOrgGuestInstanceRequirements {
   /** DXVK_ORG_GUEST_VERSION. */
@@ -818,6 +818,9 @@ typedef struct DxvkOrgGuestDeviceDesc {
   DxvkOrgGuestQueue compute;
   DxvkOrgGuestQueue upload;
   DxvkOrgGuestQueue copy;
+  /** The features the host created the device with: a VkPhysicalDeviceFeatures2 chain, read during the call.
+      dxvkGetInteropDeviceInfo reports them (enabledFeatures). Null: DXVK's own requirements stand for them. */
+  const VkPhysicalDeviceFeatures2* enabledFeatures;
 } DxvkOrgGuestDeviceDesc;
 
 /**
