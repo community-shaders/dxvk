@@ -56,6 +56,21 @@ namespace dxvk {
 
 
   /**
+   * \brief An image a client created that a texture wraps (dxvkCreateTextureFromVkImage)
+   *
+   * Flags and usage are what the image was created with. The texture asks for
+   * nothing beyond them: without a mutable format it takes views of its own
+   * format only.
+   */
+  struct D3D11_HOST_IMAGE_INFO {
+    VkImage            Image;
+    VkFormat           Format;
+    VkImageCreateFlags Flags;
+    VkImageUsageFlags  Usage;
+  };
+
+
+  /**
    * \brief Packed subresource layout
    */
   struct D3D11_COMMON_TEXTURE_SUBRESOURCE_LAYOUT {
@@ -96,7 +111,8 @@ namespace dxvk {
             D3D11_RESOURCE_DIMENSION    Dimension,
             DXGI_USAGE                  DxgiUsage,
             VkImage                     vkImage,
-            HANDLE                      hSharedHandle);
+            HANDLE                      hSharedHandle,
+      const D3D11_HOST_IMAGE_INFO*      pHostImage = nullptr);
     
     ~D3D11CommonTexture();
     
@@ -884,6 +900,11 @@ namespace dxvk {
             IUnknown*                   pSwapChain,
       const D3D11_COMMON_TEXTURE_DESC*  pDesc,
             DXGI_USAGE                  DxgiUsage);
+
+    D3D11Texture2D(
+            D3D11Device*                pDevice,
+      const D3D11_HOST_IMAGE_INFO&      HostImage,
+      const D3D11_COMMON_TEXTURE_DESC*  pDesc);
     
     ~D3D11Texture2D();
     
@@ -942,6 +963,11 @@ namespace dxvk {
             D3D11Device*                pDevice,
       const D3D11_COMMON_TEXTURE_DESC*  pDesc,
       const D3D11_ON_12_RESOURCE_INFO*  p11on12Info);
+
+    D3D11Texture3D(
+            D3D11Device*                pDevice,
+      const D3D11_HOST_IMAGE_INFO&      HostImage,
+      const D3D11_COMMON_TEXTURE_DESC*  pDesc);
     
     ~D3D11Texture3D();
     

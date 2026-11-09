@@ -52,3 +52,4 @@ EXPORTS
     dxvkStreamGetBinds @169
     dxvkSetInteropOptions @170
     dxvkRequestDeviceExtensions @171
+    dxvkCreateTextureFromVkImage @172

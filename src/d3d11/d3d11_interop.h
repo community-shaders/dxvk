@@ -13,6 +13,7 @@ struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropExternalCommands;
 struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
+struct DxvkOrgInteropTextureWrap;
 struct DxvkOrgInteropTrackedResource;
 struct DxvkOrgInteropRelocation;
 struct DxvkMemoryResourceRow;
@@ -81,6 +82,14 @@ namespace dxvk {
       const D3D11_BUFFER_DESC*          pDesc,
             VkBuffer                    buffer,
             ID3D11Buffer**              ppBuffer);
+
+    /**
+     * \brief Wraps a client-owned VkImage as a texture (see d3d11_org_interop.h)
+     */
+    HRESULT CreateTextureFromVkImage(
+      const DxvkOrgInteropTextureWrap*  pWrap,
+            ID3D11Resource**            ppTexture,
+            DxvkOrgInteropResourceInfo* pInfo);
 
     /**
      * \brief Submits client command buffers in D3D11 stream order (see d3d11_org_interop.h)
