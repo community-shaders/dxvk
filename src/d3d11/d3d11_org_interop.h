@@ -16,10 +16,12 @@
 extern "C" {
 #endif
 
-#define DXVK_ORG_INTEROP_VERSION 6u
+/* Version 6: the guest-device exports. Version 7: dxvkCreateTextureFromVkImage (DxvkOrgInteropTextureWrap). */
+#define DXVK_ORG_INTEROP_VERSION 7u
 
 struct ID3D11Device;
 struct ID3D11Buffer;
+struct ID3D11Resource;
 struct D3D11_BUFFER_DESC;
 struct IUnknown;
 
@@ -254,6 +256,57 @@ typedef HRESULT (__stdcall *PFN_dxvkGetInteropDeviceInfo)(ID3D11Device* pDevice,
  */
 typedef HRESULT (__stdcall *PFN_dxvkCreateBufferFromVkBuffer)(ID3D11Device* pDevice,
   const D3D11_BUFFER_DESC* pDesc, VkBuffer buffer, ID3D11Buffer** ppBuffer);
+
+/**
+ * A client-owned image to wrap as a D3D11 texture (dxvkCreateTextureFromVkImage): the D3D11
+ * description, then the image and what it was created with.
+ */
+typedef struct DxvkOrgInteropTextureWrap {
+  /** DXVK_ORG_INTEROP_VERSION. */
+  uint32_t version;
+  /** D3D11_RESOURCE_DIMENSION_TEXTURE2D (3) or D3D11_RESOURCE_DIMENSION_TEXTURE3D (4). */
+  uint32_t dimension;
+  uint32_t width;
+  uint32_t height;
+  /** The depth of a 3D texture, the array size of a 2D one (six per cube). */
+  uint32_t depthOrArraySize;
+  uint32_t mipLevels;
+  /** A typed DXGI_FORMAT: views of another format need VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT on the image. */
+  uint32_t format;
+  uint32_t sampleCount;
+  /** D3D11_BIND_* flags. */
+  uint32_t bindFlags;
+  /** D3D11_RESOURCE_MISC_* flags; only D3D11_RESOURCE_MISC_TEXTURECUBE is accepted. */
+  uint32_t miscFlags;
+  VkImage image;
+  /** The image's format, create flags and usage, exactly as created. */
+  VkFormat imageFormat;
+  VkImageCreateFlags imageFlags;
+  VkImageUsageFlags imageUsage;
+} DxvkOrgInteropTextureWrap;
+
+/**
+ * Wraps a client-owned VkImage as a D3D11 texture (ID3D11Texture2D or ID3D11Texture3D, returned as
+ * its ID3D11Resource) the device can make views of. The image counterpart of
+ * dxvkCreateBufferFromVkBuffer:
+ *
+ * - The client keeps ownership of the image and its memory. Both must outlive DXVK's use of the
+ *   texture, which may still be on the GPU after its last release: wait for a point DXVK's stream
+ *   reaches after the release (an event query) before destroying the image.
+ * - The texture is D3D11_USAGE_DEFAULT without CPU access. DXVK never renames, relocates or maps it.
+ * - The image must have every usage the bind flags imply (transfer source and destination too), the
+ *   format DXVK picks for the DXGI format, optimal tiling, and the cube or 2D-array compatible flags
+ *   the description needs. DXVK uses the image's own flags and usage; without a mutable format it
+ *   only makes views of the texture's own format.
+ * - Layouts: the image is taken as UNDEFINED. DXVK initializes it in its stream (contents zero) and
+ *   from then on it rests in pInfo->layout, as for dxvkGetInteropResourceInfo: the client finds it
+ *   in that layout and leaves it there before DXVK's next command (DXVK_ORG_INTEROP_RESTING_LAYOUTS;
+ *   GENERAL for a client without that option).
+ *
+ * pInfo receives the texture as dxvkGetInteropResourceInfo describes it (version set by the caller).
+ */
+typedef HRESULT (__stdcall *PFN_dxvkCreateTextureFromVkImage)(ID3D11Device* pDevice,
+  const DxvkOrgInteropTextureWrap* pWrap, ID3D11Resource** ppTexture, DxvkOrgInteropResourceInfo* pInfo);
 
 /**
  * Registers a callback invoked when DXVK destroys its VkDevice, before any

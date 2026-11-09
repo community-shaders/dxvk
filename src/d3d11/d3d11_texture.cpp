@@ -16,9 +16,13 @@ namespace dxvk {
           D3D11_RESOURCE_DIMENSION    Dimension,
           DXGI_USAGE                  DxgiUsage,
           VkImage                     vkImage,
-          HANDLE                      hSharedHandle)
+          HANDLE                      hSharedHandle,
+    const D3D11_HOST_IMAGE_INFO*      pHostImage)
   : m_interface(pInterface), m_device(pDevice), m_dimension(Dimension), m_desc(*pDesc),
     m_11on12(p11on12Info ? *p11on12Info : D3D11_ON_12_RESOURCE_INFO()), m_dxgiUsage(DxgiUsage) {
+    if (pHostImage)
+      vkImage = pHostImage->Image;
+
     DXGI_VK_FORMAT_MODE   formatMode   = GetFormatMode();
     DXGI_VK_FORMAT_INFO   formatInfo   = m_device->LookupFormat(m_desc.Format, formatMode);
     DXGI_VK_FORMAT_FAMILY formatFamily = m_device->LookupFamily(m_desc.Format, formatMode);
@@ -222,6 +226,32 @@ namespace dxvk {
     // it is going to be used by the game.
     if (imageInfo.tiling == VK_IMAGE_TILING_OPTIMAL && !isMultiPlane && imageInfo.sharing.mode == DxvkSharedHandleMode::None)
       imageInfo.layout = OptimizeLayout(imageInfo.usage);
+
+    // A client's image: the texture uses what the image has, and fails where it would need more.
+    if (pHostImage) {
+      const VkImageCreateFlags required = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+        | VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+
+      if (pHostImage->Format != imageInfo.format || imageInfo.tiling != VK_IMAGE_TILING_OPTIMAL
+       || m_mapMode != D3D11_COMMON_TEXTURE_MAP_MODE_NONE
+       || (imageInfo.usage & ~pHostImage->Usage) || (imageInfo.flags & required & ~pHostImage->Flags)) {
+        throw DxvkError(str::format(
+          "D3D11: Client image does not fit the texture:",
+          "\n  Format:  ", imageInfo.format, " (image ", pHostImage->Format, ")",
+          "\n  Usage:   ", std::hex, imageInfo.usage, " (image ", pHostImage->Usage, ")",
+          "\n  Flags:   ", std::hex, imageInfo.flags, " (image ", pHostImage->Flags, ")"));
+      }
+
+      // Without a mutable format, views keep the image's own format (CheckViewCompatibility).
+      if (!(pHostImage->Flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)) {
+        imageInfo.viewFormatCount = 0;
+        imageInfo.viewFormats = nullptr;
+      }
+
+      // The resting layout stays the one the bind flags chose above.
+      imageInfo.flags = pHostImage->Flags;
+      imageInfo.usage = pHostImage->Usage;
+    }
 
     // Check if we can actually create the image
     if (!CheckImageSupport(&imageInfo, imageInfo.tiling)) {
@@ -1507,7 +1537,23 @@ namespace dxvk {
     m_d3d10     (this),
     m_swapChain (pSwapChain),
     m_destructionNotifier(this) {
-    
+
+  }
+
+
+  D3D11Texture2D::D3D11Texture2D(
+          D3D11Device*                pDevice,
+    const D3D11_HOST_IMAGE_INFO&      HostImage,
+    const D3D11_COMMON_TEXTURE_DESC*  pDesc)
+  : D3D11DeviceChild<ID3D11Texture2D1>(pDevice),
+    m_texture   (this, pDevice, pDesc, nullptr, D3D11_RESOURCE_DIMENSION_TEXTURE2D, 0, VK_NULL_HANDLE, nullptr, &HostImage),
+    m_interop   (this, &m_texture),
+    m_surface   (this),
+    m_resource  (this, pDevice),
+    m_d3d10     (this),
+    m_swapChain (nullptr),
+    m_destructionNotifier(this) {
+
   }
   
   
@@ -1672,7 +1718,21 @@ namespace dxvk {
     m_resource(this, pDevice),
     m_d3d10   (this),
     m_destructionNotifier(this) {
-    
+
+  }
+
+
+  D3D11Texture3D::D3D11Texture3D(
+          D3D11Device*                pDevice,
+    const D3D11_HOST_IMAGE_INFO&      HostImage,
+    const D3D11_COMMON_TEXTURE_DESC*  pDesc)
+  : D3D11DeviceChild<ID3D11Texture3D1>(pDevice),
+    m_texture (this, pDevice, pDesc, nullptr, D3D11_RESOURCE_DIMENSION_TEXTURE3D, 0, VK_NULL_HANDLE, nullptr, &HostImage),
+    m_interop (this, &m_texture),
+    m_resource(this, pDevice),
+    m_d3d10   (this),
+    m_destructionNotifier(this) {
+
   }
   
   

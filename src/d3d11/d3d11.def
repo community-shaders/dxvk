@@ -55,3 +55,4 @@ EXPORTS
     dxvkGetGuestInstanceRequirements @172
     dxvkGetGuestDeviceRequirements @173
     dxvkSetGuestDevice @174
+    dxvkCreateTextureFromVkImage @175

@@ -120,6 +120,83 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D11VkInterop::CreateTextureFromVkImage(
+    const DxvkOrgInteropTextureWrap*  pWrap,
+          ID3D11Resource**            ppTexture,
+          DxvkOrgInteropResourceInfo* pInfo) {
+    InitReturnPtr(ppTexture);
+
+    if (!pWrap || pWrap->version != DXVK_ORG_INTEROP_VERSION || pWrap->image == VK_NULL_HANDLE
+     || !ppTexture || !pInfo || pInfo->version != DXVK_ORG_INTEROP_VERSION)
+      return E_INVALIDARG;
+
+    const bool is3D = pWrap->dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D;
+
+    if (!is3D && pWrap->dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+      return E_INVALIDARG;
+
+    // The client owns the memory: nothing may share, tile or map it.
+    if (pWrap->miscFlags & ~UINT(D3D11_RESOURCE_MISC_TEXTURECUBE))
+      return E_INVALIDARG;
+
+    D3D11_COMMON_TEXTURE_DESC desc = { };
+    desc.Width          = pWrap->width;
+    desc.Height         = pWrap->height;
+    desc.Depth          = is3D ? pWrap->depthOrArraySize : 1u;
+    desc.MipLevels      = pWrap->mipLevels;
+    desc.ArraySize      = is3D ? 1u : pWrap->depthOrArraySize;
+    desc.Format         = DXGI_FORMAT(pWrap->format);
+    desc.SampleDesc     = { std::max(pWrap->sampleCount, 1u), 0u };
+    desc.Usage          = D3D11_USAGE_DEFAULT;
+    desc.BindFlags      = pWrap->bindFlags;
+    desc.MiscFlags      = pWrap->miscFlags;
+
+    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(&desc);
+
+    if (FAILED(hr))
+      return hr;
+
+    const D3D11_HOST_IMAGE_INFO host = { pWrap->image, pWrap->imageFormat, pWrap->imageFlags, pWrap->imageUsage };
+
+    Com<ID3D11Resource> resource;
+    D3D11CommonTexture* texture = nullptr;
+
+    try {
+      if (is3D) {
+        Com<D3D11Texture3D> created = new D3D11Texture3D(m_device, host, &desc);
+        texture = created->GetCommonTexture();
+        resource = created.ptr();
+      } else {
+        Com<D3D11Texture2D> created = new D3D11Texture2D(m_device, host, &desc);
+        texture = created->GetCommonTexture();
+        resource = created.ptr();
+      }
+    } catch (const DxvkError& e) {
+      Logger::err(e.message());
+      return E_INVALIDARG;
+    }
+
+    // In DXVK's stream before any use: zeroed, and moved from UNDEFINED to the layout it rests in.
+    m_device->InitDeferredTexture(texture, nullptr);
+    m_device->FlushInitCommands();
+
+    // From here on an interop image, as dxvkGetInteropResourceInfo leaves one.
+    Rc<DxvkImage> image = texture->GetImage();
+
+    if (!LockImage(image))
+      return E_FAIL;
+
+    uint32_t version = pInfo->version;
+    *pInfo = DxvkOrgInteropResourceInfo();
+    pInfo->version = version;
+    pInfo->kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+    FillImageInfo(image, WholeImageViewKey(*image), pInfo->image);
+
+    *ppTexture = resource.ref();
+    return S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::GetResourceInfo(
           IUnknown*                   pObject,
           DxvkOrgInteropResourceInfo* pInfo) {
@@ -1067,6 +1144,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->CreateBufferFromVkBuffer(pDesc, buffer, ppBuffer);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkCreateTextureFromVkImage(ID3D11Device* pDevice,
+    const DxvkOrgInteropTextureWrap* pWrap, ID3D11Resource** ppTexture, DxvkOrgInteropResourceInfo* pInfo) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->CreateTextureFromVkImage(pWrap, ppTexture, pInfo);
   }
 
 
