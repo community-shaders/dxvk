@@ -538,12 +538,19 @@ namespace dxvk {
     deviceInfo.queueCreateInfoCount = 1u;
     deviceInfo.pQueueCreateInfos = &queueInfo;
 
-    DxvkDeviceCapabilities importCaps(*m_instance, m_handle, &deviceInfo);
+    DxvkDeviceCapabilities importCaps(*m_instance, m_handle, &deviceInfo, false, args.negotiation);
 
     Logger::info("Importing device:");
     importCaps.logDeviceInfo();
 
     DxvkDeviceQueueMapping queueMapping = importCaps.getQueueMapping();
+
+    // A guest device reports the host's queues to interop clients instead of spare ones of its own.
+    if (args.registerInterop) {
+      queueMapping.compute = args.interopCompute;
+      queueMapping.upload  = args.interopUpload;
+      queueMapping.copy    = args.interopCopy;
+    }
 
     Rc<vk::DeviceFn> vkd = new vk::DeviceFn(m_instance->vki(), false, args.device);
 
@@ -557,6 +564,32 @@ namespace dxvk {
     deviceQueues.compute  = getDeviceQueue(vkd, importCaps, queueMapping.compute);
     deviceQueues.upload   = getDeviceQueue(vkd, importCaps, queueMapping.upload);
     deviceQueues.copy     = getDeviceQueue(vkd, importCaps, queueMapping.copy);
+
+    if (args.registerInterop) {
+      // What the host created the device with, as far as DXVK's tables reach: interop clients find features by sType.
+      auto record = std::make_shared<DxvkInteropDeviceRecord>();
+      record->device = args.device;
+
+      for (uint32_t i = 0u; i < args.extensionCount; i++)
+        record->extensionNames.push_back(args.extensionNames[i]);
+
+      for (const auto& ext : m_instance->getExtensionList())
+        record->instanceExtensionNames.push_back(ext.extensionName);
+
+      const auto& features = importCaps.getFeatures();
+      record->features.features = features.core.features;
+      record->vk11 = features.vk11;
+      record->vk12 = features.vk12;
+      record->vk13 = features.vk13;
+      record->descriptorHeap = features.extDescriptorHeap;
+      record->descriptorBuffer = features.extDescriptorBuffer;
+      record->mutableDescriptorType = features.extMutableDescriptorType;
+      record->deviceGeneratedCommands = features.extDeviceGeneratedCommands;
+      record->robustness2 = features.extRobustness2;
+      record->pipelineExecutableProperties = features.khrPipelineExecutableProperties;
+      record->chain();
+      registerInteropDevice(std::move(record));
+    }
 
     return new DxvkDevice(m_instance, this, vkd, importCaps, deviceQueues, args.queueCallback);
   }

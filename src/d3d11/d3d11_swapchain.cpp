@@ -1,5 +1,6 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
+#include "d3d11_org_guest.h"
 #include "d3d11_swapchain.h"
 
 #include "../dxvk/dxvk_latency_builtin.h"
@@ -91,6 +92,7 @@ namespace dxvk {
     m_surfaceFactory(pSurfaceFactory),
     m_desc(*pDesc),
     m_device(pDevice->GetDXVKDevice()),
+    m_headless(isGuestDevice(m_device.ptr())),
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
     // DXVK_SYNC_PRESENT env forces synchronous present for the swapchain's whole lifetime.
     // The dxvkSetSyncPresent export is deliberately NOT baked here — PresentImage reads
@@ -101,7 +103,13 @@ namespace dxvk {
       Logger::info("D3D11SwapChain: synchronous present forced (DXVK_SYNC_PRESENT)");
     }
     CreateFrameLatencyEvent();
-    CreatePresenter();
+
+    // A guest device's host owns the window's surface and presents: nothing here may create one.
+    if (m_headless)
+      Logger::info("D3D11SwapChain: headless (guest device), the host presents");
+    else
+      CreatePresenter();
+
     CreateBackBuffers();
     CreateBlitter();
     g_dxvkActiveSwapchain.store(this, std::memory_order_release);
@@ -116,10 +124,13 @@ namespace dxvk {
     if (this_thread::isInModuleDetachment())
       return;
 
-    m_presenter->destroyResources();
+    if (m_presenter != nullptr)
+      m_presenter->destroyResources();
 
     DestroyFrameLatencyEvent();
-    DestroyLatencyTracker();
+
+    if (!m_headless)
+      DestroyLatencyTracker();
   }
 
   HRESULT STDMETHODCALLTYPE D3D11SwapChain::QueryInterface(
@@ -212,10 +223,10 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_DESC1*    pDesc,
     const UINT*                     pNodeMasks,
           IUnknown* const*          ppPresentQueues) {
-    if (m_desc.Format != pDesc->Format)
+    if (m_presenter != nullptr && m_desc.Format != pDesc->Format)
       m_presenter->setSurfaceFormat(GetSurfaceFormat(pDesc->Format));
 
-    if (m_desc.Width != pDesc->Width || m_desc.Height != pDesc->Height)
+    if (m_presenter != nullptr && (m_desc.Width != pDesc->Width || m_desc.Height != pDesc->Height))
       m_presenter->setSurfaceExtent({ m_desc.Width, m_desc.Height });
 
     m_desc = *pDesc;
@@ -296,7 +307,7 @@ namespace dxvk {
       hr = DXGI_ERROR_DEVICE_RESET;
 
     if (PresentFlags & DXGI_PRESENT_TEST) {
-      if (hr != S_OK)
+      if (hr != S_OK || m_headless)
         return hr;
 
       VkResult status = m_presenter->checkSwapChainStatus();
@@ -342,7 +353,8 @@ namespace dxvk {
 
     VkColorSpaceKHR vkColorSpace = ConvertColorSpace(ColorSpace);
 
-    if (m_presenter->supportsColorSpace(vkColorSpace))
+    // Headless: the host decides what reaches the display. The back buffer can hold any colour space.
+    if (m_headless || m_presenter->supportsColorSpace(vkColorSpace))
       supportFlags |= DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT;
 
     return supportFlags;
@@ -352,6 +364,12 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11SwapChain::SetColorSpace(
           DXGI_COLOR_SPACE_TYPE     ColorSpace) {
     VkColorSpaceKHR colorSpace = ConvertColorSpace(ColorSpace);
+
+    // Headless: only the back buffer's tag, which the host reads when it presents.
+    if (m_headless) {
+      m_colorSpace = colorSpace;
+      return S_OK;
+    }
 
     if (!m_presenter->supportsColorSpace(colorSpace))
       return E_INVALIDARG;
@@ -367,7 +385,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11SwapChain::SetHDRMetaData(
     const DXGI_VK_HDR_METADATA*     pMetaData) {
     // For some reason this call always seems to succeed on Windows
-    if (pMetaData->Type == DXGI_HDR_METADATA_TYPE_HDR10)
+    if (pMetaData->Type == DXGI_HDR_METADATA_TYPE_HDR10 && m_presenter != nullptr)
       m_presenter->setHdrMetadata(ConvertHDRMetadata(pMetaData->HDR10));
 
     return S_OK;
@@ -443,6 +461,19 @@ namespace dxvk {
     // Flush pending rendering commands before
     auto immediateContext = m_parent->GetContext();
     auto immediateContextLock = immediateContext->LockContext();
+
+    // Headless: the guest's frame is done. The host copied the back buffer out before this call, and presents itself once
+    // the flush below has reached the queue.
+    if (m_headless) {
+      immediateContext->EndFrame(nullptr);
+      m_frameId += 1;
+
+      if (m_backBuffers.size() > 1u)
+        RotateBackBuffers(immediateContext);
+
+      immediateContext->ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);
+      return S_OK;
+    }
 
     immediateContext->EndFrame(m_latency);
     immediateContext->ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);

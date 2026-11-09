@@ -1090,6 +1090,37 @@ namespace dxvk {
   }
 
 
+  std::vector<DxvkFeatureStructInfo> DxvkDeviceCapabilities::getCreateFeatureStructs() const {
+    const auto& features = getCreateFeatures();
+
+    std::vector<const void*> chained;
+
+    for (auto s = reinterpret_cast<const VkBaseInStructure*>(features.core.pNext); s; s = s->pNext)
+      chained.push_back(s);
+
+    std::vector<DxvkFeatureStructInfo> result;
+
+    auto add = [&] (const auto& member) {
+      // Some extensions have a plain VkBool32 rather than a struct (no feature struct of their own).
+      if constexpr (!std::is_same_v<std::decay_t<decltype(member)>, VkBool32>) {
+        if (std::find(chained.begin(), chained.end(), static_cast<const void*>(&member)) != chained.end())
+          result.push_back({ reinterpret_cast<const VkBaseInStructure*>(&member), sizeof(member) });
+      }
+    };
+
+    #define HANDLE_CORE(name) add(features.name)
+    #define HANDLE_EXT(name) add(features.name)
+
+    CORE_VERSIONS
+    EXTENSIONS_WITH_FEATURES
+
+    #undef HANDLE_CORE
+    #undef HANDLE_EXT
+
+    return result;
+  }
+
+
   void DxvkDeviceCapabilities::chainProperties(
     const DxvkDeviceExtensionInfo&    extensions,
           DxvkDeviceInfo&             properties) {

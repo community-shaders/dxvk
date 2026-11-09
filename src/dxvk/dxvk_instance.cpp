@@ -181,23 +181,13 @@ namespace dxvk {
     if (m_extensionInfo.khrSurfaceMaintenance1.specVersion)
       m_extensionInfo.extSurfaceMaintenance1.specVersion = 0u;
 
-    // Hide debug mode behind an environment variable since it adds
-    // significant overhead, and some games will not work with it enabled.
-    std::string debugEnv = env::getEnvVar("DXVK_DEBUG");
+    m_debugFlags = getDebugFlags(m_options);
 
-    bool capture = debugEnv.empty() && (
-      env::getEnvVar("ENABLE_VULKAN_RENDERDOC_CAPTURE") == "1" ||
-      env::getEnvVar("MESA_VK_TRACE") != "" ||
-      isCaptureToolLoaded());
-
-    if (debugEnv == "validation")
-      m_debugFlags.set(DxvkDebugFlag::Validation);
-    else if (debugEnv == "markers")
-      m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Markers);
-    else if (debugEnv == "hang")
-      m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Hang);
-    else if (debugEnv == "capture" || m_options.enableDebugUtils || capture)
-      m_debugFlags.set(DxvkDebugFlag::Capture);
+    // An imported instance may lack debug utils (a host that did not enable it): no debug mode then.
+    if (!m_debugFlags.isClear() && !m_extensionInfo.extDebugUtils.specVersion) {
+      Logger::warn("DxvkInstance: VK_EXT_debug_utils is not enabled on the instance; debug mode off");
+      m_debugFlags = 0u;
+    }
 
     if (m_debugFlags.isClear()) {
       // Disable any usage of the extension altogether
@@ -260,38 +250,7 @@ namespace dxvk {
       for (const auto& ext : extensionsEnabled)
         extensionNames.push_back(ext.extensionName);
 
-      // The NVIDIA Windows driver matches an application profile on the exact,
-      // case-sensitive engine name "DXVK", and that profile forces swapchain
-      // composition into SDR: scRGB output clamps at the SDR white level, so HDR
-      // never reaches the display no matter which colour space the swapchain was
-      // created with. Measured on driver 610.88 against a native Vulkan app --
-      // a byte-identical swapchain presents correct HDR as soon as the engine name
-      // differs by any character ("dxvk", "DXVK2" and "vkd3d" all work). Report a
-      // non-matching name only when HDR is actually in use, so SDR titles keep
-      // whatever else that profile does for them.
-
-      // Matches the DxgiOptions default for enableHDR (config key, falling back to the
-      // DXVK_HDR env var).
-      //
-      // KNOWN GAP: DxgiOptions can subsequently force enableHDR off for UE4 DX11 titles
-      // (see isHDRDisallowed), and this cannot see that. Such a title would report
-      // "DXVK_HDR" while HDR is actually disabled, losing whatever else the NVIDIA
-      // profile does for it. Not replicated here deliberately: the suppression keys off
-      // whether d3d12.dll is loaded, which is not yet settled at instance-creation time,
-      // so a copy of that heuristic would be unreliable rather than merely duplicated.
-      // Use DXVK_ENGINE_NAME=DXVK to force the profile back on if a UE4 title needs it.
-      const bool hdrEnabled = m_config.getOption<bool>("dxgi.enableHDR",
-        env::getEnvVar("DXVK_HDR") == "1");
-
-      // DXVK_ENGINE_NAME overrides this outright, so the profile can be opted back
-      // into (or any other name tested) without a rebuild.
-      std::string engineName = env::getEnvVar("DXVK_ENGINE_NAME");
-
-      if (engineName.empty())
-        engineName = hdrEnabled ? "DXVK_HDR" : "DXVK";
-
-      Logger::info(str::format("DxvkInstance: Reporting engine name '", engineName,
-        "' (HDR ", hdrEnabled ? "enabled" : "disabled", ")"));
+      std::string engineName = getEngineName(m_config);
 
       VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
       appInfo.pApplicationName      = appName.c_str();
@@ -415,6 +374,134 @@ namespace dxvk {
     if (numDGPU == 1u && numIGPU == 1u)
       m_adapters[1u]->linkToDGPU(m_adapters[0u]);
 
+    return true;
+  }
+
+
+  std::string DxvkInstance::getEngineName(
+    const Config&                           config) {
+    // The NVIDIA Windows driver matches an application profile on the exact,
+    // case-sensitive engine name "DXVK", and that profile forces swapchain
+    // composition into SDR: scRGB output clamps at the SDR white level, so HDR
+    // never reaches the display no matter which colour space the swapchain was
+    // created with. Measured on driver 610.88 against a native Vulkan app --
+    // a byte-identical swapchain presents correct HDR as soon as the engine name
+    // differs by any character ("dxvk", "DXVK2" and "vkd3d" all work). Report a
+    // non-matching name only when HDR is actually in use, so SDR titles keep
+    // whatever else that profile does for them.
+
+    // Matches the DxgiOptions default for enableHDR (config key, falling back to the
+    // DXVK_HDR env var).
+    //
+    // KNOWN GAP: DxgiOptions can subsequently force enableHDR off for UE4 DX11 titles
+    // (see isHDRDisallowed), and this cannot see that. Such a title would report
+    // "DXVK_HDR" while HDR is actually disabled, losing whatever else the NVIDIA
+    // profile does for it. Not replicated here deliberately: the suppression keys off
+    // whether d3d12.dll is loaded, which is not yet settled at instance-creation time,
+    // so a copy of that heuristic would be unreliable rather than merely duplicated.
+    // Use DXVK_ENGINE_NAME=DXVK to force the profile back on if a UE4 title needs it.
+    const bool hdrEnabled = config.getOption<bool>("dxgi.enableHDR",
+      env::getEnvVar("DXVK_HDR") == "1");
+
+    // DXVK_ENGINE_NAME overrides this outright, so the profile can be opted back
+    // into (or any other name tested) without a rebuild.
+    std::string engineName = env::getEnvVar("DXVK_ENGINE_NAME");
+
+    if (engineName.empty())
+      engineName = hdrEnabled ? "DXVK_HDR" : "DXVK";
+
+    Logger::info(str::format("DxvkInstance: Reporting engine name '", engineName,
+      "' (HDR ", hdrEnabled ? "enabled" : "disabled", ")"));
+    return engineName;
+  }
+
+
+  DxvkDebugFlags DxvkInstance::getDebugFlags(
+    const DxvkOptions&                      options) {
+    // Hide debug mode behind an environment variable since it adds
+    // significant overhead, and some games will not work with it enabled.
+    std::string debugEnv = env::getEnvVar("DXVK_DEBUG");
+
+    bool capture = debugEnv.empty() && (
+      env::getEnvVar("ENABLE_VULKAN_RENDERDOC_CAPTURE") == "1" ||
+      env::getEnvVar("MESA_VK_TRACE") != "" ||
+      isCaptureToolLoaded());
+
+    DxvkDebugFlags flags = 0u;
+
+    if (debugEnv == "validation")
+      flags.set(DxvkDebugFlag::Validation);
+    else if (debugEnv == "markers")
+      flags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Markers);
+    else if (debugEnv == "hang")
+      flags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Hang);
+    else if (debugEnv == "capture" || options.enableDebugUtils || capture)
+      flags.set(DxvkDebugFlag::Capture);
+
+    return flags;
+  }
+
+
+  bool DxvkInstance::queryGuestRequirements(
+          PFN_vkGetInstanceProcAddr         loaderProc,
+          std::vector<std::string>&         extensions,
+          std::string&                      engineName) {
+    Rc<vk::LibraryFn> vkl = loaderProc
+      ? new vk::LibraryFn(loaderProc)
+      : new vk::LibraryFn();
+
+    if (!vkl->getLoaderProc())
+      return false;
+
+    Config config = Config::getUserConfig();
+    config.merge(Config::getAppConfig(env::getExePath()));
+
+    DxvkOptions options(config);
+    DxvkDebugFlags debugFlags = getDebugFlags(options);
+
+    uint32_t count = 0u;
+    vkl->vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+
+    std::vector<VkExtensionProperties> supported(count);
+    vkl->vkEnumerateInstanceExtensionProperties(nullptr, &count, supported.data());
+
+    auto isSupported = [&supported] (const char* name) {
+      return std::any_of(supported.begin(), supported.end(),
+        [name] (const VkExtensionProperties& e) { return !std::strcmp(e.extensionName, name); });
+    };
+
+    // The selection initVulkanInstance makes: DXVK's own extensions, one surface
+    // maintenance extension, debug utils only in a debug mode, and the platform's WSI.
+    DxvkInstanceExtensionInfo info;
+
+    for (auto ext : getExtensionList(info)) {
+      if (!isSupported(ext->extensionName))
+        ext->specVersion = 0u;
+    }
+
+    if (info.khrSurfaceMaintenance1.specVersion)
+      info.extSurfaceMaintenance1.specVersion = 0u;
+
+    if (debugFlags.isClear())
+      info.extDebugUtils.specVersion = 0u;
+
+    extensions.clear();
+
+    for (auto ext : getExtensionList(info)) {
+      if (ext->specVersion)
+        extensions.push_back(ext->extensionName);
+    }
+
+    wsi::init();
+
+    for (const auto& ext : DxvkPlatformExts::s_instance.getInstanceExtensions()) {
+      if (isSupported(ext.extensionName) && std::find(extensions.begin(), extensions.end(), ext.extensionName) == extensions.end())
+        extensions.push_back(ext.extensionName);
+    }
+
+    wsi::quit();
+
+    engineName = getEngineName(config);
     return true;
   }
 
