@@ -232,6 +232,77 @@ A host can create the Vulkan instance and device itself and run DXVK on them as 
 `src/dxvk/dxvk_adapter.{h,cpp}`, `src/dxvk/dxvk_device_info.{h,cpp}`, `src/dxvk/dxvk_instance.{h,cpp}`,
 `src/dxvk/dxvk_interop.{h,cpp}`*
 
+### Wrapped host images (@175)
+
+`dxvkCreateTextureFromVkImage` wraps a `VkImage` the client created and owns as an `ID3D11Texture2D` or `ID3D11Texture3D`, the
+image counterpart of `dxvkCreateBufferFromVkBuffer`. Community Shaders uses it for render-graph textures the engine's D3D11 code
+must read or write.
+
+- `D3D11CommonTexture` has a host-image constructor path (`D3D11_HOST_IMAGE_INFO`): it takes the image instead of creating one,
+  and uses the image's own create flags and usage. It throws, and the export returns `E_INVALIDARG`, when the description needs
+  more: another format, linear tiling, a CPU mapping, a usage or a cube or 2D-array compatible flag the image lacks. Without
+  `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` the texture only makes views of its own format.
+- The texture is `D3D11_USAGE_DEFAULT` with no CPU access, and only `D3D11_RESOURCE_MISC_TEXTURECUBE` is accepted. DXVK never
+  renames, relocates or maps it.
+- DXVK takes the image as `UNDEFINED`, zeroes it in its stream and moves it to the layout it rests in, then locks it as an
+  interop image and fills `DxvkOrgInteropResourceInfo` as `dxvkGetInteropResourceInfo` would. The client imports it in that
+  layout.
+- The client keeps the memory alive until DXVK's stream has passed the texture's last release (an event query), since the GPU
+  may still use it.
+
+*Files: `src/d3d11/d3d11_texture.{h,cpp}`, `src/d3d11/d3d11_org_interop.{h,cpp}`, `src/d3d11/d3d11_interop.h`,
+`src/d3d11/d3d11.def`*
+
+### Interop version 7
+
+`DXVK_ORG_INTEROP_VERSION` is 7: 6 added the guest-device exports, and 7 added `DxvkOrgInteropTextureWrap`. Every versioned
+interop struct is checked for an exact match (`version != DXVK_ORG_INTEROP_VERSION` fails the call with `E_INVALIDARG`), so a
+host built against an older header is refused rather than misread. Bump the version with any struct change, and rebuild the host
+with the new header.
+
+*File: `src/d3d11/d3d11_org_interop.h`*
+
+### Placeholder binds after external commands
+
+`DxvkContext::invalidateExternalCommandState`, which runs after every client's commands (`dxvkEmitExternalCommands`), binds
+DXVK's dummy buffer as every vertex buffer and as the index buffer.
+
+Vulkan leaves a primary's bindings undefined after `vkCmdExecuteCommands`, and DXVK's dirty flags make it bind its own again
+before the next draw. AMD's Windows driver keeps the bindings it recorded before the secondaries and drops a bind of the same
+buffer as redundant, so the next indexed draw read the client's index buffer. On an RX 6600 every frame went black with a
+render-graph chain at the Tonemap anchor: the engine's depth of field drew from the graph's index buffer. No validation layer
+reports it. The placeholder makes DXVK's next bind always differ from the driver's record. The index buffer alone fixed the
+reported case; the vertex buffers are bound for the same reason.
+
+Keep this step if the function is rewritten. Details: Community Shaders' `docs/development/render-graph.md`, "Hazard: bindings
+the driver keeps across an in-stream epoch".
+
+*File: `src/dxvk/dxvk_context.cpp`*
+
+### Interop layout changes stay in order
+
+`DxvkContext::acquireResources` moves a layout transition into the command buffer's init barriers when DXVK has not written the
+image in that command buffer yet. Those barriers run before everything in it. An interop client may have used the image earlier
+in the same command buffer, in its resting layout, in external commands DXVK does not track. Promoting the transition then put
+the image in the attachment layout before the client's commands, which named the resting layout, and DXVK later rendered without
+a transition after the client had returned the image to rest.
+
+The transition is now promoted only under the rule `prepareOutOfOrderTransition` already uses: never for an interop image once
+external commands have run in the command buffer (`m_untrackedExternalAccess && isOrgInteropImage()`).
+
+*File: `src/dxvk/dxvk_context.cpp`*
+
+### Relocated interop images are copied from TRANSFER_SRC
+
+When `DxvkContext::relocateResources` moves an image an ORG client tracks, the client keeps sampling the old storage in its
+resting layout until it takes the new one. The copy used to read the old storage in that resting layout, which is often
+`SHADER_READ_ONLY_OPTIMAL` and not a layout a copy may read (`VUID-VkCopyImageInfo2-srcImageLayout-01917`).
+
+The copy now reads from `TRANSFER_SRC_OPTIMAL`, and a barrier in the same command buffer puts the old storage back in its resting
+layout before any later command of the client's.
+
+*File: `src/dxvk/dxvk_context.cpp`*
+
 ### Other exports
 
 `dxvkGetPresenterSurfaceState` reports the live surface format plus requested and effective
