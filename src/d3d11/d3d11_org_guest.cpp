@@ -34,7 +34,6 @@ namespace dxvk {
       std::vector<VkDeviceQueueCreateInfo> queues;
 
       Rc<DxvkDevice>                      pending;
-      std::vector<const DxvkDevice*>      guests;
     };
 
     GuestSession& session() {
@@ -86,7 +85,8 @@ namespace dxvk {
     instance = s.instance;
     adapter = s.adapter;
     device = std::move(s.pending);
-    s.guests.push_back(device.ptr());
+    // A flag on the device rather than a list of addresses: a later device at a reused address is not a guest.
+    device->markGuest();
 
     Logger::info("D3D11: creating the device on the host's Vulkan device (guest device)");
     return true;
@@ -95,9 +95,7 @@ namespace dxvk {
 
   bool isGuestDevice(
     const DxvkDevice*         device) {
-    auto& s = session();
-    std::lock_guard lock(s.mutex);
-    return std::find(s.guests.begin(), s.guests.end(), device) != s.guests.end();
+    return device && device->isGuest();
   }
 
 }

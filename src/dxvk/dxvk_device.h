@@ -335,6 +335,24 @@ namespace dxvk {
     }
 
     /**
+     * \brief Marks the device as a host's guest device
+     *
+     * Set once by D3D11 device creation when it takes the device a host
+     * handed to dxvkSetGuestDevice, before the device is shared.
+     */
+    void markGuest() {
+      m_guest = true;
+    }
+
+    /**
+     * \brief Checks whether the device runs on a host's VkDevice
+     * \returns \c true for a device from dxvkSetGuestDevice
+     */
+    bool isGuest() const {
+      return m_guest;
+    }
+
+    /**
      * \brief Queries set layout for spec constant data UBO
      * \returns Legacy descriptor set layout for spec data
      */
@@ -819,6 +837,8 @@ namespace dxvk {
     DxvkSubmissionQueue         m_submissionQueue;
 
     Rc<DxvkShaderCache>         m_shaderCache;
+
+    bool                        m_guest = false;
 
     DxvkDevicePerfHints getPerfHints();
 
