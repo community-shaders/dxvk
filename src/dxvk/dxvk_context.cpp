@@ -9130,14 +9130,17 @@ namespace dxvk {
     }
 
     // An ORG import keeps sampling the old storage in its resting layout until the client takes
-    // the new one, so a tracked image is copied from that layout and left in it. Decided once:
-    // the client may end its import meanwhile.
+    // the new one. A copy cannot read a shader-read layout, so a tracked image's old storage is
+    // copied from the transfer source layout and then put back in its resting layout, in this
+    // command buffer, before any later command of the client's. Decided once: the client may end
+    // its import meanwhile.
     small_vector<VkImageLayout, 16> srcLayouts(imageCount);
+    small_vector<bool, 16> restoreSrc(imageCount);
 
     for (size_t i = 0; i < imageCount; i++) {
       const auto& info = imageInfos[i];
-      srcLayouts[i] = info.image->isOrgTracked() ? info.image->info().layout
-        : info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      srcLayouts[i] = info.image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      restoreSrc[i] = info.image->isOrgTracked() && srcLayouts[i] != info.image->info().layout;
     }
 
     for (size_t i = 0; i < imageCount; i++) {
@@ -9333,6 +9336,23 @@ namespace dxvk {
               }
 
               imageBarriers.push_back(dstBarrier);
+
+              // The old storage back in its resting layout for the client's later reads.
+              if (restoreSrc[i]) {
+                VkImageMemoryBarrier2 srcBarrier = dstBarrier;
+                srcBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                srcBarrier.oldLayout = srcLayouts[i];
+                srcBarrier.newLayout = info.image->info().layout;
+                srcBarrier.image = srcInfo.image;
+                srcBarrier.subresourceRange = vk::makeSubresourceRange(region.srcSubresource);
+
+                if (info.image->info().type == VK_IMAGE_TYPE_3D) {
+                  srcBarrier.subresourceRange.baseArrayLayer = 0u;
+                  srcBarrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+                }
+
+                imageBarriers.push_back(srcBarrier);
+              }
             }
           }
         }
