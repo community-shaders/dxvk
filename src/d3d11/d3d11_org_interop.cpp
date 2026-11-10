@@ -122,6 +122,7 @@ namespace dxvk {
 
   HRESULT D3D11VkInterop::CreateTextureFromVkImage(
     const DxvkOrgInteropTextureWrap*  pWrap,
+    const D3D11_SUBRESOURCE_DATA*     pInitialData,
           ID3D11Resource**            ppTexture,
           DxvkOrgInteropResourceInfo* pInfo) {
     InitReturnPtr(ppTexture);
@@ -176,8 +177,8 @@ namespace dxvk {
       return E_INVALIDARG;
     }
 
-    // In DXVK's stream before any use: zeroed, and moved from UNDEFINED to the layout it rests in.
-    m_device->InitDeferredTexture(texture, nullptr);
+    // In DXVK's stream before any use: zeroed or filled with the client's data, and moved from UNDEFINED to the layout it rests in.
+    m_device->InitDeferredTexture(texture, pInitialData);
     m_device->FlushInitCommands();
 
     // From here on an interop image, as dxvkGetInteropResourceInfo leaves one.
@@ -1155,7 +1156,20 @@ extern "C" {
     if (!interop)
       return E_NOINTERFACE;
 
-    return interop->CreateTextureFromVkImage(pWrap, ppTexture, pInfo);
+    return interop->CreateTextureFromVkImage(pWrap, nullptr, ppTexture, pInfo);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkCreateTextureFromVkImageWithData(ID3D11Device* pDevice,
+    const DxvkOrgInteropTextureWrap* pWrap, const D3D11_SUBRESOURCE_DATA* pInitialData,
+    ID3D11Resource** ppTexture, DxvkOrgInteropResourceInfo* pInfo) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->CreateTextureFromVkImage(pWrap, pInitialData, ppTexture, pInfo);
   }
 
 

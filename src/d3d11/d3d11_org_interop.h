@@ -23,6 +23,7 @@ struct ID3D11Device;
 struct ID3D11Buffer;
 struct ID3D11Resource;
 struct D3D11_BUFFER_DESC;
+struct D3D11_SUBRESOURCE_DATA;
 struct IUnknown;
 
 typedef struct DxvkOrgInteropFeature {
@@ -307,6 +308,16 @@ typedef struct DxvkOrgInteropTextureWrap {
  */
 typedef HRESULT (__stdcall *PFN_dxvkCreateTextureFromVkImage)(ID3D11Device* pDevice,
   const DxvkOrgInteropTextureWrap* pWrap, ID3D11Resource** ppTexture, DxvkOrgInteropResourceInfo* pInfo);
+
+/**
+ * dxvkCreateTextureFromVkImage with the texture's contents (dxvkCreateTextureFromVkImageWithData).
+ * DXVK uploads pInitialData in its stream where the plain call zeroes the image, as CreateTexture2D
+ * does with initial data: one entry per subresource (mip-major within each array slice), any thread.
+ * Null pInitialData is the plain call. Added without a version change: resolve it as optional.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkCreateTextureFromVkImageWithData)(ID3D11Device* pDevice,
+  const DxvkOrgInteropTextureWrap* pWrap, const D3D11_SUBRESOURCE_DATA* pInitialData,
+  ID3D11Resource** ppTexture, DxvkOrgInteropResourceInfo* pInfo);
 
 /**
  * Registers a callback invoked when DXVK destroys its VkDevice, before any

@@ -88,6 +88,7 @@ namespace dxvk {
      */
     HRESULT CreateTextureFromVkImage(
       const DxvkOrgInteropTextureWrap*  pWrap,
+      const D3D11_SUBRESOURCE_DATA*     pInitialData,
             ID3D11Resource**            ppTexture,
             DxvkOrgInteropResourceInfo* pInfo);
 
