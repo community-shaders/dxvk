@@ -10167,7 +10167,11 @@ namespace dxvk {
           dstAccess |= e.access;
         }
 
-        bool canPromote = !e.image->isTracked(m_trackingId, DxvkAccess::Write);
+        // A promoted transition runs before the whole command buffer. An interop client may
+        // have used the image earlier in it, in its resting layout, without DXVK tracking
+        // that use, so its transitions stay in order (as in prepareOutOfOrderTransition).
+        bool canPromote = !e.image->isTracked(m_trackingId, DxvkAccess::Write)
+          && !(m_untrackedExternalAccess && e.image->isOrgInteropImage());
 
         bool hasTransition = transitionImageLayout(cmdBuffer,
           *e.image, e.imageSubresources,
