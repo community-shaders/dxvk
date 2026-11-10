@@ -3536,6 +3536,25 @@ namespace dxvk {
     if (m_features.any(DxvkContextFeature::DescriptorHeap,
                        DxvkContextFeature::DescriptorBuffer))
       m_cmd->rebindDescriptorsAfterInterop();
+
+    // The client's commands may have bound their own vertex and index buffers,
+    // in secondary command buffers. The dirty flags above make DXVK bind its own
+    // again before the next draw, but AMD's Windows driver keeps the bindings it
+    // recorded before vkCmdExecuteCommands and drops a bind of the same buffer as
+    // redundant: an indexed draw then reads the client's index buffer (the engine's
+    // full-screen passes after Effects11's render-graph chain drew garbage). Bind a
+    // placeholder first, so DXVK's own bind always differs from the driver's record.
+    const auto& dummy = m_common->dummyResources().bufferInfo();
+
+    std::array<VkBuffer,     MaxNumVertexBindings> vertexBuffers;
+    std::array<VkDeviceSize, MaxNumVertexBindings> vertexOffsets = { };
+    std::array<VkDeviceSize, MaxNumVertexBindings> vertexSizes;
+    vertexBuffers.fill(dummy.buffer);
+    vertexSizes.fill(VK_WHOLE_SIZE);
+
+    m_cmd->cmdBindVertexBuffers(0u, MaxNumVertexBindings,
+      vertexBuffers.data(), vertexOffsets.data(), vertexSizes.data(), nullptr);
+    m_cmd->cmdBindIndexBuffer2(dummy.buffer, 0u, VK_WHOLE_SIZE, VK_INDEX_TYPE_UINT32);
   }
 
 
