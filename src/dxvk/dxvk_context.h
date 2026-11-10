@@ -1997,7 +1997,7 @@ namespace dxvk {
     void splitCommands();
 
     /**
-     * rief Forgets all command buffer state DXVK tracks
+     * \brief Forgets all command buffer state DXVK tracks
      *
      * Marks every binding and every piece of dynamic state dirty and
      * rebinds DXVK's descriptor heaps or buffers, so that the next draw

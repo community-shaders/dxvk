@@ -1530,7 +1530,7 @@ namespace dxvk {
     }
 
     /**
-     * rief Rebinds DXVK's descriptor heaps or buffers after interop commands
+     * \brief Rebinds DXVK's descriptor heaps or buffers after interop commands
      *
      * An interop client that binds its own descriptor heaps or descriptor
      * buffers into the execution command buffer replaces DXVK's. Binds

@@ -217,10 +217,7 @@ namespace dxvk {
 
 
   /**
-   * \brief Queue family and index
-   */
-  /**
-   * rief A feature struct and its size
+   * \brief A feature struct and its size
    */
   struct DxvkFeatureStructInfo {
     const VkBaseInStructure* feature = nullptr;
@@ -228,6 +225,9 @@ namespace dxvk {
   };
 
 
+  /**
+   * \brief Queue family and index
+   */
   struct DxvkDeviceQueueIndex {
     uint32_t family = VK_QUEUE_FAMILY_IGNORED;
     uint32_t index  = 0u;
@@ -394,11 +394,11 @@ namespace dxvk {
     }
 
     /**
-     * rief Every extension feature struct in the create chain, with its size
+     * \brief Every extension feature struct in the create chain, with its size
      *
      * For a host that creates the device for DXVK (guest devices): it ORs
      * each struct into its own of the same sType or copies it.
-     * eturns The structs of getCreateFeatures() that are chained
+     * \returns The structs of getCreateFeatures() that are chained
      */
     std::vector<DxvkFeatureStructInfo> getCreateFeatureStructs() const;
 

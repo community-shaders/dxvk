@@ -559,7 +559,7 @@ namespace dxvk {
     DxvkMemoryStats getMemoryStats(uint32_t heap);
 
     /**
-     * rief Describes the device-local pools' chunks (DxvkMemoryAllocator::describeDevicePoolChunks)
+     * \brief Describes the device-local pools' chunks (DxvkMemoryAllocator::describeDevicePoolChunks)
      */
     std::string describeDevicePoolChunks();
 

@@ -121,7 +121,7 @@ namespace dxvk {
       const DxvkOrgInteropExternalCommands* pCommands);
 
     /**
-     * rief Client callbacks at DXVK's command buffer boundaries (see d3d11_org_interop.h)
+     * \brief Client callbacks at DXVK's command buffer boundaries (see d3d11_org_interop.h)
      */
     HRESULT SetCommandBufferBoundaryCallbacks(
             void                          (*pOnEnd)(void*, VkCommandBuffer),

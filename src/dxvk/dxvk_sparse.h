@@ -510,14 +510,14 @@ namespace dxvk {
     }
 
     /**
-     * rief Frames presented since a command list last used this resource
+     * \brief Frames presented since a command list last used this resource
      */
     uint32_t idleFrames() const {
       return s_useFrame.load(std::memory_order_relaxed) - m_lastUseFrame.load(std::memory_order_relaxed);
     }
 
     /**
-     * rief Counts a presented frame for ef idleFrames
+     * \brief Counts a presented frame for \ref idleFrames
      */
     static void countPresentedFrame() {
       s_useFrame.fetch_add(1u, std::memory_order_relaxed);

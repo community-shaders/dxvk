@@ -503,7 +503,7 @@ namespace dxvk {
     }
 
     /**
-     * rief Logs an image that rests in GENERAL for the interop client (DXVK_LOG_ORG_GENERAL=1)
+     * \brief Logs an image that rests in GENERAL for the interop client (DXVK_LOG_ORG_GENERAL=1)
      */
     void logOrgGeneral() const;
     

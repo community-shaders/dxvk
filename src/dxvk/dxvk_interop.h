@@ -36,7 +36,7 @@ namespace dxvk {
   std::vector<DxvkInteropFeature> getInteropFeatureRequest();
 
   /**
-   * rief Device extensions to enable at the next device creation, on top of DXVK's
+   * \brief Device extensions to enable at the next device creation, on top of DXVK's
    *
    * For extensions DXVK has no feature table entry for (a profiler's driver
    * interface, VK_AMD_gpa_interface). Each is enabled when the device supports

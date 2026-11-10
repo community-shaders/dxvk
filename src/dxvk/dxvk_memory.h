@@ -1420,7 +1420,7 @@ namespace dxvk {
     DxvkMemoryStats getMemoryStats(uint32_t heap) const;
 
     /**
-     * rief Describes the device-local pools' chunks
+     * \brief Describes the device-local pools' chunks
      *
      * For each device-local memory type with chunks: how many, how
      * many are empty, how many hold allocations with a locked GPU

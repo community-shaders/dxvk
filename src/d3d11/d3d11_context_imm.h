@@ -140,7 +140,7 @@ namespace dxvk {
             DxvkExternalSubmitInfo&&    SubmitInfo);
 
     /**
-     * rief Sets an interop client's command buffer boundary hooks in stream order (see DxvkContext::setExternalCommandBufferHooks)
+     * \brief Sets an interop client's command buffer boundary hooks in stream order (see DxvkContext::setExternalCommandBufferHooks)
      */
     void SetExternalCommandBufferHooks(
             std::function<void (VkCommandBuffer)> OnEnd,
