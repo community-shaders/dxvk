@@ -249,6 +249,11 @@ must read or write.
   layout.
 - The client keeps the memory alive until DXVK's stream has passed the texture's last release (an event query), since the GPU
   may still use it.
+- `dxvkCreateTextureFromVkImageWithData` (@176) takes the texture's contents as `D3D11_SUBRESOURCE_DATA`, one entry per
+  subresource. DXVK's initializer uploads them in its stream where the plain call zeroes the image, as `CreateTexture2D` does
+  with initial data, from any thread. Community Shaders creates the game's file textures this way (`CS_ORG_ENGINE_TEXTURES`):
+  the contents are there before any D3D11 or graph use, with no wait. It changes no struct, so it has no version of its own:
+  resolve it as optional.
 
 *Files: `src/d3d11/d3d11_texture.{h,cpp}`, `src/d3d11/d3d11_org_interop.{h,cpp}`, `src/d3d11/d3d11_interop.h`,
 `src/d3d11/d3d11.def`*
