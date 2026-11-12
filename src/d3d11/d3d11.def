@@ -57,3 +57,4 @@ EXPORTS
     dxvkSetGuestDevice @174
     dxvkCreateTextureFromVkImage @175
     dxvkCreateTextureFromVkImageWithData @176
+    dxvkFindDestroyedView @177

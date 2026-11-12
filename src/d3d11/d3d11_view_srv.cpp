@@ -4,8 +4,82 @@
 #include "d3d11_texture.h"
 #include "d3d11_view_srv.h"
 
+#include "../util/util_env.h"
+
 namespace dxvk {
-  
+
+  // DXVK_VIEW_TRACE=1: the stacks of the last public Release and of the destruction of recent shader resource views, kept in a
+  // ring, so a hang or crash on a freed view can name who freed it (dxvkFindDestroyedView). Off, a view pays one branch.
+  struct DxvkViewTraceEntry {
+    uintptr_t view;         // the view object: [view, viewEnd)
+    uintptr_t viewEnd;
+    uintptr_t stream;       // its stream state, if any: [stream, streamEnd)
+    uintptr_t streamEnd;
+    uint32_t  kind;         // 0: the last public Release, 1: the destructor
+    uint32_t  thread;
+    uint64_t  tick;         // GetTickCount64
+    uint32_t  frameCount;
+    void*     frames[24];
+  };
+
+  namespace {
+    constexpr uint32_t kViewTraceEntries = 16384u;
+
+    bool ViewTraceEnabled() {
+      static const bool enabled = env::getEnvVar("DXVK_VIEW_TRACE") == "1";
+      return enabled;
+    }
+
+    struct ViewTrace {
+      std::atomic<uint64_t> next = { 0u };
+      DxvkViewTraceEntry entries[kViewTraceEntries] = { };
+    };
+
+    ViewTrace& GetViewTrace() {
+      static ViewTrace* trace = new ViewTrace();
+      return *trace;
+    }
+
+    void RecordView(const void* view, size_t viewSize, const void* stream, size_t streamSize, uint32_t kind) {
+      ViewTrace& t = GetViewTrace();
+      DxvkViewTraceEntry& e = t.entries[t.next.fetch_add(1u, std::memory_order_relaxed) % kViewTraceEntries];
+      e.view = uintptr_t(view);
+      e.viewEnd = uintptr_t(view) + viewSize;
+      e.stream = uintptr_t(stream);
+      e.streamEnd = stream ? uintptr_t(stream) + streamSize : 0u;
+      e.kind = kind;
+      e.thread = GetCurrentThreadId();
+      e.tick = GetTickCount64();
+      e.frameCount = RtlCaptureStackBackTrace(1, 24, e.frames, nullptr);
+    }
+  }
+
+  /**
+   * \brief The recorded releases and destructions of views that held an address (in the view or its stream state), newest first
+   *
+   * \param [in] address An address the caller found in a freed view (a register of a stuck thread, say)
+   * \param [out] pEntries Up to maxEntries entries
+   * \returns How many were written (0 when DXVK_VIEW_TRACE is off)
+   */
+  extern "C" DLLEXPORT uint32_t __stdcall dxvkFindDestroyedView(uintptr_t address, DxvkViewTraceEntry* pEntries, uint32_t maxEntries) {
+    if (!ViewTraceEnabled() || !pEntries)
+      return 0u;
+
+    ViewTrace& t = GetViewTrace();
+    uint64_t last = t.next.load(std::memory_order_relaxed);
+    uint64_t first = last > kViewTraceEntries ? last - kViewTraceEntries : 0u;
+    uint32_t written = 0u;
+
+    for (uint64_t i = last; i > first && written < maxEntries; i--) {
+      const DxvkViewTraceEntry& e = t.entries[(i - 1u) % kViewTraceEntries];
+
+      if ((address >= e.view && address < e.viewEnd) || (address >= e.stream && address < e.streamEnd))
+        pEntries[written++] = e;
+    }
+
+    return written;
+  }
+
   D3D11ShaderResourceView::D3D11ShaderResourceView(
           D3D11Device*                      pDevice,
           ID3D11Resource*                   pResource,
@@ -201,6 +275,17 @@ namespace dxvk {
     if (unlikely(m_allocTrace != nullptr))
       m_allocTrace->TraceRef(-1, true);
 
+    if (unlikely(ViewTraceEnabled())) {
+      // Recorded before the release: the last one may destroy the view.
+      const void* stream = m_stream.get();
+      ULONG count = D3D11DeviceChild<ID3D11ShaderResourceView1>::Release();
+
+      if (!count)
+        RecordView(this, sizeof(*this), stream, sizeof(StreamState), 0u);
+
+      return count;
+    }
+
     return D3D11DeviceChild<ID3D11ShaderResourceView1>::Release();
   }
 
@@ -269,6 +354,9 @@ namespace dxvk {
 
 
   D3D11ShaderResourceView::~D3D11ShaderResourceView() {
+    if (unlikely(ViewTraceEnabled()))
+      RecordView(this, sizeof(*this), m_stream.get(), sizeof(StreamState), 1u);
+
     if (m_stream && m_stream->gone)
       m_stream->gone(m_stream->user);
 
