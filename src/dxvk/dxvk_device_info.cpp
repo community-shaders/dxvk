@@ -46,6 +46,7 @@ namespace dxvk {
     HANDLE_EXT(extSwapchainMaintenance1);          \
     HANDLE_EXT(extTransformFeedback);              \
     HANDLE_EXT(extVertexAttributeDivisor);         \
+    HANDLE_EXT(extDeviceFault);                    \
     HANDLE_EXT(khrDeviceFault);                    \
     HANDLE_EXT(khrDynamicRenderingLocalRead);      \
     HANDLE_EXT(khrExternalMemoryWin32);            \
@@ -794,6 +795,10 @@ namespace dxvk {
 
     // Disable debug extensions if hang debugging is disabled
     if (!instance.debugFlags().test(DxvkDebugFlag::Hang)) {
+      // VK_EXT_device_fault: fault reports on drivers without the KHR version (AMD on Windows). DXVK reads none
+      // itself; BasicRHI reads them on the adopted device when it sees the device lost.
+      m_featuresSupported.extDeviceFault.deviceFault = VK_FALSE;
+      m_featuresSupported.extDeviceFault.deviceFaultVendorBinary = VK_FALSE;
       m_featuresSupported.khrDeviceFault.deviceFault = VK_FALSE;
       m_featuresSupported.khrDeviceFault.deviceFaultVendorBinary = VK_FALSE;
 
@@ -1360,6 +1365,7 @@ namespace dxvk {
       ENABLE_EXT_FEATURE(extVertexAttributeDivisor, vertexAttributeInstanceRateZeroDivisor, false),
 
       /* Hang debugging */
+      ENABLE_EXT_FEATURE(extDeviceFault, deviceFault, false),
       ENABLE_EXT_FEATURE(khrDeviceFault, deviceFault, false),
       ENABLE_EXT_FEATURE(khrDeviceFault, deviceFaultVendorBinary, false),
 
