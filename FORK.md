@@ -204,34 +204,6 @@ Community Shaders separates them (`Upscaling::SeparateFromGraphEpochs`). Nothing
 from a third-party SDK must keep the separation. See Community Shaders' `docs/development/render-graph.md`, "Hazard: external Vulkan
 work directly after a graph epoch".
 
-### Guest devices (@172-@174)
-
-A host can create the Vulkan instance and device itself and run DXVK on them as a guest (Community Shaders'
-`CS_ORG_OWNED_FRAME`, where OpenRenderGraph owns the frame and Present). Modelled on `D3D11On12CreateDevice`'s import.
-
-- `dxvkGetGuestInstanceRequirements` lists the instance extensions DXVK would enable (those the loader has) and the
-  engine name it would report (`DxvkInstance::queryGuestRequirements`).
-- `dxvkGetGuestDeviceRequirements` builds DXVK's device capabilities on the host's instance and physical device, with
-  the host's binding model as the negotiation's only answer, and reports the extensions, the core features, each
-  feature struct with its size (`DxvkDeviceCapabilities::getCreateFeatureStructs`) and the queue counts. The host merges
-  them into its own create info.
-- `dxvkSetGuestDevice` imports the device (`DxvkAdapter::importDevice`, now taking the negotiation and the host's
-  queues). DXVK submits everything to the first queue of the graphics family it is given. The host's compute, upload and
-  copy queues are reported by `dxvkGetInteropDeviceInfo`, and the device is registered for it like DXVK's own. The next
-  `D3D11InternalCreateDevice` takes it.
-- The host passes the feature chain it created the device with (`DxvkOrgGuestDeviceDesc::enabledFeatures`, guest
-  version 2). The interop record reports those structs (`DxvkInteropDeviceRecord::takeEnabled`), not only the ones DXVK
-  enabled itself: a host on descriptor buffers enables mutable descriptors, which DXVK does not, and an interop client
-  checks for both.
-- A guest device's `D3D11SwapChain` is headless: no presenter, no surface; Present ends the frame and flushes, and the
-  host copies the back buffer out and presents. `CheckColorSpaceSupport` and `SetColorSpace1` only tag the back buffer.
-- An imported instance without `VK_EXT_debug_utils` turns DXVK's debug modes off instead of calling into a null entry
-  point.
-
-*Files: `src/d3d11/d3d11_org_guest.{h,cpp}`, `src/d3d11/d3d11_main.cpp`, `src/d3d11/d3d11_swapchain.{h,cpp}`,
-`src/dxvk/dxvk_adapter.{h,cpp}`, `src/dxvk/dxvk_device_info.{h,cpp}`, `src/dxvk/dxvk_instance.{h,cpp}`,
-`src/dxvk/dxvk_interop.{h,cpp}`*
-
 ### Wrapped host images (@175)
 
 `dxvkCreateTextureFromVkImage` wraps a `VkImage` the client created and owns as an `ID3D11Texture2D` or `ID3D11Texture3D`, the
@@ -260,7 +232,8 @@ must read or write.
 
 ### Interop version 7
 
-`DXVK_ORG_INTEROP_VERSION` is 7: 6 added the guest-device exports, and 7 added `DxvkOrgInteropTextureWrap`. Every versioned
+`DXVK_ORG_INTEROP_VERSION` is 7: 6 added guest-device exports (@172-@174), since removed, and 7 added
+`DxvkOrgInteropTextureWrap`. The value stays 7 so that the struct layouts hosts use do not change. Every versioned
 interop struct is checked for an exact match (`version != DXVK_ORG_INTEROP_VERSION` fails the call with `E_INVALIDARG`), so a
 host built against an older header is refused rather than misread. Bump the version with any struct change, and rebuild the host
 with the new header.

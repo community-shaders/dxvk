@@ -7,7 +7,6 @@
 #include "dxvk_extension_provider.h"
 #include "dxvk_include.h"
 #include "dxvk_format.h"
-#include "dxvk_interop.h"
 
 #include "../util/util_gdi.h"
 
@@ -104,16 +103,6 @@ namespace dxvk {
     const char**      extensionNames  = nullptr;
     const VkPhysicalDeviceFeatures2* features = nullptr;
     DxvkQueueCallback queueCallback   = { };
-    /// Optional: the binding model negotiation the import settles DXVK's descriptor model with (a guest device takes the host's).
-    const DxvkInteropBindingModelNegotiation* negotiation = nullptr;
-    /// A guest device: the host's own queues, reported to interop clients (dxvkGetInteropDeviceInfo). DXVK never uses them.
-    DxvkDeviceQueueIndex interopCompute = { };
-    DxvkDeviceQueueIndex interopUpload  = { };
-    DxvkDeviceQueueIndex interopCopy    = { };
-    /// A guest device: register it for dxvkGetInteropDeviceInfo.
-    bool              registerInterop = false;
-    /// A guest device: the features the host enabled, which the interop record reports instead of DXVK's own where it has them.
-    const VkPhysicalDeviceFeatures2* hostFeatures = nullptr;
   };
 
   /**

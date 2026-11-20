@@ -123,9 +123,6 @@ namespace dxvk {
     Rc<DxvkDevice>            m_device;
     Rc<Presenter>             m_presenter;
 
-    // A guest device's swap chain (dxvkSetGuestDevice): no presenter, the host presents.
-    bool                      m_headless = false;
-
     Rc<DxvkSwapchainBlitter>  m_blitter;
     Rc<DxvkLatencyTracker>    m_latency;
 
