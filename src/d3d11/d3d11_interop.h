@@ -16,6 +16,7 @@ struct DxvkOrgInteropImageInfo;
 struct DxvkOrgInteropTextureWrap;
 struct DxvkOrgInteropTrackedResource;
 struct DxvkOrgInteropRelocation;
+struct DxvkOrgInteropRelocation2;
 struct DxvkMemoryResourceRow;
 struct DxvkMemoryHeapReport;
 
@@ -162,6 +163,14 @@ namespace dxvk {
 
     HRESULT PollRelocations(
             DxvkOrgInteropRelocation*   pRelocations,
+            uint32_t                    Capacity,
+            uint32_t*                   pCount);
+
+    /**
+     * \brief PollRelocations, with the new storage and when its copy is done (see d3d11_org_interop.h)
+     */
+    HRESULT PollRelocations2(
+            DxvkOrgInteropRelocation2*  pRelocations,
             uint32_t                    Capacity,
             uint32_t*                   pCount);
 

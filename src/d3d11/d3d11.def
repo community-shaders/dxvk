@@ -55,3 +55,4 @@ EXPORTS
     dxvkCreateTextureFromVkImage @175
     dxvkCreateTextureFromVkImageWithData @176
     dxvkFindDestroyedView @177
+    dxvkPollInteropRelocations2 @178

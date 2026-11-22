@@ -1411,9 +1411,11 @@ namespace dxvk {
     Rc<DxvkResourceAllocation> prevAllocation = buffer->assignStorage(std::move(slice));
     buffer->advanceOrgStorageSerial();
 
-    // An ORG import keeps using the old storage until the client takes the new one
+    // An ORG import keeps using the old storage until the client takes the new one. The entry
+    // describes the new storage, and any copy into it is in this command list: the tracking
+    // timeline reaches m_trackingId once it is done.
     if (unlikely(buffer->isOrgTracked()))
-      m_common->memoryManager().pushOrgRelocation(*buffer, prevAllocation, false);
+      m_common->memoryManager().pushOrgRelocation(*buffer, prevAllocation, m_trackingFence->handle(), m_trackingId);
 
     m_cmd->track(std::move(prevAllocation));
 
@@ -1522,9 +1524,11 @@ namespace dxvk {
     if (prevAllocation != image->storage()) {
       image->advanceOrgStorageSerial();
 
-      // An ORG import keeps using the old storage until the client takes the new one
+      // An ORG import keeps using the old storage until the client takes the new one. The entry
+      // describes the new storage, and any copy into it is in this command list: the tracking
+      // timeline reaches m_trackingId once it is done.
       if (unlikely(image->isOrgTracked()))
-        m_common->memoryManager().pushOrgRelocation(*image, prevAllocation, true);
+        m_common->memoryManager().pushOrgRelocation(*image, prevAllocation, m_trackingFence->handle(), m_trackingId);
     }
 
     m_cmd->track(std::move(prevAllocation));

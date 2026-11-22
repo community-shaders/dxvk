@@ -50,24 +50,77 @@ namespace dxvk {
   namespace {
 
     // The view a texture (not a view of it) is described with: the whole image.
-    DxvkImageViewKey WholeImageViewKey(const DxvkImage& image) {
-      const auto& info = image.info();
-
+    DxvkImageViewKey WholeImageViewKey(VkImageType type, VkFormat format, VkImageAspectFlags aspects,
+        uint32_t mipLevels, uint32_t numLayers) {
       DxvkImageViewKey key = { };
-      key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+      key.viewType = numLayers > 1u ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 
-      if (info.type == VK_IMAGE_TYPE_1D)
-        key.viewType = info.numLayers > 1u ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
-      else if (info.type == VK_IMAGE_TYPE_3D)
+      if (type == VK_IMAGE_TYPE_1D)
+        key.viewType = numLayers > 1u ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
+      else if (type == VK_IMAGE_TYPE_3D)
         key.viewType = VK_IMAGE_VIEW_TYPE_3D;
 
-      key.format = info.format;
-      key.aspects = image.formatInfo()->aspectMask;
+      key.format = format;
+      key.aspects = aspects;
       key.mipIndex = 0u;
-      key.mipCount = info.mipLevels;
+      key.mipCount = mipLevels;
       key.layerIndex = 0u;
-      key.layerCount = info.numLayers;
+      key.layerCount = numLayers;
       return key;
+    }
+
+    DxvkImageViewKey WholeImageViewKey(const DxvkImage& image) {
+      const auto& info = image.info();
+      return WholeImageViewKey(info.type, info.format, image.formatInfo()->aspectMask, info.mipLevels, info.numLayers);
+    }
+
+    // The view part of an image's description.
+    void FillViewInfo(const DxvkImageViewKey& view, DxvkOrgInteropImageInfo& out) {
+      out.viewType = view.viewType;
+      out.viewFormat = view.format;
+      out.components = view.unpackSwizzle();
+      out.subresourceRange.aspectMask = view.aspects;
+      out.subresourceRange.baseMipLevel = view.mipIndex;
+      out.subresourceRange.levelCount = view.mipCount;
+      out.subresourceRange.baseArrayLayer = view.layerIndex;
+      out.subresourceRange.layerCount = view.layerCount;
+    }
+
+    // A struct version a client may pass: no struct of an older one changed since.
+    bool IsInteropVersion(uint32_t version) {
+      return version >= DXVK_ORG_INTEROP_MIN_VERSION && version <= DXVK_ORG_INTEROP_VERSION;
+    }
+
+    // A relocation's new storage, as TrackResources describes the whole resource. From the values
+    // the CS thread copied when the resource took the storage: the resource may have moved again.
+    void FillStorageInfo(const DxvkOrgRelocation& entry, DxvkOrgInteropResourceInfo& out) {
+      const auto& next = entry.next;
+
+      out = DxvkOrgInteropResourceInfo();
+      out.version = DXVK_ORG_INTEROP_VERSION;
+
+      if (!entry.image) {
+        out.kind = DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+        out.buffer.buffer = next.buffer;
+        out.buffer.offset = next.offset;
+        out.buffer.size = next.size;
+        out.buffer.address = next.gpuAddress;
+        out.buffer.usage = next.bufferUsage;
+        return;
+      }
+
+      out.kind = DXVK_ORG_INTEROP_RESOURCE_IMAGE;
+      out.image.image = next.image;
+      out.image.type = next.type;
+      out.image.format = next.format;
+      out.image.flags = next.flags;
+      out.image.extent = next.extent;
+      out.image.mipLevels = next.mipLevels;
+      out.image.arrayLayers = next.numLayers;
+      out.image.samples = next.sampleCount;
+      out.image.usage = next.imageUsage;
+      out.image.layout = next.layout;
+      FillViewInfo(WholeImageViewKey(next.type, next.format, next.aspects, next.mipLevels, next.numLayers), out.image);
     }
 
     D3D11VkInterop* GetInterop(ID3D11Device* pDevice, Com<IDXGIVkInteropDevice1>& ref) {
@@ -127,8 +180,8 @@ namespace dxvk {
           DxvkOrgInteropResourceInfo* pInfo) {
     InitReturnPtr(ppTexture);
 
-    if (!pWrap || pWrap->version != DXVK_ORG_INTEROP_VERSION || pWrap->image == VK_NULL_HANDLE
-     || !ppTexture || !pInfo || pInfo->version != DXVK_ORG_INTEROP_VERSION)
+    if (!pWrap || !IsInteropVersion(pWrap->version) || pWrap->image == VK_NULL_HANDLE
+     || !ppTexture || !pInfo || !IsInteropVersion(pInfo->version))
       return E_INVALIDARG;
 
     const bool is3D = pWrap->dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D;
@@ -201,7 +254,7 @@ namespace dxvk {
   HRESULT D3D11VkInterop::GetResourceInfo(
           IUnknown*                   pObject,
           DxvkOrgInteropResourceInfo* pInfo) {
-    if (!pObject || !pInfo || pInfo->version != DXVK_ORG_INTEROP_VERSION)
+    if (!pObject || !pInfo || !IsInteropVersion(pInfo->version))
       return E_INVALIDARG;
 
     uint32_t version = pInfo->version;
@@ -308,7 +361,7 @@ namespace dxvk {
     for (UINT i = 0; i < Count; i++) {
       pResults[i] = E_INVALIDARG;
 
-      if (!ppObjects[i] || pInfos[i].version != DXVK_ORG_INTEROP_VERSION)
+      if (!ppObjects[i] || !IsInteropVersion(pInfos[i].version))
         continue;
 
       Com<ID3D11Resource> resource;
@@ -502,12 +555,13 @@ namespace dxvk {
 
       auto& out = pResources[i];
 
-      if (!ppObjects[i] || out.version != DXVK_ORG_TRACKED_RESOURCE_VERSION || out.info.version != DXVK_ORG_INTEROP_VERSION)
+      if (!ppObjects[i] || out.version != DXVK_ORG_TRACKED_RESOURCE_VERSION || !IsInteropVersion(out.info.version))
         continue;
 
+      uint32_t infoVersion = out.info.version;
       out = DxvkOrgInteropTrackedResource();
       out.version = DXVK_ORG_TRACKED_RESOURCE_VERSION;
-      out.info.version = DXVK_ORG_INTEROP_VERSION;
+      out.info.version = infoVersion;
 
       Item item;
       item.index = i;
@@ -662,6 +716,39 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D11VkInterop::PollRelocations2(
+          DxvkOrgInteropRelocation2*  pRelocations,
+          uint32_t                    Capacity,
+          uint32_t*                   pCount) {
+    if (!pCount || (Capacity && !pRelocations))
+      return E_INVALIDARG;
+
+    *pCount = 0u;
+
+    if (!Capacity)
+      return S_OK;
+
+    std::vector<DxvkOrgRelocation> entries(Capacity);
+    size_t count = m_device->GetDXVKDevice()->getMemoryAllocator().pollOrgRelocations(entries.data(), Capacity);
+
+    for (size_t i = 0u; i < count; i++) {
+      auto& dst = pRelocations[i];
+      dst.cookie = entries[i].cookie;
+      dst.storageSerial = entries[i].serial;
+      dst.kind = entries[i].image ? DXVK_ORG_INTEROP_RESOURCE_IMAGE : DXVK_ORG_INTEROP_RESOURCE_BUFFER;
+      dst.reserved = 0u;
+      FillStorageInfo(entries[i], dst.next);
+      dst.readySemaphore = entries[i].readySemaphore;
+      dst.readyValue = entries[i].readyValue;
+      // The client's reference, given back by ReleaseStorage.
+      dst.storage = entries[i].storage.unsafeExtract();
+    }
+
+    *pCount = uint32_t(count);
+    return S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::ReleaseStorage(
           UINT                        Count,
           void* const*                ppStorages) {
@@ -689,14 +776,7 @@ namespace dxvk {
     out.samples = info.sampleCount;
     out.usage = info.usage;
     out.layout = info.layout;
-    out.viewType = view.viewType;
-    out.viewFormat = view.format;
-    out.components = view.unpackSwizzle();
-    out.subresourceRange.aspectMask = view.aspects;
-    out.subresourceRange.baseMipLevel = view.mipIndex;
-    out.subresourceRange.levelCount = view.mipCount;
-    out.subresourceRange.baseArrayLayer = view.layerIndex;
-    out.subresourceRange.layerCount = view.layerCount;
+    FillViewInfo(view, out);
   }
 
 
@@ -879,7 +959,7 @@ namespace dxvk {
 
   HRESULT D3D11VkInterop::EnqueueExternalSubmission(
     const DxvkOrgInteropSubmission*   pSubmission) {
-    if (!pSubmission || pSubmission->version != DXVK_ORG_INTEROP_VERSION
+    if (!pSubmission || !IsInteropVersion(pSubmission->version)
      || (pSubmission->waitCount && !pSubmission->waits)
      || (pSubmission->commandBufferCount && !pSubmission->commandBuffers)
      || (pSubmission->signalCount && !pSubmission->signals))
@@ -988,7 +1068,7 @@ namespace dxvk {
 
   HRESULT D3D11VkInterop::EnqueueExternalSubmissions(
     const DxvkOrgInteropSubmissionBatch*  pBatch) {
-    if (!pBatch || pBatch->version != DXVK_ORG_INTEROP_VERSION
+    if (!pBatch || !IsInteropVersion(pBatch->version)
      || !pBatch->submitCount || !pBatch->submits)
       return E_INVALIDARG;
 
@@ -1037,7 +1117,7 @@ extern "C" {
   using namespace dxvk;
 
   DLLEXPORT HRESULT __stdcall dxvkRequestDeviceFeatures(const DxvkOrgInteropFeatureRequest* pRequest) {
-    if (!pRequest || pRequest->version != DXVK_ORG_INTEROP_VERSION || (pRequest->featureCount && !pRequest->features))
+    if (!pRequest || !IsInteropVersion(pRequest->version) || (pRequest->featureCount && !pRequest->features))
       return E_INVALIDARG;
 
     std::vector<DxvkInteropFeature> features;
@@ -1088,7 +1168,7 @@ extern "C" {
 
 
   DLLEXPORT HRESULT __stdcall dxvkGetInteropDeviceInfo(ID3D11Device* pDevice, DxvkOrgInteropDeviceInfo* pInfo) {
-    if (!pInfo || pInfo->version != DXVK_ORG_INTEROP_VERSION)
+    if (!pInfo || !IsInteropVersion(pInfo->version))
       return E_INVALIDARG;
 
     Com<IDXGIVkInteropDevice1> ref;
@@ -1313,6 +1393,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->PollRelocations(pRelocations, capacity, pCount);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkPollInteropRelocations2(ID3D11Device* pDevice,
+    DxvkOrgInteropRelocation2* pRelocations, uint32_t capacity, uint32_t* pCount) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->PollRelocations2(pRelocations, capacity, pCount);
   }
 
 

@@ -2341,9 +2341,65 @@ namespace dxvk {
 
 
   void DxvkMemoryAllocator::pushOrgRelocation(
-    const DxvkPagedResource&          resource,
+    const DxvkBuffer&                 buffer,
           Rc<DxvkResourceAllocation>  storage,
-          bool                        image) {
+          VkSemaphore                 readySemaphore,
+          uint64_t                    readyValue) {
+    // The resource holds its new storage now, and the CS thread is the only one that changes it.
+    DxvkOrgRelocation entry;
+    entry.cookie = buffer.cookie();
+    entry.serial = buffer.orgStorageSerial();
+    entry.image = false;
+    entry.storage = std::move(storage);
+    entry.readySemaphore = readySemaphore;
+    entry.readyValue = readyValue;
+
+    auto slice = buffer.getSliceInfo();
+    entry.next.buffer = slice.buffer;
+    entry.next.offset = slice.offset;
+    entry.next.size = slice.size;
+    entry.next.gpuAddress = slice.gpuAddress;
+    entry.next.bufferUsage = buffer.info().usage;
+
+    queueOrgRelocation(std::move(entry));
+  }
+
+
+  void DxvkMemoryAllocator::pushOrgRelocation(
+    const DxvkImage&                  image,
+          Rc<DxvkResourceAllocation>  storage,
+          VkSemaphore                 readySemaphore,
+          uint64_t                    readyValue) {
+    DxvkOrgRelocation entry;
+    entry.cookie = image.cookie();
+    entry.serial = image.orgStorageSerial();
+    entry.image = true;
+    entry.storage = std::move(storage);
+    entry.readySemaphore = readySemaphore;
+    entry.readyValue = readyValue;
+
+    // After assignStorageWithUsage: the usage and resting layout of the new storage.
+    const auto& info = image.info();
+    entry.next.image = image.handle();
+    entry.next.type = info.type;
+    entry.next.format = info.format;
+    entry.next.flags = info.flags;
+    entry.next.extent = info.extent;
+    entry.next.mipLevels = info.mipLevels;
+    entry.next.numLayers = info.numLayers;
+    entry.next.sampleCount = info.sampleCount;
+    entry.next.imageUsage = info.usage;
+    entry.next.layout = info.layout;
+    entry.next.aspects = image.formatInfo()->aspectMask;
+
+    queueOrgRelocation(std::move(entry));
+  }
+
+
+  void DxvkMemoryAllocator::queueOrgRelocation(
+          DxvkOrgRelocation&&         entry) {
+    auto& storage = entry.storage;
+
     // The old storage no longer backs its resource: defragmentation and eviction find the resource by
     // its cookie, and would move it (its new storage) again for an allocation the client is releasing.
     // Counted as a lock while held, so that defragmentation does not keep picking a chunk it cannot
@@ -2362,12 +2418,6 @@ namespace dxvk {
         storage->m_flags.set(DxvkAllocationFlag::GpuAddressLocked);
       }
     }
-
-    DxvkOrgRelocation entry;
-    entry.cookie = resource.cookie();
-    entry.serial = resource.orgStorageSerial();
-    entry.image = image;
-    entry.storage = std::move(storage);
 
     m_orgRelocationsPushed.fetch_add(1u, std::memory_order_relaxed);
     m_orgStorageHeld.fetch_add(1, std::memory_order_relaxed);

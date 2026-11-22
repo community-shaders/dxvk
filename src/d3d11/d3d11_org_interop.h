@@ -6,6 +6,7 @@
  * from dxvk_d3d11.dll; resolve with GetProcAddress.
  *
  * All structs are versioned: set `version` to DXVK_ORG_INTEROP_VERSION.
+ * DXVK accepts any version from DXVK_ORG_INTEROP_MIN_VERSION up to its own.
  */
 
 #include <stdint.h>
@@ -16,8 +17,11 @@
 extern "C" {
 #endif
 
-/* Version 6 added exports that were later removed. Version 7: dxvkCreateTextureFromVkImage (DxvkOrgInteropTextureWrap). */
-#define DXVK_ORG_INTEROP_VERSION 7u
+/* Version 6 added exports that were later removed. Version 7: dxvkCreateTextureFromVkImage (DxvkOrgInteropTextureWrap).
+   Version 8: dxvkPollInteropRelocations2 (DxvkOrgInteropRelocation2: the new storage and when its copy is done). No struct
+   of version 7 changed, so a version 7 client keeps working. */
+#define DXVK_ORG_INTEROP_VERSION 8u
+#define DXVK_ORG_INTEROP_MIN_VERSION 7u
 
 struct ID3D11Device;
 struct ID3D11Buffer;
@@ -426,6 +430,63 @@ typedef struct DxvkOrgInteropRelocation {
  */
 typedef HRESULT (__stdcall *PFN_dxvkPollInteropRelocations)(ID3D11Device* pDevice,
   DxvkOrgInteropRelocation* pRelocations, uint32_t capacity, uint32_t* pCount);
+
+/**
+ * Version 8: one storage replacement of a tracked resource, with the new
+ * storage. The first fields match DxvkOrgInteropRelocation.
+ */
+typedef struct DxvkOrgInteropRelocation2 {
+  /** The resource's cookie (DxvkOrgInteropTrackedResource::cookie). */
+  uint64_t cookie;
+  /** The new storage's serial: imports describing an older one use the old storage. */
+  uint64_t storageSerial;
+  /** The old storage, alive until dxvkReleaseInteropStorage. */
+  void* storage;
+  /** DxvkOrgInteropResourceKind. */
+  uint32_t kind;
+  uint32_t reserved;
+  /**
+   * The new storage, described as dxvkTrackInteropResources describes the
+   * whole resource; next.version is DXVK_ORG_INTEROP_VERSION.
+   * - A buffer: buffer, offset, address and usage of the new range. size is
+   *   DXVK's size for the buffer, at least the size the import described.
+   * - An image: the new VkImage and the image's properties, usage and the
+   *   layout it rests in now. The view fields describe the whole image. A
+   *   client that imported a view keeps its own view fields: a move never
+   *   changes them.
+   * The handles stay valid until the resource moves again (a later
+   * relocation of the same cookie hands this storage back as its old one)
+   * or the client ends its last import.
+   */
+  DxvkOrgInteropResourceInfo next;
+  /**
+   * When the copy into the new storage is done: DXVK's timeline semaphore
+   * reaches readyValue once the command list that holds the copy completed.
+   * The client must not read the new storage before that.
+   *
+   * Work the client enqueues into DXVK's stream after the poll returned
+   * (dxvkEnqueueInteropSubmission(s), dxvkEmitExternalCommands) runs after
+   * the copy on the graphics queue and needs nothing. Another queue can
+   * either wait for a signal of such work, or wait for readySemaphore at
+   * readyValue directly. A direct wait must not be one that DXVK's stream
+   * itself waits for before its next flush (that command list may not be
+   * submitted yet), and a host wait (vkWaitSemaphores) must not hold DXVK's
+   * submission lock. The semaphore lives as long as the device; the client
+   * must not signal it.
+   */
+  VkSemaphore readySemaphore;
+  uint64_t readyValue;
+} DxvkOrgInteropRelocation2;
+
+/**
+ * dxvkPollInteropRelocations, with the new storage and its ready point.
+ * Takes up to capacity relocations, oldest first. Any thread. Both exports
+ * take from the same queue. Every one taken must be released with
+ * dxvkReleaseInteropStorage, including those of resources the client no
+ * longer imports.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkPollInteropRelocations2)(ID3D11Device* pDevice,
+  DxvkOrgInteropRelocation2* pRelocations, uint32_t capacity, uint32_t* pCount);
 
 /**
  * Releases relocations' old storage, once the client's work no longer uses

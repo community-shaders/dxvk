@@ -19,6 +19,8 @@ namespace dxvk {
   class DxvkSharedAllocationCache;
   class DxvkResourceAllocation;
   class DxvkPagedResource;
+  class DxvkBuffer;
+  class DxvkImage;
   struct DxvkMemoryChunk;
 
   /**
@@ -1164,6 +1166,38 @@ namespace dxvk {
 
 
   /**
+   * \brief The storage an ORG-tracked resource moved to
+   *
+   * Plain values, copied on the CS thread right after the resource takes
+   * the storage, so a poll on any thread reads them without touching the
+   * resource, which may have moved again since. Buffer fields are set for
+   * a buffer, image fields for an image.
+   */
+  struct DxvkOrgStorageDesc {
+    /// Buffer: the range that backs the resource
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0u;
+    VkDeviceSize size = 0u;
+    VkDeviceAddress gpuAddress = 0u;
+    VkBufferUsageFlags bufferUsage = 0u;
+    /// Image: the image and what it was created with
+    VkImage image = VK_NULL_HANDLE;
+    VkImageType type = VK_IMAGE_TYPE_2D;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageCreateFlags flags = 0u;
+    VkExtent3D extent = { };
+    uint32_t mipLevels = 0u;
+    uint32_t numLayers = 0u;
+    VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+    VkImageUsageFlags imageUsage = 0u;
+    /// The layout the image rests in between DXVK's commands
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    /// Every aspect of the image's format
+    VkImageAspectFlags aspects = 0u;
+  };
+
+
+  /**
    * \brief A storage replacement of an ORG-tracked resource
    *
    * The old storage stays alive while the entry holds it (and, after a poll,
@@ -1178,6 +1212,12 @@ namespace dxvk {
     bool image = false;
     /// The replaced storage
     Rc<DxvkResourceAllocation> storage;
+    /// The new storage
+    DxvkOrgStorageDesc next;
+    /// Timeline semaphore that reaches \c readyValue once the copy into the new storage is done
+    VkSemaphore readySemaphore = VK_NULL_HANDLE;
+    /// The value the command list that holds the copy signals
+    uint64_t readyValue = 0u;
   };
 
 
@@ -1629,16 +1669,31 @@ namespace dxvk {
     /**
      * \brief Reports a storage replacement of an ORG-tracked resource
      *
-     * Called on the CS thread with the resource's new storage assigned. The
-     * entry keeps the old storage alive until the client releases it.
-     * \param [in] resource The resource
+     * Called on the CS thread with the resource's new storage assigned, so
+     * the entry describes the final new storage. The entry keeps the old
+     * storage alive until the client releases it.
+     * \param [in] buffer The resource
      * \param [in] storage Its old storage
-     * \param [in] image Whether the resource is an image
+     * \param [in] readySemaphore The recording context's tracking timeline
+     * \param [in] readyValue The value its current command list signals,
+     *    the command list that holds the copy into the new storage
      */
     void pushOrgRelocation(
-      const DxvkPagedResource&          resource,
+      const DxvkBuffer&                 buffer,
             Rc<DxvkResourceAllocation>  storage,
-            bool                        image);
+            VkSemaphore                 readySemaphore,
+            uint64_t                    readyValue);
+
+    /**
+     * \brief Reports a storage replacement of an ORG-tracked image
+     *
+     * As for a buffer.
+     */
+    void pushOrgRelocation(
+      const DxvkImage&                  image,
+            Rc<DxvkResourceAllocation>  storage,
+            VkSemaphore                 readySemaphore,
+            uint64_t                    readyValue);
 
     /**
      * \brief Takes reported relocations, oldest first
@@ -1696,6 +1751,9 @@ namespace dxvk {
     std::string describeOrgRelocations() const;
 
   private:
+
+    void queueOrgRelocation(
+            DxvkOrgRelocation&&         entry);
 
     DxvkDevice* m_device;
 
