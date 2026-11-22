@@ -219,6 +219,7 @@ namespace dxvk {
       switch (model) {
         case DxvkInteropBindingModelHeap:   return "descriptor heap";
         case DxvkInteropBindingModelBuffer: return "descriptor buffer";
+        case DxvkInteropBindingModelSets:   return "update-after-bind descriptor sets";
         case 0u:                            return "legacy descriptor sets";
         default:                            return "unknown";
       }
@@ -230,12 +231,12 @@ namespace dxvk {
 
       std::string result;
 
-      for (uint32_t bit : { uint32_t(DxvkInteropBindingModelHeap), uint32_t(DxvkInteropBindingModelBuffer) }) {
+      for (uint32_t bit : { uint32_t(DxvkInteropBindingModelHeap), uint32_t(DxvkInteropBindingModelBuffer), uint32_t(DxvkInteropBindingModelSets) }) {
         if (mask & bit)
           result += str::format(result.empty() ? "" : ", ", bindingModelName(bit));
       }
 
-      if (mask & ~uint32_t(DxvkInteropBindingModelHeap | DxvkInteropBindingModelBuffer))
+      if (mask & ~uint32_t(DxvkInteropBindingModelHeap | DxvkInteropBindingModelBuffer | DxvkInteropBindingModelSets))
         result += str::format(result.empty() ? "" : ", ", "unknown bits");
 
       return result;
@@ -689,7 +690,7 @@ namespace dxvk {
     uint32_t preferredModel = m_featuresSupported.extDescriptorHeap.descriptorHeap ? DxvkInteropBindingModelHeap
       : m_featuresSupported.extDescriptorBuffer.descriptorBuffer ? DxvkInteropBindingModelBuffer : 0u;
 
-    m_bindingModel = negotiateBindingModel(instance, adapter, negotiation, preferredModel);
+    m_bindingModel = negotiateBindingModel(instance, adapter, negotiation, preferredModel, m_clientBindingModel);
 
     m_featuresSupported.extDescriptorHeap.descriptorHeap = VkBool32(m_bindingModel == DxvkInteropBindingModelHeap);
     m_featuresSupported.extDescriptorBuffer.descriptorBuffer = VkBool32(m_bindingModel == DxvkInteropBindingModelBuffer);
@@ -812,7 +813,10 @@ namespace dxvk {
     const DxvkInstance&               instance,
           VkPhysicalDevice            adapter,
     const DxvkInteropBindingModelNegotiation* negotiation,
-          uint32_t                    preferredModel) const {
+          uint32_t                    preferredModel,
+          uint32_t&                   clientModel) const {
+    clientModel = 0u;
+
     if (!negotiation || !negotiation->callback)
       return preferredModel;
 
@@ -824,6 +828,7 @@ namespace dxvk {
     if (accepted & preferredModel) {
       Logger::info(str::format("Binding model: ", bindingModelName(preferredModel),
         " (DXVK's choice, accepted by the interop client)"));
+      clientModel = preferredModel;
       return preferredModel;
     }
 
@@ -848,13 +853,29 @@ namespace dxvk {
 
     // Legacy sets are otherwise DXVK's choice for its own performance (Pascal, most Intel),
     // and DXVK keeps them: switching applies only between heaps and descriptor buffers. A
-    // user can still force a model with the options, which the policy applied.
+    // user can still force a model with the options, which the policy applied. A client that
+    // takes update-after-bind sets binds its own beside DXVK's, which stay legacy.
     if (!preferredModel) {
+      const auto& vk12 = m_featuresRawSupported.vk12;
+      bool setsSupported = vk12.descriptorIndexing && vk12.runtimeDescriptorArray
+        && vk12.descriptorBindingPartiallyBound && vk12.descriptorBindingUpdateUnusedWhilePending
+        && vk12.descriptorBindingSampledImageUpdateAfterBind && vk12.descriptorBindingStorageImageUpdateAfterBind
+        && vk12.descriptorBindingStorageBufferUpdateAfterBind && vk12.descriptorBindingUniformTexelBufferUpdateAfterBind
+        && vk12.descriptorBindingStorageTexelBufferUpdateAfterBind;
+
+      if ((accepted & DxvkInteropBindingModelSets) && setsSupported) {
+        Logger::info(str::format("Binding model: legacy descriptor sets (DXVK's policy or the device "
+          "declined heaps and descriptor buffers); the interop client binds update-after-bind descriptor "
+          "sets of its own beside them"));
+        clientModel = DxvkInteropBindingModelSets;
+        return preferredModel;
+      }
+
       Logger::warn(str::format("Binding model: legacy descriptor sets (DXVK's policy or the device "
         "declined heaps and descriptor buffers, or dxvk.enableDescriptorHeap/enableDescriptorBuffer "
         "turned them off); the interop client accepts ", bindingModelMaskName(accepted),
-        ", which needs heap or buffer; the update-after-bind sets backend is not available yet, "
-        "so the client gets none"));
+        (setsSupported ? "" : ", and the device lacks update-after-bind descriptor sets"),
+        ", so the client gets none"));
       return preferredModel;
     }
 
@@ -884,6 +905,7 @@ namespace dxvk {
     if (model != preferredModel) {
       Logger::info(str::format("Binding model: ", bindingModelName(model), " (DXVK prefers ",
         bindingModelName(preferredModel), ", the interop client accepts ", bindingModelMaskName(accepted), ")"));
+      clientModel = model;
     } else {
       Logger::warn(str::format("Binding model: ", bindingModelName(model), " (DXVK's choice"
         "); the interop client accepts ", bindingModelMaskName(accepted),
@@ -1197,6 +1219,11 @@ namespace dxvk {
       ENABLE_FEATURE(vk12, shaderUniformTexelBufferArrayNonUniformIndexing, false),
       ENABLE_FEATURE(vk12, shaderStorageTexelBufferArrayNonUniformIndexing, false),
       ENABLE_FEATURE(vk12, descriptorBindingSampledImageUpdateAfterBind, true),
+      // Requested by an interop client on update-after-bind sets (DxvkInteropBindingModelSets).
+      ENABLE_FEATURE(vk12, descriptorBindingStorageImageUpdateAfterBind, false),
+      ENABLE_FEATURE(vk12, descriptorBindingStorageBufferUpdateAfterBind, false),
+      ENABLE_FEATURE(vk12, descriptorBindingUniformTexelBufferUpdateAfterBind, false),
+      ENABLE_FEATURE(vk12, descriptorBindingStorageTexelBufferUpdateAfterBind, false),
       ENABLE_FEATURE(vk12, descriptorBindingUpdateUnusedWhilePending, true),
       ENABLE_FEATURE(vk12, descriptorBindingPartiallyBound, true),
       ENABLE_FEATURE(vk12, descriptorBindingVariableDescriptorCount, false),

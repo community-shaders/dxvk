@@ -59,6 +59,10 @@ namespace dxvk {
   enum DxvkInteropBindingModelBits : uint32_t {
     DxvkInteropBindingModelHeap   = 1u << 0, ///< VK_EXT_descriptor_heap
     DxvkInteropBindingModelBuffer = 1u << 1, ///< VK_EXT_descriptor_buffer (+ VK_EXT_mutable_descriptor_type for the client)
+    /// Update-after-bind descriptor sets of the client's own, bound beside DXVK's legacy sets
+    /// (both are descriptor sets, so one command buffer holds one model). Only while DXVK runs
+    /// on legacy sets, for devices without mutable descriptors (Pascal).
+    DxvkInteropBindingModelSets   = 1u << 2,
   };
 
   /**

@@ -440,6 +440,9 @@ namespace dxvk {
     bool                                  m_interopActive = false;
     // The descriptor model DXVK runs on (DxvkInteropBindingModelBits, 0 for legacy sets).
     uint32_t                              m_bindingModel = 0u;
+    // The model the interop client binds its descriptors with: DXVK's, or update-after-bind sets
+    // beside DXVK's legacy sets. 0 when the client gets none.
+    uint32_t                              m_clientBindingModel = 0u;
 
     DxvkDeviceMemoryInfo                  m_memory = { };
 
@@ -488,7 +491,8 @@ namespace dxvk {
       const DxvkInstance&               instance,
             VkPhysicalDevice            adapter,
       const DxvkInteropBindingModelNegotiation* negotiation,
-            uint32_t                    preferredModel) const;
+            uint32_t                    preferredModel,
+            uint32_t&                   clientModel) const;
 
     void enableFeaturesAndExtensions();
 
