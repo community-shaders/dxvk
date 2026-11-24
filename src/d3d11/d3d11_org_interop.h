@@ -189,7 +189,7 @@ typedef HRESULT (__stdcall *PFN_dxvkRequestDeviceFeatures)(const DxvkOrgInteropF
  * (dxvkRequestDeviceFeatures): extensions DXVK has no feature table entry for,
  * such as a profiler's driver interface (VK_AMD_gpa_interface). Call before the
  * device is created. Each is enabled when the device supports it; DXVK never
- * uses them itself. Replaces an earlier request.
+ * uses them itself. Adds to earlier requests.
  */
 typedef HRESULT (__stdcall *PFN_dxvkRequestDeviceExtensions)(uint32_t extensionCount, const char* const* ppExtensions);
 

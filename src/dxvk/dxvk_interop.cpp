@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 
@@ -39,7 +40,11 @@ namespace dxvk {
 
   void setInteropExtensionRequest(std::vector<std::string> extensions) {
     std::lock_guard lock(state().mutex);
-    state().extensions = std::move(extensions);
+    // Requests add up: the render graph and a profiler each ask for their own.
+    for (auto& name : extensions) {
+      if (std::find(state().extensions.begin(), state().extensions.end(), name) == state().extensions.end())
+        state().extensions.push_back(std::move(name));
+    }
   }
 
 
