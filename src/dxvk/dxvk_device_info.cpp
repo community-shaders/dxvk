@@ -61,6 +61,7 @@ namespace dxvk {
     HANDLE_EXT(khrMaintenance9);                   \
     HANDLE_EXT(khrMaintenance10);                  \
     HANDLE_EXT(khrMaintenance11);                  \
+    HANDLE_EXT(khrPipelineBinary);                 \
     HANDLE_EXT(khrPipelineExecutableProperties);       \
     HANDLE_EXT(khrPipelineLibrary);                \
     HANDLE_EXT(khrPresentId);                      \
@@ -694,6 +695,11 @@ namespace dxvk {
 
     m_featuresSupported.extDescriptorHeap.descriptorHeap = VkBool32(m_bindingModel == DxvkInteropBindingModelHeap);
     m_featuresSupported.extDescriptorBuffer.descriptorBuffer = VkBool32(m_bindingModel == DxvkInteropBindingModelBuffer);
+
+    // Pipeline binaries are for interop clients (BasicRHI's pipeline binary store); DXVK does not use them. The extension
+    // depends on maintenance5.
+    if (!m_featuresSupported.khrMaintenance5.maintenance5)
+      m_featuresSupported.khrPipelineBinary.pipelineBinaries = VK_FALSE;
 
     // Mutable descriptors are for interop clients whose bindless heaps live in descriptor
     // buffers (granted only while DXVK runs on them, see applyInteropRequest); DXVK does not use them.
@@ -1393,6 +1399,9 @@ namespace dxvk {
       ENABLE_EXT_FEATURE(khrMaintenance9, maintenance9, false),
       ENABLE_EXT_FEATURE(khrMaintenance10, maintenance10, false),
       ENABLE_EXT_FEATURE(khrMaintenance11, maintenance11, false),
+
+      /* Interop only: pipelines an interop client makes from stored driver binaries (BasicRHI's pipeline binary store) */
+      ENABLE_EXT_FEATURE(khrPipelineBinary, pipelineBinaries, false),
 
       /* Pipeline statistics on request (DXVK_PIPELINE_STATS) */
       ENABLE_EXT_FEATURE(khrPipelineExecutableProperties, pipelineExecutableInfo, false),

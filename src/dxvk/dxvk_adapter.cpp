@@ -513,6 +513,7 @@ namespace dxvk {
     record->deviceGeneratedCommands = createFeatures.extDeviceGeneratedCommands;
     record->robustness2 = createFeatures.extRobustness2;
     record->pipelineExecutableProperties = createFeatures.khrPipelineExecutableProperties;
+    record->pipelineBinary = createFeatures.khrPipelineBinary;
     record->grantedFeatures = std::move(interopGranted);
     record->deniedFeatures = std::move(interopDenied);
     record->chain();
