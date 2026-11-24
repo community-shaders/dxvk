@@ -514,6 +514,7 @@ namespace dxvk {
     record->robustness2 = createFeatures.extRobustness2;
     record->pipelineExecutableProperties = createFeatures.khrPipelineExecutableProperties;
     record->pipelineBinary = createFeatures.khrPipelineBinary;
+    record->pipelineRobustness = createFeatures.extPipelineRobustness;
     record->grantedFeatures = std::move(interopGranted);
     record->deniedFeatures = std::move(interopDenied);
     record->chain();

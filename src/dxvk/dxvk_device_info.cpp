@@ -1337,6 +1337,11 @@ namespace dxvk {
       /* Enables more dynamic driver-side memory management */
       ENABLE_EXT_FEATURE(extPageableDeviceLocalMemory, pageableDeviceLocalMemory, false),
 
+      /* For interop clients: per-pipeline robustness. BasicRHI turns bounds checks
+       * down on its own pipelines. DXVK chains no pipeline struct, so its own
+       * pipelines keep the device-level robustness. Enabled where supported. */
+      ENABLE_EXT_FEATURE(extPipelineRobustness, pipelineRobustness, false),
+
       /* Robustness, all features effectively required for correctness */
       ENABLE_EXT_FEATURE(extRobustness2, robustBufferAccess2, true),
       ENABLE_EXT_FEATURE(extRobustness2, robustImageAccess2, false),

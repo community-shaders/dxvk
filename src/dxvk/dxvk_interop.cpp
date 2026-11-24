@@ -72,7 +72,8 @@ namespace dxvk {
     deviceGeneratedCommands.pNext = &robustness2;
     robustness2.pNext = &pipelineExecutableProperties;
     pipelineExecutableProperties.pNext = &pipelineBinary;
-    pipelineBinary.pNext = nullptr;
+    pipelineBinary.pNext = &pipelineRobustness;
+    pipelineRobustness.pNext = nullptr;
 
     extensionPointers.clear();
 
