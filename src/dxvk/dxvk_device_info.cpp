@@ -38,6 +38,7 @@ namespace dxvk {
     HANDLE_EXT(extMutableDescriptorType);          \
     HANDLE_EXT(extNonSeamlessCubeMap);             \
     HANDLE_EXT(extPageableDeviceLocalMemory);      \
+    HANDLE_EXT(extPipelineRobustness);             \
     HANDLE_EXT(extRobustness2);                    \
     HANDLE_EXT(extSampleLocations);                \
     HANDLE_EXT(extShaderModuleIdentifier);         \
