@@ -515,6 +515,7 @@ namespace dxvk {
     record->pipelineExecutableProperties = createFeatures.khrPipelineExecutableProperties;
     record->pipelineBinary = createFeatures.khrPipelineBinary;
     record->pipelineRobustness = createFeatures.extPipelineRobustness;
+    record->shaderModuleIdentifier = createFeatures.extShaderModuleIdentifier;
     record->grantedFeatures = std::move(interopGranted);
     record->deniedFeatures = std::move(interopDenied);
     record->chain();

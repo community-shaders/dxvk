@@ -119,11 +119,13 @@ namespace dxvk {
     VkPhysicalDevicePipelineBinaryFeaturesKHR pipelineBinary = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR };
     /// The adopter's per-pipeline robustness (BasicRHI); enabled wherever the device supports it.
     VkPhysicalDevicePipelineRobustnessFeaturesEXT pipelineRobustness = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT };
+    /// The adopter's module identifier store (BasicRHI); DXVK enables it wherever the device supports it.
+    VkPhysicalDeviceShaderModuleIdentifierFeaturesEXT shaderModuleIdentifier = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MODULE_IDENTIFIER_FEATURES_EXT };
     std::vector<DxvkInteropFeature> grantedFeatures;
     std::vector<DxvkInteropFeature> deniedFeatures;
 
     /// Links features -> vk11 -> vk12 -> vk13 -> descriptorHeap -> descriptorBuffer -> mutableDescriptorType
-    /// -> deviceGeneratedCommands -> robustness2 -> pipelineExecutableProperties -> pipelineBinary -> pipelineRobustness. Adopters find structs by sType, so appending to the chain
+    /// -> deviceGeneratedCommands -> robustness2 -> pipelineExecutableProperties -> pipelineBinary -> pipelineRobustness -> shaderModuleIdentifier. Adopters find structs by sType, so appending to the chain
     /// keeps older ones working.
     void chain();
   };

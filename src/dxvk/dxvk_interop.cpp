@@ -73,7 +73,8 @@ namespace dxvk {
     robustness2.pNext = &pipelineExecutableProperties;
     pipelineExecutableProperties.pNext = &pipelineBinary;
     pipelineBinary.pNext = &pipelineRobustness;
-    pipelineRobustness.pNext = nullptr;
+    pipelineRobustness.pNext = &shaderModuleIdentifier;
+    shaderModuleIdentifier.pNext = nullptr;
 
     extensionPointers.clear();
 
