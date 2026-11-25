@@ -1050,6 +1050,64 @@ namespace dxvk {
   }
 
 
+  namespace {
+
+    // dxvkEmitDeferredExternalCommands' recorder: on the CS thread, the context the callback runs in.
+    HRESULT RecordDeferredExternalCommands(
+            void*                             pContext,
+      const DxvkOrgInteropExternalCommands*   pCommands,
+            VkBool32                          Split) {
+      if (!pContext || !pCommands || pCommands->version != DXVK_ORG_EXTERNAL_COMMANDS_VERSION
+       || !pCommands->callback
+       || (pCommands->waitCount && !pCommands->waits)
+       || (pCommands->signalCount && !pCommands->signals))
+        return E_INVALIDARG;
+
+      std::vector<VkSemaphoreSubmitInfo> waits(pCommands->waits, pCommands->waits + pCommands->waitCount);
+      std::vector<VkSemaphoreSubmitInfo> signals(pCommands->signals, pCommands->signals + pCommands->signalCount);
+
+      for (auto* list : { &waits, &signals }) {
+        for (auto& info : *list) {
+          if (!info.stageMask)
+            info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        }
+      }
+
+      auto ctx = static_cast<DxvkContext*>(pContext);
+
+      // A new submission: the commands' waits then hold back nothing recorded before them.
+      if (Split)
+        ctx->flushCommandList(nullptr, nullptr);
+
+      ctx->recordExternalCommands(
+        [cb = pCommands->callback, user = pCommands->user] (VkCommandBuffer commandBuffer) {
+          cb(user, commandBuffer);
+        },
+        uint32_t(waits.size()), waits.data(),
+        uint32_t(signals.size()), signals.data(),
+        (pCommands->flags & DXVK_ORG_EXTERNAL_COMMANDS_BINDS_STATE) != 0u,
+        (pCommands->flags & DXVK_ORG_EXTERNAL_COMMANDS_FULL_BARRIER) != 0u,
+        pCommands->label);
+      return S_OK;
+    }
+
+  }
+
+
+  HRESULT D3D11VkInterop::EmitDeferredExternalCommands(
+          PFN_dxvkOrgInteropDeferredCallback pCallback,
+          void*                                   pUser) {
+    if (!pCallback)
+      return E_INVALIDARG;
+
+    m_device->GetContext()->EmitDeferredExternalCommands([pCallback, pUser] (DxvkContext* ctx) {
+      DxvkOrgInteropStreamRecorder recorder = { ctx, &RecordDeferredExternalCommands };
+      pCallback(pUser, &recorder);
+    });
+    return S_OK;
+  }
+
+
   HRESULT D3D11VkInterop::SetCommandBufferBoundaryCallbacks(
           void                          (*pOnEnd)(void*, VkCommandBuffer),
           void                          (*pOnBegin)(void*, VkCommandBuffer),
@@ -1310,6 +1368,18 @@ extern "C" {
       return E_NOINTERFACE;
 
     return interop->EmitExternalCommands(pCommands);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall dxvkEmitDeferredExternalCommands(ID3D11Device* pDevice,
+    PFN_dxvkOrgInteropDeferredCallback pCallback, void* pUser) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    return interop->EmitDeferredExternalCommands(pCallback, pUser);
   }
 
 

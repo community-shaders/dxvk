@@ -595,6 +595,30 @@ typedef HRESULT (__stdcall *PFN_dxvkEmitExternalCommands)(ID3D11Device* pDevice,
   const DxvkOrgInteropExternalCommands* pCommands);
 
 /**
+ * What dxvkEmitDeferredExternalCommands hands its callback. Valid only during that callback, on DXVK's worker thread.
+ */
+typedef struct DxvkOrgInteropStreamRecorder {
+  void* context;
+  /**
+   * Records pCommands here in the stream, as dxvkEmitExternalCommands would have: its waits and signals
+   * join the submission that holds them, and its callback runs before this returns. With split, DXVK first
+   * ends its current command list and submits it, so the commands start a new submission.
+   */
+  HRESULT (*record)(void* context, const DxvkOrgInteropExternalCommands* pCommands, VkBool32 split);
+} DxvkOrgInteropStreamRecorder;
+
+typedef void (*PFN_dxvkOrgInteropDeferredCallback)(void* user, const DxvkOrgInteropStreamRecorder* pRecorder);
+
+/**
+ * dxvkEmitDeferredExternalCommands: a place in the D3D11 stream for external commands that the client
+ * knows only later. The callback runs once on DXVK's worker thread, in stream order, and records any number
+ * of external commands through the recorder. It may block until it knows them: DXVK's later work in the
+ * stream waits for it, the calling thread does not.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkEmitDeferredExternalCommands)(ID3D11Device* pDevice,
+  PFN_dxvkOrgInteropDeferredCallback pCallback, void* pUser);
+
+/**
  * Returns the address of the immediate context's submission counter, which
  * grows by one each time DXVK closes a command list and hands it to the
  * queue: implicit flushes, explicit Flush() and the flush ahead of an

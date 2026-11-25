@@ -136,6 +136,15 @@ namespace dxvk {
             bool                                FullBarrier,
             std::string                         Label);
 
+    /**
+     * \brief Runs a callback on the CS thread in stream order, with the context itself
+     *
+     * For an interop client that records external commands it knows only there
+     * (dxvkEmitDeferredExternalCommands).
+     */
+    void EmitDeferredExternalCommands(
+            std::function<void (DxvkContext*)> Callback);
+
     void EnqueueExternalSubmission(
             DxvkExternalSubmitInfo&&    SubmitInfo);
 

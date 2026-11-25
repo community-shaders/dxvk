@@ -11,6 +11,7 @@
 struct DxvkOrgInteropSubmission;
 struct DxvkOrgInteropSubmissionBatch;
 struct DxvkOrgInteropExternalCommands;
+struct DxvkOrgInteropStreamRecorder;
 struct DxvkOrgInteropResourceInfo;
 struct DxvkOrgInteropImageInfo;
 struct DxvkOrgInteropTextureWrap;
@@ -121,6 +122,13 @@ namespace dxvk {
      */
     HRESULT EmitExternalCommands(
       const DxvkOrgInteropExternalCommands* pCommands);
+
+    /**
+     * \brief External commands known only on the worker thread, in stream order (see d3d11_org_interop.h)
+     */
+    HRESULT EmitDeferredExternalCommands(
+            void                          (*pCallback)(void*, const DxvkOrgInteropStreamRecorder*),
+            void*                                   pUser);
 
     /**
      * \brief Client callbacks at DXVK's command buffer boundaries (see d3d11_org_interop.h)
