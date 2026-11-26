@@ -210,6 +210,16 @@ namespace dxvk {
     void setHdrMetadata(VkHdrMetadataEXT hdrMetadata);
 
     /**
+     * rief Sets what runs before a swapchain rebuild
+     *
+     * The front end finishes the work it recorded, so that everything a
+     * layer's swapchain may own is submitted before the rebuild waits for
+     * the GPU and the layer frees it. Runs on the thread that acquires.
+     * \param [in] proc The front end's flush
+     */
+    void setRebuildProc(std::function<void()> proc);
+
+    /**
      * \brief Checks support for a Vulkan color space
      *
      * \param [in] colorspace The color space to test
@@ -288,6 +298,7 @@ namespace dxvk {
     Rc<vk::DeviceFn>            m_vkd;
 
     PresenterSurfaceProc        m_surfaceProc;
+    std::function<void()>       m_rebuildProc;
 
     dxvk::mutex                 m_surfaceMutex;
     dxvk::condition_variable    m_surfaceCond;
@@ -414,6 +425,8 @@ namespace dxvk {
     VkResult createLatencySemaphore();
 
     void destroySwapchain();
+
+    void rebuildSwapchain();
 
     void destroySurface();
 

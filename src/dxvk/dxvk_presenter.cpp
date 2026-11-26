@@ -726,7 +726,7 @@ namespace dxvk {
     VkResult vr;
 
     if (m_swapchain)
-      destroySwapchain();
+      rebuildSwapchain();
 
     // Confirm external wrappers are gone before publishing another swapchain. This still runs when
     // m_swapchain is already null, allowing a retryable teardown failure to complete on a later attempt.
@@ -759,7 +759,7 @@ namespace dxvk {
       m_dirtySurface = true;
 
     if (m_dirtySurface || m_dirtySwapchain) {
-      destroySwapchain();
+      rebuildSwapchain();
       m_dirtySwapchain = false;
       if (!notifySwapchainTornDown())
         return false;
@@ -1457,8 +1457,24 @@ namespace dxvk {
   }
 
 
+  void Presenter::setRebuildProc(std::function<void()> proc) {
+    std::lock_guard lock(m_surfaceMutex);
+    m_rebuildProc = std::move(proc);
+  }
+
+
+  void Presenter::rebuildSwapchain() {
+    // Work recorded before the rebuild may use what the old swapchain's layer owns. Submit it all,
+    // so that the idle wait in destroySwapchain covers it.
+    if (m_rebuildProc)
+      m_rebuildProc();
+
+    destroySwapchain();
+  }
+
+
   void Presenter::destroySwapchain() {
-    // DXVK does not chain the maintenance1 present fence (see presentImage), so device idle is
+    // DXVK does not chain the maintenance1 present fence (see presentImage), so idle queues are
     // the only way to prove presentation finished before tearing the swapchain down.
     m_device->waitForIdle();
 
@@ -1476,9 +1492,14 @@ namespace dxvk {
       m_vkd->vkDestroyFence(m_vkd->device(), sem.fence, nullptr);
     }
 
-    // The conditional is here because some third party layers don't properly handle null swapchains
-    if (m_swapchain)
+    // The conditional is here because some third party layers don't properly handle null swapchains.
+    // A layer's swapchain (FSR frame generation) waits for the graphics queue and frees its resources
+    // as it goes: no queue work may run beside it, DXVK's or an interop client's.
+    if (m_swapchain) {
+      m_device->lockIdleQueues();
       m_vkd->vkDestroySwapchainKHR(m_vkd->device(), m_swapchain, nullptr);
+      m_device->unlockIdleQueues();
+    }
 
     m_images.clear();
     m_semaphores.clear();

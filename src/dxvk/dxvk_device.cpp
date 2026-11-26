@@ -65,8 +65,10 @@ namespace dxvk {
     forgetInteropDevice(m_vkd->device());
 
     // Wait for all pending Vulkan commands to be
-    // executed before we destroy any resources.
+    // executed before we destroy any resources. The interop
+    // clients retired above, so the whole device can go idle.
     this->waitForIdle();
+    m_vkd->vkDeviceWaitIdle(m_vkd->device());
 
     // Stop workers explicitly in order to prevent
     // access to structures that are being destroyed.
@@ -712,11 +714,47 @@ namespace dxvk {
     m_submissionQueue.waitForIdle();
     m_submissionQueue.lockDeviceQueue();
 
-    const VkResult result = m_vkd->vkDeviceWaitIdle(m_vkd->device());
+    const VkResult result = waitForOwnQueues();
+
+    m_submissionQueue.unlockDeviceQueue();
+    return result;
+  }
+
+
+  void DxvkDevice::lockIdleQueues() {
+    m_submissionQueue.waitForIdle();
+    m_submissionQueue.lockDeviceQueue();
+    waitForOwnQueues();
+    // Only now: DXVK's work may wait for a client's submission until its queues are idle.
+    m_submissionQueue.lockQueueSubmissions();
+  }
+
+
+  void DxvkDevice::unlockIdleQueues() {
+    m_submissionQueue.unlockQueueSubmissions();
+    m_submissionQueue.unlockDeviceQueue();
+  }
+
+
+  VkResult DxvkDevice::waitForOwnQueues() {
+    // DXVK's own queues only. Interop clients submit to the other queues of this device, and their
+    // work may wait for DXVK submissions that the queue lock holds back: a device-wide wait would never end.
+    VkResult result = VK_SUCCESS;
+    small_vector<VkQueue, 3> waited;
+
+    for (VkQueue queue : { m_queues.graphics.queueHandle, m_queues.transfer.queueHandle, m_queues.sparse.queueHandle }) {
+      if (!queue || std::find(waited.begin(), waited.end(), queue) != waited.end())
+        continue;
+
+      waited.push_back(queue);
+
+      if (result == VK_SUCCESS)
+        result = m_vkd->vkQueueWaitIdle(queue);
+    }
+
     if (result != VK_SUCCESS)
       Logger::err("DxvkDevice: waitForIdle: Operation failed");
 
-    m_submissionQueue.unlockDeviceQueue();
     return result;
   }
   

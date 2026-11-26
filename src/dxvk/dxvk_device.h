@@ -756,6 +756,16 @@ namespace dxvk {
     }
 
     /**
+     * rief Locks every queue once DXVK's are idle
+     *
+     * Waits for DXVK's queues, then holds them and interop clients'
+     * submissions, so that nothing reaches a queue until the unlock.
+     */
+    void lockIdleQueues();
+
+    void unlockIdleQueues();
+
+    /**
      * \brief Increments a given stat counter
      *
      * \param [in] counter Stat counter to increment
@@ -794,13 +804,14 @@ namespace dxvk {
     void waitForResource(const DxvkPagedResource& resource, DxvkAccess access);
     
     /**
-     * \brief Waits until the device becomes idle
+     * \brief Waits until DXVK's queues become idle
      * 
      * Waits for the GPU to complete the execution of all
-     * previously submitted command buffers. This may be
-     * used to ensure that resources that were previously
-     * used by the GPU can be safely destroyed.
-     * \returns Vulkan device-idle result
+     * command buffers DXVK submitted. This may be used to
+     * ensure that resources that were previously used by
+     * the GPU can be safely destroyed. The queues DXVK
+     * exports to interop clients are theirs to wait for.
+     * \returns Vulkan queue-idle result
      */
     VkResult waitForIdle();
     
@@ -842,6 +853,8 @@ namespace dxvk {
     void determineShaderOptions();
 
     void logBindingModel();
+
+    VkResult waitForOwnQueues();
 
   };
   

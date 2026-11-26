@@ -668,6 +668,12 @@ namespace dxvk {
         cAdapter->handle(), surface);
     });
 
+    // The CS thread may still record work that uses what a layer's swapchain owns (frame generation's
+    // inputs). A rebuild runs where this swapchain acquires, so the immediate context is ours to wait for.
+    m_presenter->setRebuildProc([this] {
+      m_parent->GetContext()->SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    });
+
     m_presenter->setSurfaceFormat(GetSurfaceFormat(m_desc.Format));
     m_presenter->setSurfaceExtent({ m_desc.Width, m_desc.Height });
     m_presenter->setFrameRateLimit(m_targetFrameRate, GetActualFrameLatency());
