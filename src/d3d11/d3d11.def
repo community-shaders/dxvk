@@ -57,3 +57,4 @@ EXPORTS
     dxvkFindDestroyedView @177
     dxvkPollInteropRelocations2 @178
     dxvkEmitDeferredExternalCommands @179
+    dxvkLockQueueSubmissions @180

@@ -1507,6 +1507,23 @@ extern "C" {
   }
 
 
+  DLLEXPORT HRESULT __stdcall dxvkLockQueueSubmissions(ID3D11Device* pDevice, BOOL lock) {
+    Com<IDXGIVkInteropDevice1> ref;
+    auto interop = GetInterop(pDevice, ref);
+
+    if (!interop)
+      return E_NOINTERFACE;
+
+    Rc<DxvkDevice> device = interop->GetDXVKDevice();
+
+    if (lock)
+      device->lockQueueSubmissions();
+    else
+      device->unlockQueueSubmissions();
+    return S_OK;
+  }
+
+
   DLLEXPORT BOOL __stdcall dxvkResolveCheckpointMarker(ID3D11Device* pDevice,
     const void* marker, char* text, UINT capacity) {
     Com<IDXGIVkInteropDevice1> ref;

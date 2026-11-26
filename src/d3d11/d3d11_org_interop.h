@@ -65,17 +65,17 @@ typedef struct DxvkOrgInteropDeviceInfo {
   uint32_t enabledInstanceExtensionCount;
   const char* const* enabledInstanceExtensions;
   /** Version 3: a queue of a compute-only family that DXVK never uses, or null. The client submits to it itself,
-      under a lock of its own; DXVK's resources stay exclusive to its graphics and transfer families. */
+      under dxvkLockQueueSubmissions; DXVK's resources stay exclusive to its graphics and transfer families. */
   VkQueue computeQueue;
   uint32_t computeQueueFamily;
   uint32_t computeQueueIndex;
   /** Version 4: a transfer-capable queue for the client's uploads that neither DXVK nor computeQueue uses, or null. The
-      client submits to it itself, under DXVK's submission lock (LockSubmissionQueue). */
+      client submits to it itself, under dxvkLockQueueSubmissions. */
   VkQueue uploadQueue;
   uint32_t uploadQueueFamily;
   uint32_t uploadQueueIndex;
   /** Version 5: a queue of the transfer-only family for the client's graph copies, which no other queue here uses, or null. The
-      client submits to it itself, under DXVK's submission lock. */
+      client submits to it itself, under dxvkLockQueueSubmissions. */
   VkQueue copyQueue;
   uint32_t copyQueueFamily;
   uint32_t copyQueueIndex;
@@ -629,6 +629,15 @@ typedef HRESULT (__stdcall *PFN_dxvkEmitDeferredExternalCommands)(ID3D11Device* 
  * submissions. Valid for the device's lifetime. Written only by the thread
  * using the immediate context, which is also the one that should read it.
  */
+/*
+ * dxvkLockQueueSubmissions: lock (TRUE) or unlock (FALSE) DXVK's queue submissions. DXVK holds this lock around each
+ * vkQueueSubmit of its submission thread, never across a present (which may block until the GPU finishes a frame, as
+ * frame generation's does). A client takes it around its own submissions to the queues DXVK never uses (computeQueue,
+ * uploadQueue, copyQueue), so that no submission runs beside one of DXVK's, without waiting for DXVK's queued work or a
+ * present the way LockSubmissionQueue does. Never held across a wait.
+ */
+typedef HRESULT (__stdcall *PFN_dxvkLockQueueSubmissions)(ID3D11Device* pDevice, BOOL lock);
+
 typedef HRESULT (__stdcall *PFN_dxvkGetSubmissionCounter)(ID3D11Device* pDevice,
   const volatile uint64_t** ppCounter);
 

@@ -272,7 +272,19 @@ namespace dxvk {
      * queue used for command buffer submission.
      */
     void unlockDeviceQueue();
-    
+
+    /**
+     * rief Locks DXVK's queue submissions
+     *
+     * Held around each vkQueueSubmit the submission thread makes, and never
+     * across a present, which may block until the GPU finishes a frame. A
+     * client submitting to queues of its own takes it so that no submission
+     * runs beside one of DXVK's, without waiting for DXVK's presents.
+     */
+    void lockQueueSubmissions() { m_mutexSubmit.lock(); }
+
+    void unlockQueueSubmissions() { m_mutexSubmit.unlock(); }
+
   private:
 
     DxvkDevice*                 m_device;
@@ -289,6 +301,7 @@ namespace dxvk {
 
     dxvk::mutex                 m_mutex;
     dxvk::mutex                 m_mutexQueue;
+    dxvk::mutex                 m_mutexSubmit;
     
     dxvk::condition_variable    m_appendCond;
     dxvk::condition_variable    m_submitCond;

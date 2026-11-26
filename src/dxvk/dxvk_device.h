@@ -742,6 +742,20 @@ namespace dxvk {
     }
 
     /**
+     * rief Locks DXVK's queue submissions, not its presents
+     *
+     * For a client submitting to queues DXVK never uses: no wait for
+     * DXVK's queued work, and none for a present in progress.
+     */
+    void lockQueueSubmissions() {
+      m_submissionQueue.lockQueueSubmissions();
+    }
+
+    void unlockQueueSubmissions() {
+      m_submissionQueue.unlockQueueSubmissions();
+    }
+
+    /**
      * \brief Increments a given stat counter
      *
      * \param [in] counter Stat counter to increment

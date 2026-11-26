@@ -169,6 +169,11 @@ namespace dxvk {
       // Submit command buffer to device
       if (m_lastError != VK_ERROR_DEVICE_LOST) {
         std::lock_guard<dxvk::mutex> lock(m_mutexQueue);
+        // Every entry but a present submits: lockQueueSubmissions' clients wait for that, never for a present.
+        std::unique_lock<dxvk::mutex> submitLock(m_mutexSubmit, std::defer_lock);
+
+        if (entry.present.presenter == nullptr)
+          submitLock.lock();
 
         if (m_callback)
           m_callback(true);
