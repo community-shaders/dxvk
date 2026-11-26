@@ -2,6 +2,24 @@
 #include "dxvk_queue.h"
 
 namespace dxvk {
+
+  // The submission queue whose present this thread is in, for a layer's submissions from inside it.
+  static thread_local DxvkSubmissionQueue* t_presentingQueue = nullptr;
+
+  // A layer's present (FSR frame generation) submits to DXVK's graphics queue from inside DXVK's
+  // present, which holds the queue lock but not the submission lock: interop clients' submissions
+  // could run beside it. The layer takes the submission lock around each submission instead,
+  // never across its waits. False outside a present.
+  extern "C" BOOL __stdcall dxvkLockPresentSubmissions(BOOL lock) {
+    if (!t_presentingQueue)
+      return FALSE;
+
+    if (lock)
+      t_presentingQueue->lockQueueSubmissions();
+    else
+      t_presentingQueue->unlockQueueSubmissions();
+    return TRUE;
+  }
   
   DxvkSubmissionQueue::DxvkSubmissionQueue(DxvkDevice* device, const DxvkQueueCallback& callback)
   : m_device        (device),
@@ -212,9 +230,11 @@ namespace dxvk {
           if (entry.latency.tracker)
             entry.latency.tracker->notifyQueuePresentBegin(entry.latency.frameId);
 
+          t_presentingQueue = this;
           entry.result = entry.present.presenter->presentImage(
             entry.present.frameId, entry.latency.tracker,
             entry.present.rects.size(), entry.present.rects.data());
+          t_presentingQueue = nullptr;
 
           if (entry.latency.tracker) {
             entry.latency.tracker->notifyQueuePresentEnd(

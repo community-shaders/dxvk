@@ -58,3 +58,4 @@ EXPORTS
     dxvkPollInteropRelocations2 @178
     dxvkEmitDeferredExternalCommands @179
     dxvkLockQueueSubmissions @180
+    dxvkLockPresentSubmissions @181
